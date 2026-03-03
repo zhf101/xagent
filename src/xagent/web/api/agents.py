@@ -4,7 +4,7 @@ import logging
 import os
 import uuid
 from datetime import datetime
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -115,6 +115,15 @@ class PublishResponse(BaseModel):
     agent: AgentResponse
 
 
+class OptimizeInstructionsRequest(BaseModel):
+    """Request model for optimizing agent instructions."""
+
+    instructions: str = Field(..., description="Draft instructions to optimize")
+    model_id: Optional[int] = Field(
+        None, description="Model ID to use for optimization"
+    )
+
+
 # ===== Helper Functions =====
 
 
@@ -197,6 +206,65 @@ def _agent_to_response(agent: Agent, db: Session) -> AgentResponse:
 
 
 # ===== Endpoints =====
+
+
+@router.post("/optimize-instructions")
+async def optimize_instructions(
+    request: OptimizeInstructionsRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Dict[str, str]:
+    """Optimize agent instructions using an LLM."""
+    try:
+        # Get model storage
+        model_storage = UserAwareModelStorage(db)
+        user_id = int(current_user.id)
+
+        # Get LLM (use provided model_id or default)
+        llm = None
+        if request.model_id:
+            llm = model_storage.get_llm_by_id(str(request.model_id), user_id)
+
+        if not llm:
+            # Get default LLM
+            default_llm, _, _, _ = model_storage.get_configured_defaults(user_id)
+            llm = default_llm
+
+        if not llm:
+            # Fallback to system default if user has no default
+            default_llm, _, _, _ = model_storage.get_configured_defaults(None)
+            llm = default_llm
+
+        if not llm:
+            raise HTTPException(
+                status_code=400, detail="No LLM available for optimization"
+            )
+
+        # Construct prompt
+        system_prompt = (
+            "You are an expert agent builder and prompt engineer. "
+            "Your task is to refine and optimize the user's draft instructions for an AI agent. "
+            "The output should be clear, structured, and effective for an LLM to follow. "
+            "Do not include any conversational filler. Just output the optimized instructions."
+        )
+
+        user_prompt = f"Draft instructions:\n{request.instructions}\n\nPlease optimize these instructions."
+
+        # Call LLM
+        response = await llm.chat(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ]
+        )
+
+        content = response if isinstance(response, str) else str(response)
+
+        return {"optimized_instructions": content}
+
+    except Exception as e:
+        logger.error(f"Failed to optimize instructions: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("", response_model=AgentResponse)

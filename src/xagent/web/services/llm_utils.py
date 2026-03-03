@@ -405,6 +405,15 @@ class UserAwareModelStorage:
         self.db = db
         self.core_storage = CoreStorage(db, Model)
 
+    def get_llm_by_id(
+        self, model_id: str, user_id: Optional[int] = None
+    ) -> Optional[BaseLLM]:
+        """
+        Get LLM instance by model ID with user access control.
+        Alias for get_llm_by_name_with_access since it handles both ID and name.
+        """
+        return self.get_llm_by_name_with_access(model_id, user_id)
+
     def get_llm_by_name_with_access(
         self, model_name: str, user_id: Optional[int] = None
     ) -> Optional[BaseLLM]:

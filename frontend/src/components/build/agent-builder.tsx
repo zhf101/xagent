@@ -11,7 +11,7 @@ import { ChatInput } from "@/components/chat/ChatInput"
 import { ChatMessage } from "@/components/chat/ChatMessage"
 import { apiRequest } from "@/lib/api-wrapper"
 import { getApiUrl, getWsUrl } from "@/lib/utils"
-import { PlusCircle, MessageSquare, Upload, Download, Info, Settings2, Check, Zap, BookOpen, ChevronLeft } from "lucide-react"
+import { PlusCircle, MessageSquare, Upload, Download, Info, Settings2, Check, Zap, BookOpen, ChevronLeft, Sparkles, Loader2 } from "lucide-react"
 import { useI18n } from "@/contexts/i18n-context"
 import { useAuth } from "@/contexts/auth-context"
 import { FileAttachment } from "@/components/file-attachment"
@@ -121,6 +121,7 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
   const [logoFile, setLogoFile] = useState<File | null>(null)
   const [logoUrl, setLogoUrl] = useState<string | null>(null)  // Existing logo URL
   const [isCreating, setIsCreating] = useState(false)
+  const [isOptimizing, setIsOptimizing] = useState(false)
   const [loadingAgent, setLoadingAgent] = useState(false)
   const [originalData, setOriginalData] = useState<any>(null)
   const [isKbModalOpen, setIsKbModalOpen] = useState(false)
@@ -888,6 +889,39 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
     }
   }
 
+  const handleOptimizeInstructions = async () => {
+    if (!instructions.trim()) {
+      toast.error(t("builds.editor.validation.instructionsRequired"))
+      return
+    }
+
+    setIsOptimizing(true)
+    try {
+      const response = await apiRequest(`${getApiUrl()}/api/agents/optimize-instructions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          instructions,
+          model_id: modelConfig.general
+        }),
+      })
+
+      if (response.ok) {
+        const data = await response.json()
+        setInstructions(data.optimized_instructions)
+        toast.success(t("builds.configForm.instructions.optimizeSuccess"))
+      } else {
+        const error = await response.json()
+        toast.error(error.detail || t("builds.configForm.instructions.optimizeError"))
+      }
+    } catch (error) {
+      console.error("Failed to optimize instructions:", error)
+      toast.error(t("builds.configForm.instructions.optimizeError"))
+    } finally {
+      setIsOptimizing(false)
+    }
+  }
+
   const LeftPanel = (
     <div className="p-6 space-y-8 min-h-full bg-card/50">
       <div className="space-y-6">
@@ -943,15 +977,32 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
 
         {/* Instructions */}
         <div className="space-y-2">
-          <Label htmlFor="instructions">
-            {t("builds.configForm.instructions.label")} <span className="text-destructive">*</span>
-          </Label>
+          <div className="flex items-center justify-between">
+            <Label htmlFor="instructions">
+              {t("builds.configForm.instructions.label")} <span className="text-destructive">*</span>
+            </Label>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 text-xs text-muted-foreground hover:text-primary"
+              onClick={handleOptimizeInstructions}
+              disabled={isOptimizing || !instructions.trim()}
+            >
+              {isOptimizing ? (
+                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Sparkles className="mr-1.5 h-3.5 w-3.5" />
+              )}
+              {isOptimizing ? t("builds.configForm.instructions.optimizing") : t("builds.configForm.instructions.optimize")}
+            </Button>
+          </div>
           <Textarea
             id="instructions"
             placeholder={t("builds.configForm.instructions.placeholder")}
             className="min-h-[150px] font-mono text-sm"
             value={instructions}
             onChange={(e) => setInstructions(e.target.value)}
+            disabled={isOptimizing}
           />
         </div>
 

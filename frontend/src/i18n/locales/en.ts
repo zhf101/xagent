@@ -1592,6 +1592,10 @@ Build when you need.`
       instructions: {
         label: "Instructions",
         placeholder: "System instructions for the agent...",
+        optimize: "Optimize Instructions",
+        optimizing: "Optimizing...",
+        optimizeError: "Failed to optimize instructions",
+        optimizeSuccess: "Instructions optimized successfully",
       },
       executionMode: {
         label: "Execution Mode",

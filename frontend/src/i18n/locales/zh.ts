@@ -1592,6 +1592,10 @@ Build when you need.`
       instructions: {
         label: "指令",
         placeholder: "Agent 的系统指令...",
+        optimize: "优化指令",
+        optimizing: "优化中...",
+        optimizeError: "优化指令失败",
+        optimizeSuccess: "优化指令成功",
       },
       executionMode: {
         label: "执行模式",
