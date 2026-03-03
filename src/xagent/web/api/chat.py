@@ -561,7 +561,7 @@ class AgentServiceManager:
                         workspace_config=None,
                         include_mcp_tools=False,
                         task_id=None,
-                        browser_tools_enabled=False,
+                        browser_tools_enabled=True,
                         allowed_collections=agent_config.get("knowledge_bases"),
                         allowed_skills=agent_config.get("skills"),
                     )

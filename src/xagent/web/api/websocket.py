@@ -1902,7 +1902,7 @@ async def handle_build_preview_execution(
                 workspace_config=None,
                 include_mcp_tools=False,
                 task_id=None,
-                browser_tools_enabled=False,
+                browser_tools_enabled=True,
             )
 
             # Collect tools by category (async)
