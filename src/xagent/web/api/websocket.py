@@ -1918,17 +1918,18 @@ async def handle_build_preview_execution(
             )
             return
 
+        # Define MinimalRequest for tool config
+        class MinimalRequest:
+            def __init__(self, user_id: int) -> None:
+                self.user: Any = type("obj", (), {"id": user_id})()
+                self.credentials: Any = None
+
         # Filter tools by category - use tool metadata
         # Note: tool names are stable, defined in code, no database storage needed
         allowed_tools = None
         if tool_categories:
             # Get all tools and filter by category using metadata
             from ...core.tools.adapters.vibe.factory import ToolFactory
-
-            class MinimalRequest:
-                def __init__(self, user_id: int) -> None:
-                    self.user: Any = type("obj", (), {"id": user_id})()
-                    self.credentials: Any = None
 
             temp_config = WebToolConfig(
                 db=db,
