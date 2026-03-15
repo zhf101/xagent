@@ -3,10 +3,20 @@
 import asyncio
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi import (
+    APIRouter,
+    Body,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    UploadFile,
+)
 from fastapi.responses import JSONResponse
 
 from ...core.tools.core.RAG_tools.core.schemas import (
@@ -719,6 +729,86 @@ async def delete_collection_api(
         )
 
 
+@kb_router.post(
+    "/collections/{collection_name}/documents/check",
+)
+async def check_documents_exist_api(
+    collection_name: str,
+    body: Dict[str, Any] = Body(
+        ..., description="JSON body with 'filenames': list of filename strings"
+    ),
+    _user: User = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """Check which of the given filenames already exist in the collection.
+
+    Used by the frontend to show "file already exists, re-upload?" before ingest.
+    Duplicate is determined by: same collection + document with same source_path basename.
+
+    For duplicate check we always filter by current user's documents only (including
+    for admins), so "already exists" matches what will be overwritten on re-upload.
+    """
+    try:
+        from ...core.tools.core.RAG_tools.LanceDB.schema_manager import (
+            ensure_documents_table,
+        )
+        from ...core.tools.core.RAG_tools.utils.lancedb_query_utils import query_to_list
+        from ...core.tools.core.RAG_tools.utils.string_utils import (
+            build_lancedb_filter_expression,
+        )
+        from ...core.tools.core.RAG_tools.utils.user_permissions import UserPermissions
+        from ...providers.vector_store.lancedb import get_connection_from_env
+
+        filenames = body.get("filenames")
+        if not isinstance(filenames, list):
+            raise HTTPException(
+                status_code=422,
+                detail="Request body must contain 'filenames' as a list of strings",
+            )
+        if not all(isinstance(f, str) for f in filenames):
+            raise HTTPException(
+                status_code=422,
+                detail="All 'filenames' elements must be strings",
+            )
+        requested = {f.strip() for f in filenames if f and f.strip()}
+        if not requested:
+            return {"existing_filenames": []}
+
+        conn = get_connection_from_env()
+        ensure_documents_table(conn)
+        table = conn.open_table("documents")
+
+        base_filter = build_lancedb_filter_expression({"collection": collection_name})
+        # Use own-files-only filter even for admins so duplicate check matches re-upload behavior
+        user_filter = UserPermissions.get_user_filter(int(_user.id), is_admin=False)
+        combined_filter = (
+            f"({base_filter}) and ({user_filter})"
+            if user_filter and base_filter
+            else (user_filter or base_filter)
+        )
+        MAX_SEARCH_RESULTS = 10000
+        records = query_to_list(
+            table.search().where(combined_filter).limit(MAX_SEARCH_RESULTS)
+        )
+
+        existing_basenames = set()
+        for record in records:
+            sp = record.get("source_path")
+            if sp:
+                existing_basenames.add(os.path.basename(str(sp)))
+
+        existing_filenames = sorted(requested & existing_basenames)
+        return {"existing_filenames": existing_filenames}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to check documents exist: %s", e)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to check documents: {str(e)}",
+        ) from e
+
+
 @kb_router.delete(
     "/collections/{collection_name}/documents/{filename}",
 )
@@ -742,8 +832,6 @@ async def delete_document_api(
         use, consider using doc_id directly or adding a filename index column.
     """
     try:
-        import os
-
         from ...core.tools.core.RAG_tools.LanceDB.schema_manager import (
             ensure_documents_table,
         )

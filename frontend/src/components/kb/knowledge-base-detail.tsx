@@ -92,6 +92,8 @@ export function KnowledgeBaseDetailContent({ collectionName }: { collectionName:
   const [isAddSourceOpen, setIsAddSourceOpen] = useState(false)
   const [activeAddSourceMode, setActiveAddSourceMode] = useState<"web" | "file" | null>(null)
   const [isDragging, setIsDragging] = useState(false)
+  const [reuploadDialogOpen, setReuploadDialogOpen] = useState(false)
+  const [existingFilenamesForReupload, setExistingFilenamesForReupload] = useState<string[]>([])
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault()
@@ -302,11 +304,8 @@ export function KnowledgeBaseDetailContent({ collectionName }: { collectionName:
     }
   }
 
-  const handleUpload = async () => {
-    if (selectedFiles.length === 0) {
-      toast.error(t("kb.detail.errors.pleaseSelectFiles"))
-      return
-    }
+  const doUpload = async () => {
+    if (selectedFiles.length === 0) return
 
     setIsUploading(true)
     setUploadProgress(0)
@@ -344,11 +343,63 @@ export function KnowledgeBaseDetailContent({ collectionName }: { collectionName:
       setSelectedFiles([])
       setUploadProgress(0)
       setIsAddSourceOpen(false)
+      closeReuploadDialog()
     } catch (err) {
       toast.error(err instanceof Error ? err.message : t("kb.detail.errors.uploadFailedGeneric"))
     } finally {
       setIsUploading(false)
     }
+  }
+
+  const handleUpload = async () => {
+    if (selectedFiles.length === 0) {
+      toast.error(t("kb.detail.errors.pleaseSelectFiles"))
+      return
+    }
+
+    // Race between check and upload (TOCTOU): another user could upload the same file
+    // after we check. This is acceptable because the backend uses deterministic doc_id
+    // and merge_insert, so re-upload overwrites the same record and remains idempotent.
+    try {
+      const checkRes = await apiRequest(
+        `${getApiUrl()}/api/kb/collections/${encodeURIComponent(collectionName)}/documents/check`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            filenames: selectedFiles.map((f) => f.name),
+          }),
+        }
+      )
+      if (!checkRes.ok) {
+        console.warn("Check API failed, proceeding with upload:", checkRes.status)
+        toast.warning(t("kb.dialog.fileUpload.checkFailedProceeding") || "Could not check for duplicates, uploading directly.")
+        await doUpload()
+        return
+      }
+      const checkData = await checkRes.json()
+      const existing: string[] = checkData.existing_filenames ?? []
+      if (existing.length > 0) {
+        setExistingFilenamesForReupload(existing)
+        setReuploadDialogOpen(true)
+        return
+      }
+      await doUpload()
+    } catch (error) {
+      console.warn("Check API failed, proceeding with upload:", error)
+      toast.warning(t("kb.dialog.fileUpload.checkFailedProceeding") || "Could not check for duplicates, uploading directly.")
+      await doUpload()
+    }
+  }
+
+  const closeReuploadDialog = () => {
+    setReuploadDialogOpen(false)
+    setExistingFilenamesForReupload([])
+  }
+
+  const handleConfirmReupload = () => {
+    closeReuploadDialog()
+    doUpload()
   }
 
   const handleWebIngest = async () => {
@@ -884,6 +935,45 @@ export function KnowledgeBaseDetailContent({ collectionName }: { collectionName:
             </div>
           </TabsContent>
         </Tabs>
+
+        {/* Re-upload confirm: file(s) already exist */}
+        <Dialog open={reuploadDialogOpen} onOpenChange={(open) => {
+          if (!open) closeReuploadDialog()
+        }}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>{t("kb.dialog.fileUpload.reuploadConfirmTitle")}</DialogTitle>
+              <DialogDescription>
+                {t("kb.dialog.fileUpload.reuploadConfirmMessage")}
+              </DialogDescription>
+            </DialogHeader>
+            <div className="py-2">
+              <ul className="list-disc list-inside text-sm text-muted-foreground space-y-1">
+                {existingFilenamesForReupload.map((name) => (
+                  <li key={name} className="truncate" title={name}>{name}</li>
+                ))}
+              </ul>
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button
+                variant="outline"
+                onClick={closeReuploadDialog}
+              >
+                {t("kb.dialog.fileUpload.reuploadConfirmCancel")}
+              </Button>
+              <Button onClick={handleConfirmReupload} disabled={isUploading}>
+                {isUploading ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    {t("kb.detail.files.uploading")}
+                  </>
+                ) : (
+                  t("kb.dialog.fileUpload.reuploadConfirmSubmit")
+                )}
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
 
         {/* Edit Collection Dialog */}
         <Dialog open={isEditDialogOpen} onOpenChange={setIsEditDialogOpen}>
