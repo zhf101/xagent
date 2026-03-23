@@ -11,6 +11,7 @@ from typing import Any, Dict, Optional
 from sqlalchemy.orm import Session
 
 from xagent.core.model.image.base import BaseImageModel
+from xagent.web.api.model import DBModel
 
 from ...core.model.chat.basic.base import BaseLLM
 from ...core.model.image.dashscope import DashScopeImageModel
@@ -443,6 +444,16 @@ def get_vision_model(db: Session, user_id: Optional[int] = None) -> Optional[Bas
         return None
 
 
+def _add_image_model_with_id(
+    models_dict: dict[str, Any], instance: Any, db_model: DBModel
+) -> None:
+    setattr(instance, "model_id", str(db_model.model_id))
+    models_dict[str(db_model.model_id)] = instance
+    logger.info(
+        f"Added image model: model_id={db_model.model_id}, model_name={db_model.model_name}"
+    )
+
+
 def get_image_models(db: Session, user_id: Optional[int] = None) -> Dict[str, Any]:
     """
     Get image models from database.
@@ -490,8 +501,7 @@ def get_image_models(db: Session, user_id: Optional[int] = None) -> Dict[str, An
                         base_url=base_url,
                         abilities=list(db_model.abilities or ["generate"]),  # pyright: ignore[reportArgumentType]
                     )
-                    image_models[str(db_model.model_name)] = image_model
-                    logger.info(f"Added image model: {db_model.model_name}")
+                    _add_image_model_with_id(image_models, image_model, db_model)
                 elif model_provider == "gemini":
                     image_model = GeminiImageModel(
                         model_name=str(db_model.model_name),
@@ -499,8 +509,7 @@ def get_image_models(db: Session, user_id: Optional[int] = None) -> Dict[str, An
                         base_url=base_url,
                         abilities=list(db_model.abilities or ["generate"]),  # pyright: ignore[reportArgumentType]
                     )
-                    image_models[str(db_model.model_name)] = image_model
-                    logger.info(f"Added image model: {db_model.model_name}")
+                    _add_image_model_with_id(image_models, image_model, db_model)
                 elif model_provider == "openai":
                     image_model = OpenAIImageModel(
                         model_name=str(db_model.model_name),
@@ -508,8 +517,7 @@ def get_image_models(db: Session, user_id: Optional[int] = None) -> Dict[str, An
                         base_url=base_url,
                         abilities=list(db_model.abilities or ["generate", "edit"]),  # pyright: ignore[reportArgumentType]
                     )
-                    image_models[str(db_model.model_name)] = image_model
-                    logger.info(f"Added image model: {db_model.model_name}")
+                    _add_image_model_with_id(image_models, image_model, db_model)
                 elif model_provider == "xinference":
                     image_model = XinferenceImageModel(
                         model_name=str(db_model.model_name),
@@ -517,8 +525,7 @@ def get_image_models(db: Session, user_id: Optional[int] = None) -> Dict[str, An
                         base_url=base_url,
                         abilities=list(db_model.abilities or ["generate", "edit"]),  # pyright: ignore[reportArgumentType]
                     )
-                    image_models[str(db_model.model_name)] = image_model
-                    logger.info(f"Added image model: {db_model.model_name}")
+                    _add_image_model_with_id(image_models, image_model, db_model)
             except Exception as e:
                 logger.warning(
                     f"Failed to create image model for {db_model.model_name}: {e}"
@@ -598,7 +605,9 @@ def get_default_image_generate_model(
 
                 if image_default and image_default.model:
                     try:
-                        return get_image_model_instance(image_default.model)
+                        instance = get_image_model_instance(image_default.model)
+                        setattr(instance, "model_id", str(image_default.model.model_id))
+                        return instance
                     except Exception as e:
                         logger.warning(f"Failed to create image model instance: {e}")
 
@@ -621,7 +630,13 @@ def get_default_image_generate_model(
 
             if admin_image_defaults:
                 try:
-                    return get_image_model_instance(admin_image_defaults[0].model)
+                    instance = get_image_model_instance(admin_image_defaults[0].model)
+                    setattr(
+                        instance,
+                        "model_id",
+                        str(admin_image_defaults[0].model.model_id),
+                    )
+                    return instance
                 except Exception as e:
                     logger.warning(f"Failed to create image model instance: {e}")
 
@@ -641,7 +656,11 @@ def get_default_image_generate_model(
 
             if shared_defaults:
                 try:
-                    return get_image_model_instance(shared_defaults[0].model)
+                    instance = get_image_model_instance(shared_defaults[0].model)
+                    setattr(
+                        instance, "model_id", str(shared_defaults[0].model.model_id)
+                    )
+                    return instance
                 except Exception as e:
                     logger.warning(f"Failed to create image model instance: {e}")
 
@@ -694,7 +713,9 @@ def get_default_image_edit_model(
 
                 if image_default and image_default.model:
                     try:
-                        return get_image_model_instance(image_default.model)
+                        instance = get_image_model_instance(image_default.model)
+                        setattr(instance, "model_id", str(image_default.model.model_id))
+                        return instance
                     except Exception as e:
                         logger.warning(f"Failed to create image model instance: {e}")
 
@@ -715,7 +736,13 @@ def get_default_image_edit_model(
 
             if admin_image_defaults:
                 try:
-                    return get_image_model_instance(admin_image_defaults[0].model)
+                    instance = get_image_model_instance(admin_image_defaults[0].model)
+                    setattr(
+                        instance,
+                        "model_id",
+                        str(admin_image_defaults[0].model.model_id),
+                    )
+                    return instance
                 except Exception as e:
                     logger.warning(f"Failed to create image model instance: {e}")
 
@@ -733,7 +760,11 @@ def get_default_image_edit_model(
 
             if shared_defaults:
                 try:
-                    return get_image_model_instance(shared_defaults[0].model)
+                    instance = get_image_model_instance(shared_defaults[0].model)
+                    setattr(
+                        instance, "model_id", str(shared_defaults[0].model.model_id)
+                    )
+                    return instance
                 except Exception as e:
                     logger.warning(f"Failed to create image model instance: {e}")
 

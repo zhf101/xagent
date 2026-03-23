@@ -35,6 +35,34 @@ from ..utils.db_timezone import safe_timestamp_to_unix
 logger = logging.getLogger(__name__)
 
 
+def _resolve_task_llm_ids(
+    task: Any, db: Session
+) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
+    """Best-effort resolve internal model_id identifiers for a task."""
+    from ..models.model import Model as DBModel
+    from ..services.llm_utils import CoreStorage, make_normalize_model_id
+
+    core_storage = CoreStorage(db, DBModel)
+
+    _normalize = make_normalize_model_id(core_storage)
+
+    return (
+        _normalize(getattr(task, "model_id", None), getattr(task, "model_name", None)),
+        _normalize(
+            getattr(task, "small_fast_model_id", None),
+            getattr(task, "small_fast_model_name", None),
+        ),
+        _normalize(
+            getattr(task, "visual_model_id", None),
+            getattr(task, "visual_model_name", None),
+        ),
+        _normalize(
+            getattr(task, "compact_model_id", None),
+            getattr(task, "compact_model_name", None),
+        ),
+    )
+
+
 def normalize_filename(filename: str) -> str:
     """
     Normalize filename by removing special characters and spaces.
@@ -1205,6 +1233,13 @@ async def handle_chat_message(
                             if agent:
                                 is_dag = agent.execution_mode == "graph"
 
+                        (
+                            model_id,
+                            small_fast_model_id,
+                            visual_model_id,
+                            compact_model_id,
+                        ) = _resolve_task_llm_ids(task, db)
+
                         task_event = create_stream_event(
                             "task_info",
                             task_id,
@@ -1213,8 +1248,14 @@ async def handle_chat_message(
                                 "title": task.title,
                                 "description": task.description,
                                 "status": task.status.value,
+                                "model_id": model_id,
+                                "small_fast_model_id": small_fast_model_id,
+                                "visual_model_id": visual_model_id,
+                                "compact_model_id": compact_model_id,
                                 "model_name": task.model_name,
                                 "small_fast_model_name": task.small_fast_model_name,
+                                "visual_model_name": task.visual_model_name,
+                                "compact_model_name": task.compact_model_name,
                                 "vibe_mode": task.vibe_mode,
                                 "agent_id": task.agent_id,
                                 "is_dag": is_dag,
@@ -1320,6 +1361,13 @@ async def handle_chat_message(
                         task.status = TaskStatus.RUNNING
                         db.commit()
 
+                        (
+                            model_id,
+                            small_fast_model_id,
+                            visual_model_id,
+                            compact_model_id,
+                        ) = _resolve_task_llm_ids(task, db)
+
                         # Send task status update event
                         task_event = create_stream_event(
                             "task_info",
@@ -1329,8 +1377,14 @@ async def handle_chat_message(
                                 "title": task.title,
                                 "description": task.description,
                                 "status": task.status.value,
+                                "model_id": model_id,
+                                "small_fast_model_id": small_fast_model_id,
+                                "visual_model_id": visual_model_id,
+                                "compact_model_id": compact_model_id,
                                 "model_name": task.model_name,
                                 "small_fast_model_name": task.small_fast_model_name,
+                                "visual_model_name": task.visual_model_name,
+                                "compact_model_name": task.compact_model_name,
                                 "vibe_mode": task.vibe_mode,
                                 "created_at": safe_timestamp_to_unix(task.created_at)
                                 if task.created_at
@@ -1415,6 +1469,13 @@ async def handle_chat_message(
                             if agent:
                                 is_dag = agent.execution_mode == "graph"
 
+                        (
+                            model_id,
+                            small_fast_model_id,
+                            visual_model_id,
+                            compact_model_id,
+                        ) = _resolve_task_llm_ids(task, db)
+
                         task_event = create_stream_event(
                             "task_info",
                             task_id,
@@ -1423,8 +1484,14 @@ async def handle_chat_message(
                                 "title": task.title,
                                 "description": task.description,
                                 "status": task.status.value,
+                                "model_id": model_id,
+                                "small_fast_model_id": small_fast_model_id,
+                                "visual_model_id": visual_model_id,
+                                "compact_model_id": compact_model_id,
                                 "model_name": task.model_name,
                                 "small_fast_model_name": task.small_fast_model_name,
+                                "visual_model_name": task.visual_model_name,
+                                "compact_model_name": task.compact_model_name,
                                 "vibe_mode": task.vibe_mode,
                                 "agent_id": task.agent_id,
                                 "is_dag": is_dag,
@@ -1571,6 +1638,13 @@ async def handle_execute_task(
             task.status = TaskStatus.RUNNING
             db.commit()
 
+            (
+                model_id,
+                small_fast_model_id,
+                visual_model_id,
+                compact_model_id,
+            ) = _resolve_task_llm_ids(task, db)
+
             # Send task info event to update frontend state
             task_event = create_stream_event(
                 "task_info",
@@ -1580,8 +1654,14 @@ async def handle_execute_task(
                     "title": task.title,
                     "description": task.description,
                     "status": task.status.value,
+                    "model_id": model_id,
+                    "small_fast_model_id": small_fast_model_id,
+                    "visual_model_id": visual_model_id,
+                    "compact_model_id": compact_model_id,
                     "model_name": task.model_name,
                     "small_fast_model_name": task.small_fast_model_name,
+                    "visual_model_name": task.visual_model_name,
+                    "compact_model_name": task.compact_model_name,
                     "vibe_mode": task.vibe_mode,
                     "created_at": safe_timestamp_to_unix(task.created_at)
                     if task.created_at
@@ -1750,6 +1830,13 @@ async def send_historical_data_as_stream(
                 if agent:
                     is_dag = agent.execution_mode == "graph"
 
+            (
+                model_id,
+                small_fast_model_id,
+                visual_model_id,
+                compact_model_id,
+            ) = _resolve_task_llm_ids(task, db)
+
             # Send task basic info
             task_event = create_stream_event(
                 "task_info",
@@ -1759,8 +1846,14 @@ async def send_historical_data_as_stream(
                     "title": task.title,
                     "description": task.description,
                     "status": task.status.value,
+                    "model_id": model_id,
+                    "small_fast_model_id": small_fast_model_id,
+                    "visual_model_id": visual_model_id,
+                    "compact_model_id": compact_model_id,
                     "model_name": task.model_name,
                     "small_fast_model_name": task.small_fast_model_name,
+                    "visual_model_name": task.visual_model_name,
+                    "compact_model_name": task.compact_model_name,
                     "vibe_mode": task.vibe_mode,
                     "agent_id": task.agent_id,
                     "is_dag": is_dag,
