@@ -1,8 +1,14 @@
 import { useState, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { Paperclip, X, File as FileIcon, Sparkles, Pause, Play, Loader2, ArrowUp, Globe } from "lucide-react";
+import { Paperclip, X, File as FileIcon, Sparkles, Pause, Play, Loader2, ArrowUp, Globe, Database, BookOpen, Bot } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { cn, getApiUrl } from "@/lib/utils";
 import { useI18n } from "@/contexts/i18n-context";
 import { ConfigDialog } from "@/components/config-dialog";
@@ -49,6 +55,10 @@ interface ChatInputProps {
   };
   hideConfig?: boolean;
   readOnlyConfig?: boolean;
+  domainMode?: "data_generation" | "data_consultation" | "general";
+  onDomainModeChange?: (
+    mode: "data_generation" | "data_consultation" | "general"
+  ) => void;
 }
 
 export function ChatInput({
@@ -63,7 +73,9 @@ export function ChatInput({
   onResume,
   taskConfig,
   hideConfig = false,
-  readOnlyConfig = false
+  readOnlyConfig = false,
+  domainMode = "general",
+  onDomainModeChange,
 }: ChatInputProps) {
   const router = useRouter();
   const [internalMessage, setInternalMessage] = useState("");
@@ -344,8 +356,14 @@ export function ChatInput({
       const trimmed = message.trim();
       const messageToSend = trimmed;
 
-      // Always send task mode config
-      const configToSend = { ...agentConfig, vibeMode: { mode: "task" } };
+      // Always send task mode config, and persist task entry domain mode into task/create.
+      const configToSend = {
+        ...agentConfig,
+        vibeMode: { mode: "task" },
+        agentConfig: {
+          domain_mode: domainMode,
+        },
+      };
 
       await onSend(messageToSend, configToSend);
 
@@ -550,13 +568,13 @@ export function ChatInput({
           onFocus={() => setIsFocused(true)}
           onBlur={() => setIsFocused(false)}
           placeholder={t("chatPage.input.placeholder")}
-          className="min-h-[130px] max-h-[300px] resize-none border-0 bg-transparent dark:bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0 pb-14 text-[15px] placeholder:text-muted-foreground/60"
+          className="min-h-[130px] max-h-[300px] resize-none border-0 bg-transparent dark:bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0 pb-24 text-[15px] placeholder:text-muted-foreground/60"
           disabled={isLoading || !!downloadingFile}
         />
 
         {/* Bottom toolbar */}
-        <div className="absolute bottom-0 left-0 right-0 flex items-center justify-between px-4 py-3 bg-card">
-          <div className="flex items-center gap-2">
+        <div className="absolute bottom-0 left-0 right-0 flex items-end justify-between gap-3 px-4 py-3 bg-card">
+          <div className="flex flex-wrap items-center gap-2 min-w-0">
             {/* Settings button - left of upload */}
             {!hideConfig && (
               <>
@@ -617,9 +635,56 @@ export function ChatInput({
             >
               <Paperclip className="h-4 w-4" />
             </Button>
+            {onDomainModeChange && (
+              <TooltipProvider>
+              <div className="flex flex-wrap items-center gap-2">
+                {[
+                  {
+                    value: "data_generation",
+                    label: "造数",
+                    icon: Database,
+                  },
+                  {
+                    value: "data_consultation",
+                    label: "知识问答",
+                    icon: BookOpen,
+                  },
+                  {
+                    value: "general",
+                    label: "通用",
+                    icon: Bot,
+                  },
+                ].map((item) => {
+                  const isActive = domainMode === item.value;
+                  return (
+                    <Tooltip key={item.value} delayDuration={250}>
+                      <TooltipTrigger asChild>
+                        <button
+                          type="button"
+                          onClick={() => onDomainModeChange(item.value as typeof domainMode)}
+                          aria-label={item.label}
+                          className={cn(
+                            "flex h-9 w-9 items-center justify-center rounded-full transition-colors",
+                            isActive
+                              ? "bg-primary/10 text-primary ring-1 ring-primary/20"
+                              : "text-muted-foreground hover:bg-secondary/80 hover:text-foreground"
+                          )}
+                        >
+                          <item.icon className="h-4 w-4" />
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent side="top">
+                        <p>{item.label}</p>
+                      </TooltipContent>
+                    </Tooltip>
+                  );
+                })}
+              </div>
+              </TooltipProvider>
+            )}
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 shrink-0">
             {taskStatus === 'running' ? (
               <Button
                 type="button"

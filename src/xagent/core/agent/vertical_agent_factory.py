@@ -137,11 +137,11 @@ class VerticalAgentFactory:
     @classmethod
     def _register_default_agents(cls) -> None:
         """Register default vertical agents."""
-        # No default vertical agents registered yet
-        # To add a new vertical agent:
-        # 1. Create agent class inheriting from VerticalAgent
-        # 2. Import and register it here
-        pass
+        from ...datamakepool.agents.orchestrator import DatamakepoolOrchestratorAgent
+
+        cls.register_vertical_agent(
+            "datamakepool_orchestrator", DatamakepoolOrchestratorAgent
+        )
 
 
 def create_agent(

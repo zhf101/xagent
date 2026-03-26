@@ -12,6 +12,9 @@ from xagent.core.memory.core import MemoryNote
 from ..auth_dependencies import get_current_user
 from ..dynamic_memory_store import get_memory_store_manager
 from ..models.user import User
+from ..services.task_prompt_recommendation_refresh import (
+    schedule_user_task_prompt_refresh,
+)
 from ..user_isolated_memory import UserContext
 
 
@@ -191,6 +194,7 @@ class MemoryManagementRouter:
                 with UserContext(int(user.id)):
                     response = self.memory_store.delete(memory_id)
                     if response.success:
+                        schedule_user_task_prompt_refresh(int(user.id), force=True)
                         return {
                             "success": True,
                             "message": "Memory deleted successfully",
@@ -254,6 +258,7 @@ class MemoryManagementRouter:
                     # Update in store
                     response = self.memory_store.update(updated_memory)
                     if response.success:
+                        schedule_user_task_prompt_refresh(int(user.id), force=True)
                         return {
                             "success": True,
                             "message": "Memory updated successfully",
@@ -306,6 +311,7 @@ class MemoryManagementRouter:
 
                     response = self.memory_store.add(memory_note)
                     if response.success:
+                        schedule_user_task_prompt_refresh(int(user.id), force=True)
                         return {
                             "success": True,
                             "memory_id": response.memory_id,

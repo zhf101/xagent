@@ -35,6 +35,7 @@ const zh = {
     models: "模型",
     files: "文件",
     memory: "记忆",
+    dataSources: "数据源",
     monitoring: "监控",
     knowledgeBase: "知识库",
     knowledgeBaseDetail: "知识库详情",
@@ -61,25 +62,71 @@ const zh = {
       startWith: "你可以从这里开始",
     },
     cards: {
-      createPPT: {
-        title: "根据报告生成一个 PPT",
-        description: "销售报告，幻灯片",
-        prompt: "根据报告生成一个 PPT"
+      general: {
+        createPPT: {
+          title: "根据报告生成一个 PPT",
+          description: "销售报告，幻灯片",
+          prompt: "根据报告生成一个 PPT"
+        },
+        dataAnalysis: {
+          title: "分析数据集",
+          description: "趋势，反馈",
+          prompt: "分析数据集"
+        },
+        designPoster: {
+          title: "设计一张营销海报",
+          description: "社交媒体素材",
+          prompt: "设计一张营销海报"
+        },
+        automatic: {
+          title: "自动化一个工作流程",
+          description: "自定义工作流",
+          prompt: "自动化一个工作流程"
+        }
       },
-      dataAnalysis: {
-        title: "分析数据集",
-        description: "趋势，反馈",
-        prompt: "分析数据集"
+      dataGeneration: {
+        orders: {
+          title: "生成一批用户订单测试数据",
+          description: "订单，用户，商品",
+          prompt: "生成一批用户订单测试数据"
+        },
+        transactions: {
+          title: "生成按时间分布的交易流水",
+          description: "时间序列，交易明细",
+          prompt: "生成按时间分布的交易流水"
+        },
+        edgeCases: {
+          title: "生成异常场景测试样本",
+          description: "边界值，异常数据",
+          prompt: "生成异常场景测试样本"
+        },
+        multiTable: {
+          title: "生成多表关联演示数据",
+          description: "主从表，关联关系",
+          prompt: "生成多表关联演示数据"
+        }
       },
-      designPoster: {
-        title: "设计一张营销海报",
-        description: "社交媒体素材",
-        prompt: "设计一张营销海报"
-      },
-      automatic: {
-        title: "自动化一个工作流程",
-        description: "自定义工作流",
-        prompt: "自动化一个工作流程"
+      dataConsultation: {
+        templateUsage: {
+          title: "某个造数模板应该怎么用",
+          description: "模板说明，参数解释",
+          prompt: "某个造数模板应该怎么用"
+        },
+        assetChoice: {
+          title: "这个场景该选哪类资产",
+          description: "资产选择，执行策略",
+          prompt: "这个场景该选哪类资产"
+        },
+        assetDifference: {
+          title: "SQL 资产和 HTTP 资产有什么区别",
+          description: "资产类型，对比说明",
+          prompt: "SQL 资产和 HTTP 资产有什么区别"
+        },
+        failureReason: {
+          title: "这次执行失败可能是什么原因",
+          description: "失败分析，排查建议",
+          prompt: "这次执行失败可能是什么原因"
+        }
       }
     },
     input: {
@@ -1129,6 +1176,89 @@ Build when you need.`
       description: "选择适合您需求的 Agent，立即开始智能工作流程",
       tryText2SQL: "体验 Text2SQL",
       createCustomAgent: "创建自定义 Agent",
+    },
+  },
+  dataSources: {
+    page: {
+      eyebrow: "统一数据源配置",
+      title: "数据源配置",
+      description: "集中管理 Text2SQL、造数执行和后续 SQL Brain 共用的数据源连接。页面会根据后端数据库模板展示连接示例、驱动要求和当前支持深度。",
+    },
+    actions: {
+      add: "新增数据源",
+      edit: "编辑",
+      delete: "删除",
+      test: "测试连接",
+      refresh: "刷新",
+    },
+    list: {
+      title: "已配置数据源",
+      description: "选择已有数据源查看详情，或新建连接。",
+      searchPlaceholder: "搜索名称、类型或连接地址...",
+    },
+    stats: {
+      total: "数据源总数",
+      connected: "当前已连通",
+      readOnly: "只读连接",
+    },
+    status: {
+      connected: "已连接",
+      disconnected: "未连接",
+      error: "错误",
+    },
+    fields: {
+      type: "数据库类型",
+      mode: "连接模式",
+      readOnly: "只读",
+      readWrite: "读写",
+      lastConnected: "最近连通时间",
+      objectCount: "对象数 {count}",
+      objectCountLabel: "Schema 对象数",
+      lastError: "最近错误",
+    },
+    template: {
+      title: "连接模板",
+      description: "当前数据源对应的连接方式、驱动依赖和支持深度。",
+      dialogDescription: "根据数据库类型自动展示连接样例与驱动要求。",
+      aliases: "别名",
+      drivers: "依赖驱动",
+      notes: "使用说明",
+      noExtraDriver: "无需额外驱动",
+    },
+    dialog: {
+      createTitle: "新增数据源",
+      editTitle: "编辑数据源",
+      description: "填写连接名称、数据库类型和连接串。建议优先使用只读模式。",
+    },
+    form: {
+      name: "数据源名称",
+      namePlaceholder: "例如：CRM 主库 / ClickHouse 报表库",
+      type: "数据库类型",
+      typePlaceholder: "请选择数据库类型",
+      url: "连接字符串",
+      urlPlaceholder: "请输入数据库连接字符串",
+      readOnly: "只读模式",
+      readOnlyHint: "推荐默认开启。涉及写操作的场景再单独关闭。",
+    },
+    states: {
+      loading: "正在加载数据源列表...",
+      empty: "还没有任何数据源，先新建一个连接。",
+      noSelectionTitle: "尚未选择数据源",
+      noSelectionDesc: "左侧选择一个已配置数据源，或直接新建连接。",
+    },
+    messages: {
+      loadFailed: "加载数据源失败",
+      fillRequired: "请填写名称、数据库类型和连接字符串",
+      saveFailed: "保存数据源失败",
+      createSuccess: "数据源创建成功",
+      updateSuccess: "数据源更新成功",
+      deleteFailed: "删除数据源失败",
+      deleteSuccess: "数据源删除成功",
+      deleteConfirm: "确定要删除数据源“{name}”吗？",
+      testFailed: "连接测试失败",
+      testSuccess: "连接测试成功",
+      connectionHealthy: "最近一次连接测试通过",
+      connectionHealthyDesc: "当前数据源可以被系统识别并读取 schema 信息。",
     },
   },
   models: {

@@ -19,6 +19,7 @@ from .api.memory import MemoryManagementRouter
 from .api.model import model_router
 from .api.monitor import monitor_router
 from .api.progress_ws import progress_ws_router
+from .api.recommendations import recommendation_router
 from .api.skills import router as skills_router
 from .api.system import system_router
 from .api.templates import router as templates_router
@@ -137,6 +138,7 @@ app.include_router(model_router)
 app.include_router(ws_router)
 app.include_router(monitor_router)
 app.include_router(progress_ws_router)
+app.include_router(recommendation_router)
 app.include_router(memory_router)
 app.include_router(mcp_router)
 app.include_router(text2sql_router)

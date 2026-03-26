@@ -26,6 +26,10 @@ interface ChatStartScreenProps {
   showModeToggle?: boolean;
   readOnlyConfig?: boolean;
   taskConfig?: any;
+  domainMode?: "data_generation" | "data_consultation" | "general";
+  onDomainModeChange?: (
+    mode: "data_generation" | "data_consultation" | "general"
+  ) => void;
 }
 
 export function ChatStartScreen({
@@ -41,7 +45,9 @@ export function ChatStartScreen({
   onFilesChange,
   showModeToggle = false,
   readOnlyConfig = false,
-  taskConfig
+  taskConfig,
+  domainMode = "general",
+  onDomainModeChange,
 }: ChatStartScreenProps) {
   const { t } = useI18n();
 
@@ -72,6 +78,8 @@ export function ChatStartScreen({
             onInputChange={onInputChange}
             readOnlyConfig={readOnlyConfig}
             taskConfig={taskConfig}
+            domainMode={domainMode}
+            onDomainModeChange={onDomainModeChange}
           />
           <div className="text-xs text-muted-foreground/60 text-center">
             {t("chatPage.input.hintEnter")} · {t("chatPage.input.hintAt")}

@@ -1571,6 +1571,18 @@ async def create_task(
         task_agent_config: Dict[str, Any] = {}
         if isinstance(request.agent_config, dict):
             task_agent_config.update(request.agent_config)
+        domain_mode = task_agent_config.get("domain_mode")
+        if isinstance(domain_mode, str):
+            normalized_domain_mode = domain_mode.strip().lower()
+            allowed_domain_modes = {
+                "data_generation",
+                "data_consultation",
+                "general",
+            }
+            if normalized_domain_mode in allowed_domain_modes:
+                task_agent_config["domain_mode"] = normalized_domain_mode
+            else:
+                task_agent_config.pop("domain_mode", None)
         if selected_file_ids:
             task_agent_config["selected_file_ids"] = selected_file_ids
 

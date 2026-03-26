@@ -37,11 +37,13 @@ class SkillParser:
         if not skill_md.exists():
             raise ValueError(f"SKILL.md not found in {skill_dir}")
 
-        content = skill_md.read_text()
+        content = SkillParser._read_text_file(skill_md)
 
         # Try to read template.md
         template_md = skill_dir / "template.md"
-        template_content = template_md.read_text() if template_md.exists() else ""
+        template_content = (
+            SkillParser._read_text_file(template_md) if template_md.exists() else ""
+        )
 
         return {
             "name": skill_dir.name,
@@ -56,6 +58,11 @@ class SkillParser:
         }
 
     @staticmethod
+    def _read_text_file(path: Path) -> str:
+        """Read skill files using a stable UTF-8-based encoding across platforms."""
+        return path.read_text(encoding="utf-8-sig")
+
+    @staticmethod
     def _extract_section(content: str, section_name: str) -> str:
         """Extract section content"""
         pattern = rf"## {section_name}\s*\n(.*?)(?=\n##|\Z)"
@@ -68,7 +75,7 @@ class SkillParser:
         files = []
         for file_path in skill_dir.rglob("*"):
             if file_path.is_file():
-                files.append(str(file_path.relative_to(skill_dir)))
+                files.append(file_path.relative_to(skill_dir).as_posix())
         return sorted(files)
 
     @staticmethod

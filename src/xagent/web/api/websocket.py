@@ -1613,7 +1613,7 @@ async def handle_execute_task(
 
         # Get database session
         from ..models.database import get_db
-        from ..models.task import Task, TaskStatus
+        from ..models.task import AgentType, Task, TaskStatus
         from ..services.task_execution_context_service import (
             load_task_execution_recovery_state,
         )
@@ -1679,20 +1679,20 @@ async def handle_execute_task(
 
             # DAG plan-execute also sends trace events, but may not forward in real-time
 
-            # Get agent and execute task
+            # Get execution gateway dependencies
             from .chat import get_agent_manager
+            from ...datamakepool.gateway import DatamakepoolTaskModeGateway
+            from ...datamakepool.interceptors import ApprovalGate
+            from ...datamakepool.orchestration import (
+                DatamakepoolExecutionPlanner,
+                TemplateRunExecutor,
+            )
+            from ...datamakepool.templates import TemplateService
+            from ..services.task_prompt_recommendation_refresh import (
+                schedule_user_task_prompt_refresh,
+            )
 
             agent_manager = get_agent_manager()
-            agent_service = await agent_manager.get_agent_for_task(
-                task_id, db, user=user
-            )
-            recovery_state = await load_task_execution_recovery_state(db, task_id)
-            agent_service.set_execution_context_messages(
-                recovery_state.get("messages", [])
-            )
-            agent_service.set_recovered_skill_context(
-                recovery_state.get("skill_context")
-            )
 
             # Set up user context
             with UserContext(user.id):
@@ -1704,6 +1704,116 @@ async def handle_execute_task(
                     task_context["process_description"] = task.process_description
                 if hasattr(task, "examples") and task.examples:
                     task_context["examples"] = task.examples
+
+                # Apply datamakepool task mode gateway before execution.
+                mode_decision = DatamakepoolTaskModeGateway.build_decision(
+                    task, task_context
+                )
+                task_context = mode_decision.execution_context
+                generation_system_short = None
+
+                # data_generation 先走模板匹配；命中后直接执行，不进入 agent。
+                if mode_decision.domain_mode == "data_generation":
+                    planner = DatamakepoolExecutionPlanner(TemplateService(db))
+                    planning_decision = planner.build_decision(str(task.description))
+                    params = planning_decision.params
+                    match_result = planning_decision.match_result
+                    generation_system_short = params.get("system_short")
+                    task_context["datamakepool_match_type"] = match_result.match_type
+                    task_context["datamakepool_execution_plan"] = (
+                        planning_decision.execution_plan
+                    )
+                    task_context["datamakepool_template_match"] = {
+                        "match_type": match_result.match_type,
+                        "coverage_score": match_result.coverage_score,
+                        "confidence": match_result.confidence,
+                        "covered_requirements": match_result.covered_requirements,
+                        "missing_requirements": match_result.missing_requirements,
+                    }
+                    if match_result.matched_template:
+                        task_context["datamakepool_template_match"]["matched_template"] = {
+                            "template_id": match_result.matched_template.template_id,
+                            "template_name": match_result.matched_template.template_name,
+                            "version": match_result.matched_template.version,
+                            "system_short": match_result.matched_template.system_short,
+                        }
+
+                    if planning_decision.execution_path == "template_direct" and match_result.matched_template:
+                        template_result = TemplateRunExecutor(db).execute_match(
+                            task_id=int(task_id),
+                            created_by=int(user.id),
+                            matched=match_result.matched_template,
+                            params=params,
+                        )
+                        task.status = TaskStatus.COMPLETED
+                        db.commit()
+                        schedule_user_task_prompt_refresh(int(user.id), force=True)
+
+                        await manager.broadcast_to_task(
+                            {
+                                "type": "task_completed",
+                                "task": {
+                                    "id": task.id,
+                                    "title": task.title,
+                                    "status": task.status.value,
+                                    "description": task.description,
+                                },
+                                "success": template_result.success,
+                                "result": template_result.output,
+                                "output": template_result.output,
+                                "metadata": template_result.metadata,
+                                "timestamp": datetime.now(timezone.utc).timestamp(),
+                            },
+                            task_id,
+                        )
+                        return
+
+                    if planning_decision.route_to_orchestrator:
+                        task.agent_type_enum = AgentType.DATAMAKEPOOL_ORCHESTRATOR
+                        db.add(task)
+                        db.commit()
+
+                # Get agent and execute task after template match / orchestrator routing decision.
+                agent_service = await agent_manager.get_agent_for_task(
+                    task_id, db, user=user
+                )
+                recovery_state = await load_task_execution_recovery_state(db, task_id)
+                agent_service.set_execution_context_messages(
+                    recovery_state.get("messages", [])
+                )
+                agent_service.set_recovered_skill_context(
+                    recovery_state.get("skill_context")
+                )
+
+                # data_generation 且模板未命中时，进入全局审批闸门。
+                if mode_decision.domain_mode == "data_generation":
+                    approval_decision = ApprovalGate(db).evaluate(
+                        task_id=int(task_id),
+                        task_description=str(task.description),
+                        domain_mode=mode_decision.domain_mode,
+                        requester_id=int(user.id),
+                        system_short=generation_system_short,
+                    )
+                    if approval_decision.requires_approval:
+                        await agent_service.pause_execution()
+                        task.status = TaskStatus.PAUSED
+                        db.commit()
+
+                        await manager.broadcast_to_task(
+                            {
+                                "type": "task_paused",
+                                "task_id": task_id,
+                                "message": "Task paused for approval",
+                                "approval": {
+                                    "ticket_id": approval_decision.ticket_id,
+                                    "required_role": approval_decision.required_role,
+                                    "reason": approval_decision.reason,
+                                    "system_short": generation_system_short,
+                                },
+                                "timestamp": datetime.now(timezone.utc).isoformat(),
+                            },
+                            task_id,
+                        )
 
                 # Execute task with automatic token tracking
                 result = await agent_manager.execute_task(
@@ -1721,6 +1831,8 @@ async def handle_execute_task(
                     task.status = TaskStatus.FAILED
 
                 db.commit()
+                if task.status == TaskStatus.COMPLETED:
+                    schedule_user_task_prompt_refresh(int(user.id), force=True)
 
                 # Send task completion event (don't duplicate result as trace system already sent)
 

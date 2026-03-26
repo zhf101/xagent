@@ -59,7 +59,7 @@ class TaskCreateRequest(BaseModel):
         1.5  # Memory search similarity threshold
     )
     agent_type: Optional[str] = "standard"  # Agent type: "standard", "text2sql", etc.
-    agent_config: Optional[Dict[str, Any]] = None  # Agent-specific configuration
+    agent_config: Optional[Dict[str, Any]] = None  # Agent-specific configuration, supports domain_mode
 
     # VIBE mode fields
     vibe_mode: Optional[str] = "task"  # "task" or "process"

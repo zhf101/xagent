@@ -35,6 +35,7 @@ const en = {
     models: "Models",
     files: "Files",
     memory: "Memory",
+    dataSources: "Data Sources",
     monitoring: "Monitoring",
     knowledgeBase: "Knowledge Base",
     knowledgeBaseDetail: "KB Detail",
@@ -61,25 +62,71 @@ const en = {
       startWith: "You can start with",
     },
     cards: {
-      createPPT: {
-        title: "Generate a PPT from a report",
-        description: "Sales reports, slides",
-        prompt: "Generate a PPT from a report"
+      general: {
+        createPPT: {
+          title: "Generate a PPT from a report",
+          description: "Sales reports, slides",
+          prompt: "Generate a PPT from a report"
+        },
+        dataAnalysis: {
+          title: "Analyze a dataset",
+          description: "Trends, feedback",
+          prompt: "Analyze a dataset"
+        },
+        designPoster: {
+          title: "Design a marketing poster",
+          description: "Social media assets",
+          prompt: "Design a marketing poster"
+        },
+        automatic: {
+          title: "Automate a workflow",
+          description: "Custom workflows",
+          prompt: "Automate a workflow"
+        }
       },
-      dataAnalysis: {
-        title: "Analyze a dataset",
-        description: "Trends, feedback",
-        prompt: "Analyze a dataset"
+      dataGeneration: {
+        orders: {
+          title: "Generate sample user order data",
+          description: "Orders, users, products",
+          prompt: "Generate sample user order data"
+        },
+        transactions: {
+          title: "Generate time-distributed transactions",
+          description: "Time series, transaction logs",
+          prompt: "Generate time-distributed transactions"
+        },
+        edgeCases: {
+          title: "Generate edge-case test samples",
+          description: "Boundary values, abnormal data",
+          prompt: "Generate edge-case test samples"
+        },
+        multiTable: {
+          title: "Generate multi-table demo data",
+          description: "Parent-child tables, relations",
+          prompt: "Generate multi-table demo data"
+        }
       },
-      designPoster: {
-        title: "Design a marketing poster",
-        description: "Social media assets",
-        prompt: "Design a marketing poster"
-      },
-      automatic: {
-        title: "Automate a workflow",
-        description: "Custom workflows",
-        prompt: "Automate a workflow"
+      dataConsultation: {
+        templateUsage: {
+          title: "How should I use a data template",
+          description: "Template guide, parameter meanings",
+          prompt: "How should I use a data template"
+        },
+        assetChoice: {
+          title: "Which asset type fits this scenario",
+          description: "Asset choice, execution strategy",
+          prompt: "Which asset type fits this scenario"
+        },
+        assetDifference: {
+          title: "What is the difference between SQL and HTTP assets",
+          description: "Asset types, comparison",
+          prompt: "What is the difference between SQL and HTTP assets"
+        },
+        failureReason: {
+          title: "Why might this execution have failed",
+          description: "Failure analysis, troubleshooting",
+          prompt: "Why might this execution have failed"
+        }
       }
     },
     input: {
@@ -1129,6 +1176,89 @@ Build when you need.`
       description: "Choose the right agent for your needs and start intelligent workflows immediately",
       tryText2SQL: "Try Text2SQL",
       createCustomAgent: "Create Custom Agent",
+    },
+  },
+  dataSources: {
+    page: {
+      eyebrow: "Unified Data Source Config",
+      title: "Data Sources",
+      description: "Manage shared database connections for Text2SQL, data generation, and the SQL Brain runtime. The page shows connection examples, required drivers, and current support level from backend templates.",
+    },
+    actions: {
+      add: "Add Source",
+      edit: "Edit",
+      delete: "Delete",
+      test: "Test Connection",
+      refresh: "Refresh",
+    },
+    list: {
+      title: "Configured Sources",
+      description: "Pick an existing source to inspect it, or create a new one.",
+      searchPlaceholder: "Search by name, type, or URL...",
+    },
+    stats: {
+      total: "Total Sources",
+      connected: "Connected",
+      readOnly: "Read-only",
+    },
+    status: {
+      connected: "Connected",
+      disconnected: "Disconnected",
+      error: "Error",
+    },
+    fields: {
+      type: "Database Type",
+      mode: "Connection Mode",
+      readOnly: "Read-only",
+      readWrite: "Read / Write",
+      lastConnected: "Last Connected",
+      objectCount: "{count} objects",
+      objectCountLabel: "Schema Objects",
+      lastError: "Last Error",
+    },
+    template: {
+      title: "Connection Template",
+      description: "Connection style, required drivers, and support level for this source.",
+      dialogDescription: "Shows connection examples and driver requirements for the selected database type.",
+      aliases: "Aliases",
+      drivers: "Drivers",
+      notes: "Notes",
+      noExtraDriver: "No extra driver",
+    },
+    dialog: {
+      createTitle: "Create Data Source",
+      editTitle: "Edit Data Source",
+      description: "Fill in the display name, database type, and connection URL. Read-only mode is recommended by default.",
+    },
+    form: {
+      name: "Source Name",
+      namePlaceholder: "e.g. CRM Primary / ClickHouse Warehouse",
+      type: "Database Type",
+      typePlaceholder: "Select a database type",
+      url: "Connection URL",
+      urlPlaceholder: "Enter connection URL",
+      readOnly: "Read-only mode",
+      readOnlyHint: "Recommended by default. Turn it off only for approved write scenarios.",
+    },
+    states: {
+      loading: "Loading data sources...",
+      empty: "No data sources yet. Create one to get started.",
+      noSelectionTitle: "No data source selected",
+      noSelectionDesc: "Pick a configured source from the left, or create a new one.",
+    },
+    messages: {
+      loadFailed: "Failed to load data sources",
+      fillRequired: "Please fill in name, database type, and connection URL",
+      saveFailed: "Failed to save data source",
+      createSuccess: "Data source created",
+      updateSuccess: "Data source updated",
+      deleteFailed: "Failed to delete data source",
+      deleteSuccess: "Data source deleted",
+      deleteConfirm: "Delete data source \"{name}\"?",
+      testFailed: "Connection test failed",
+      testSuccess: "Connection test succeeded",
+      connectionHealthy: "Latest connection test passed",
+      connectionHealthyDesc: "The source can currently be resolved and its schema can be read.",
     },
   },
   models: {

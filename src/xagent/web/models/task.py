@@ -60,6 +60,9 @@ class AgentType(enum.Enum):
 
     STANDARD = "standard"  # Standard purpose agent
     TEXT2SQL = "text2sql"  # Text2SQL agent
+    DATAMAKEPOOL_ORCHESTRATOR = (
+        "datamakepool_orchestrator"
+    )  # Datamakepool orchestrator agent
     # Future agent types can be added here
     # CODE_ASSISTANT = "code_assistant"
     # DATA_ANALYSIS = "data_analysis"

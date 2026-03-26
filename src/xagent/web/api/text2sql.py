@@ -7,9 +7,15 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import func
+from sqlalchemy.engine import make_url
 
+from ...core.database.adapters import create_adapter_for_type
+from ...core.database.config import database_connection_config_from_url
+from ...core.database import get_database_profile, list_database_profiles
+from ...core.database.types import normalize_database_type
 from ..auth_dependencies import get_current_user
 from ..models.database import get_db
+from ..models.biz_system import BizSystem
 from ..models.text2sql import DatabaseStatus, DatabaseType, Text2SQLDatabase
 from ..models.user import User
 
@@ -28,11 +34,19 @@ class DatabaseCreateRequest(BaseModel):
     name: str = Field(
         ..., min_length=1, max_length=255, description="Database display name"
     )
+    system_id: int = Field(..., description="Bound business system ID")
     type: str = Field(
-        ..., description="Database type (sqlite, postgresql, mysql, sqlserver)"
+        ...,
+        description=(
+            "Database type "
+            "(mysql, postgresql/postgres, redis, oracle, sqlserver/mssql, mongodb/mongo, "
+            "sqlite, dm/dameng, kingbase, gaussdb/opengauss, oceanbase, tidb, "
+            "clickhouse, polardb, vastbase, highgo, goldendb)"
+        ),
     )
     url: str = Field(..., min_length=1, description="Database connection URL")
     read_only: bool = Field(default=True, description="Whether database is read-only")
+    enabled: bool = Field(default=True, description="Whether database is enabled")
 
 
 class DatabaseResponse(BaseModel):
@@ -40,15 +54,51 @@ class DatabaseResponse(BaseModel):
 
     id: int
     name: str
+    system_id: Optional[int] = None
+    system_short: Optional[str] = None
+    system_name: Optional[str] = None
     type: str
     url: str
     read_only: bool
+    enabled: bool
     status: str
     table_count: Optional[int] = None
     last_connected_at: Optional[str] = None
     error_message: Optional[str] = None
     created_at: str
     updated_at: str
+
+
+class DatabaseProfileResponse(BaseModel):
+    """数据库连接模板响应。"""
+
+    db_type: str
+    display_name: str
+    default_port: Optional[int] = None
+    category: str
+    protocol: str
+    support_level: str
+    aliases: List[str]
+    driver_packages: List[str]
+    connection_example: str
+    notes: List[str]
+
+
+class BizSystemCreateRequest(BaseModel):
+    """业务系统字典创建/编辑请求。"""
+
+    system_short: str = Field(..., min_length=1, max_length=50)
+    system_name: str = Field(..., min_length=1, max_length=255)
+
+
+class BizSystemResponse(BaseModel):
+    """业务系统字典响应。"""
+
+    id: int
+    system_short: str
+    system_name: str
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
 
 
 class DataMapping(BaseModel):
@@ -95,6 +145,23 @@ class PredictionResponse(BaseModel):
     error: Optional[str] = None
 
 
+def _count_schema_objects(schema: Dict[str, Any]) -> int:
+    """把不同数据库的 schema 结构折叠成统一数量指标。
+
+    Text2SQL 历史字段叫 `table_count`，但现在数据库类型已经扩展到
+    MongoDB / Redis / ClickHouse 等，因此这里统一按“顶层可浏览对象数”
+    计算，而不是强制限定为关系型 table。
+    """
+
+    if "tables" in schema and isinstance(schema["tables"], list):
+        return len(schema["tables"])
+    if "collections" in schema and isinstance(schema["collections"], list):
+        return len(schema["collections"])
+    if "keys" in schema and isinstance(schema["keys"], list):
+        return len(schema["keys"])
+    return 0
+
+
 @text2sql_router.get("/databases", response_model=List[DatabaseResponse])
 async def get_databases(
     db: Session = Depends(get_db),
@@ -118,6 +185,100 @@ async def get_databases(
         )
 
 
+@text2sql_router.get("/systems", response_model=List[BizSystemResponse])
+async def get_biz_systems(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> List[BizSystemResponse]:
+    """获取业务系统字典列表，供数据源选择使用。"""
+
+    try:
+        systems = db.query(BizSystem).order_by(BizSystem.system_short.asc()).all()
+        return [BizSystemResponse(**item.to_dict()) for item in systems]
+    except Exception as e:
+        logger.error(f"Failed to get biz systems for user {user.id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve business systems",
+        )
+
+
+@text2sql_router.post("/systems", response_model=BizSystemResponse)
+async def create_biz_system(
+    payload: BizSystemCreateRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> BizSystemResponse:
+    """创建业务系统字典项。
+
+    当前先允许已登录用户创建，目的是让数据源配置页不再被“空系统列表”卡死。
+    如果后面需要收敛权限，再在这一层加管理员限制即可。
+    """
+
+    try:
+        normalized_short = payload.system_short.strip().lower()
+        if not normalized_short:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="system_short is required",
+            )
+
+        existing = (
+            db.query(BizSystem)
+            .filter(BizSystem.system_short == normalized_short)
+            .first()
+        )
+        if existing:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Business system '{normalized_short}' already exists",
+            )
+
+        system = BizSystem(
+            system_short=normalized_short,
+            system_name=payload.system_name.strip(),
+        )
+        db.add(system)
+        db.commit()
+        db.refresh(system)
+        return BizSystemResponse(**system.to_dict())
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to create biz system for user {user.id}: {e}")
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to create business system",
+        )
+
+
+@text2sql_router.get(
+    "/database-types",
+    response_model=List[DatabaseProfileResponse],
+)
+async def get_database_type_profiles() -> List[DatabaseProfileResponse]:
+    """返回支持的数据库类型、连接模板、驱动依赖与支持深度。"""
+
+    return [DatabaseProfileResponse(**item) for item in list_database_profiles()]
+
+
+@text2sql_router.get(
+    "/database-types/{db_type}",
+    response_model=DatabaseProfileResponse,
+)
+async def get_database_type_profile(db_type: str) -> DatabaseProfileResponse:
+    """返回单个数据库类型的接入模板。"""
+
+    try:
+        return DatabaseProfileResponse(**get_database_profile(db_type))
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+
+
 @text2sql_router.post("/databases", response_model=DatabaseResponse)
 async def create_database(
     db_config: DatabaseCreateRequest,
@@ -126,9 +287,16 @@ async def create_database(
 ) -> DatabaseResponse:
     """Create a new database configuration"""
     try:
+        system = db.query(BizSystem).filter(BizSystem.id == db_config.system_id).first()
+        if not system:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid system_id: {db_config.system_id}",
+            )
+
         # Validate database type
         try:
-            db_type = DatabaseType(db_config.type)
+            db_type = DatabaseType(normalize_database_type(db_config.type))
         except ValueError:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -155,9 +323,11 @@ async def create_database(
         new_db = Text2SQLDatabase(
             user_id=user.id,
             name=db_config.name,
+            system_id=system.id,
             type=db_type,
             url=db_config.url,
             read_only=db_config.read_only,
+            enabled=db_config.enabled,
             status=DatabaseStatus.CONNECTED,  # Set to connected by default
             table_count=0,  # TODO: Query actual table count
             last_connected_at=func.now(),
@@ -208,9 +378,16 @@ async def update_database(
                 detail="Database configuration not found",
             )
 
+        system = db.query(BizSystem).filter(BizSystem.id == db_config.system_id).first()
+        if not system:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid system_id: {db_config.system_id}",
+            )
+
         # Validate database type
         try:
-            db_type = DatabaseType(db_config.type)
+            db_type = DatabaseType(normalize_database_type(db_config.type))
         except ValueError:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -236,9 +413,11 @@ async def update_database(
 
         # Update database configuration
         existing_db.name = db_config.name
+        existing_db.system_id = system.id
         existing_db.type = db_type
         existing_db.url = db_config.url
         existing_db.read_only = db_config.read_only
+        existing_db.enabled = db_config.enabled
         existing_db.status = (
             DatabaseStatus.DISCONNECTED
         )  # Reset status to verify new configuration
@@ -302,6 +481,49 @@ async def delete_database(
         )
 
 
+@text2sql_router.post("/databases/{database_id}/toggle-enabled", response_model=DatabaseResponse)
+async def toggle_database_enabled(
+    database_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> DatabaseResponse:
+    """切换数据源启用状态。"""
+
+    try:
+        existing_db = (
+            db.query(Text2SQLDatabase)
+            .filter(
+                Text2SQLDatabase.id == database_id,
+                Text2SQLDatabase.user_id == user.id,
+            )
+            .first()
+        )
+        if not existing_db:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Database configuration not found",
+            )
+
+        existing_db.enabled = not bool(existing_db.enabled)
+        if not existing_db.enabled:
+            existing_db.status = DatabaseStatus.DISCONNECTED
+            existing_db.error_message = "disabled by user"
+        else:
+            existing_db.error_message = None
+        db.commit()
+        db.refresh(existing_db)
+        return DatabaseResponse(**existing_db.to_dict())
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to toggle database configuration {database_id}: {e}")
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to toggle database configuration",
+        )
+
+
 @text2sql_router.post("/databases/{database_id}/test")
 async def test_database_connection(
     database_id: int,
@@ -326,36 +548,26 @@ async def test_database_connection(
                 detail="Database configuration not found",
             )
 
-        # Simple connection test
         try:
-            import sqlite3
+            if not existing_db.enabled:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Database connection is disabled",
+                )
 
-            db_url = existing_db.url
+            url = make_url(existing_db.url)
+            config = database_connection_config_from_url(
+                url,
+                read_only=existing_db.read_only,
+            )
+            adapter = create_adapter_for_type(existing_db.type.value, config)
+            await adapter.connect()
+            try:
+                schema = await adapter.get_schema()
+            finally:
+                await adapter.disconnect()
 
-            if existing_db.type.value == "sqlite":
-                # SQLite connection test
-                if db_url.startswith("sqlite:///"):
-                    db_path = db_url.replace("sqlite:///", "")
-                    conn = sqlite3.connect(db_path)
-                    conn.close()
-
-                    # Get table count
-                    conn = sqlite3.connect(db_path)
-                    cursor = conn.cursor()
-                    cursor.execute(
-                        "SELECT count(*) FROM sqlite_master WHERE type='table'"
-                    )
-                    table_count = cursor.fetchone()[0]
-                    conn.close()
-
-                else:
-                    # Other format SQLite URL
-                    conn = sqlite3.connect(db_url.replace("sqlite://", ""))
-                    conn.close()
-                    table_count = 0
-            else:
-                # For other database types, skip actual connection test for now
-                table_count = 0
+            table_count = _count_schema_objects(schema)
 
             # Update connection status
             existing_db.status = DatabaseStatus.CONNECTED
@@ -366,7 +578,7 @@ async def test_database_connection(
 
             return {
                 "status": "connected",
-                "message": f"Database connection successful. Found {table_count} tables.",
+                "message": f"Database connection successful. Found {table_count} schema objects.",
                 "table_count": table_count,
             }
 

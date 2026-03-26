@@ -11,6 +11,11 @@ import { useAuth } from "@/contexts/auth-context"
 import { useApp } from "@/contexts/app-context-chat"
 import { getBrandingFromEnv } from "@/lib/branding"
 import {
+  SIDEBAR_COMPACT_EVENT,
+  type SidebarCompactEventDetail,
+  type SidebarCompactReason,
+} from "@/lib/sidebar-compact"
+import {
   Activity,
   FileText,
   User,
@@ -25,6 +30,7 @@ import {
   Wrench,
   Users,
   Brain,
+  Database,
   Server,
   HardDrive,
   Layers,
@@ -37,11 +43,14 @@ import {
   Bot,
   BookOpen,
   Box,
+  LayoutDashboard,
   LayoutTemplate,
   Info,
   Tag,
   Github,
   Star,
+  PanelLeftClose,
+  PanelLeftOpen,
 } from "lucide-react"
 import {
   Dialog,
@@ -87,6 +96,7 @@ interface NavigationItem {
 }
 
 interface NavigationGroup {
+  key: string
   title: string
   titleKey?: string
   items: NavigationItem[]
@@ -94,60 +104,81 @@ interface NavigationGroup {
 
 const navigationGroups: NavigationGroup[] = [
   {
-    title: "Agent Development",
-    titleKey: "nav.sections.agentDevelopment",
+    key: "main",
+    title: "",
     items: [
       {
-        name: "Task",
-        nameKey: "nav.task",
-        href: "/task",
-        icon: MessageSquare,
-        color: "text-blue-500"
+        name: "Agent Development",
+        nameKey: "nav.sections.agentDevelopment",
+        href: "/workspace",
+        icon: LayoutDashboard,
+        color: "text-blue-500",
+        children: [
+          {
+            name: "Task",
+            nameKey: "nav.task",
+            href: "/task",
+            icon: MessageSquare,
+            color: "text-blue-500"
+          },
+          {
+            name: "Agents",
+            nameKey: "nav.build",
+            href: "/build",
+            icon: Bot,
+            color: "text-yellow-400"
+          },
+          {
+            name: "Templates",
+            nameKey: "nav.templates",
+            href: "/templates",
+            icon: LayoutTemplate,
+            color: "text-purple-400"
+          },
+        ]
       },
       {
-        name: "Agents",
-        nameKey: "nav.build",
-        href: "/build",
-        icon: Bot,
-        color: "text-yellow-400"
-      },
-      {
-        name: "Templates",
-        nameKey: "nav.templates",
-        href: "/templates",
-        icon: LayoutTemplate,
-        color: "text-purple-400"
-      },
-    ]
-  },
-  {
-    title: "Resources",
-    titleKey: "nav.sections.resources",
-    items: [
-      {
-        name: "Knowledge Base",
-        nameKey: "nav.knowledgeBase",
-        href: "/kb",
-        icon: BookOpen,
-        color: "text-gray-500"
-      },
-      {
-        name: "Models",
-        nameKey: "nav.models",
-        href: "/models",
-        icon: Box,
-        color: "text-gray-500"
-      },
-      {
-        name: "Memory",
-        nameKey: "nav.memory",
-        href: "/memory",
-        icon: Brain,
-        color: "text-gray-500"
+        name: "Resources",
+        nameKey: "nav.sections.resources",
+        href: "/resources",
+        icon: Database,
+        color: "text-blue-500",
+        children: [
+          {
+            name: "Knowledge Base",
+            nameKey: "nav.knowledgeBase",
+            href: "/kb",
+            icon: BookOpen,
+            color: "text-gray-500"
+          },
+          {
+            name: "Models",
+            nameKey: "nav.models",
+            href: "/models",
+            icon: Box,
+            color: "text-gray-500"
+          },
+          {
+            name: "Data Sources",
+            nameKey: "nav.dataSources",
+            href: "/data-sources",
+            icon: Database,
+            color: "text-gray-500"
+          },
+          {
+            name: "Memory",
+            nameKey: "nav.memory",
+            href: "/memory",
+            icon: Brain,
+            color: "text-gray-500"
+          }
+        ]
       }
     ]
   }
 ]
+
+const SIDEBAR_COMPACT_STORAGE_KEY = "xagent.sidebar.compact"
 
 const baseUserMenuItems: NavigationItem[] = [
   {
@@ -248,7 +279,11 @@ export function Sidebar({ className }: SidebarProps) {
   }
 
   const [isExpanded, setIsExpanded] = useState(false)
-  const [expandedMenus, setExpandedMenus] = useState<string[]>(["/agent"]) // Use href as a stable key
+  const [compactPreference, setCompactPreference] = useState(false)
+  const [compactReasons, setCompactReasons] = useState<SidebarCompactReason[]>([])
+  const [expandedMenus, setExpandedMenus] = useState<string[]>(
+    [...navigationGroups.map((group) => group.key), "/workspace", "/resources"]
+  )
   const [showUserMenu, setShowUserMenu] = useState(false)
   const [isAboutOpen, setIsAboutOpen] = useState(false)
   const sidebarRef = useRef<HTMLDivElement | null>(null)
@@ -544,6 +579,65 @@ export function Sidebar({ className }: SidebarProps) {
   const isAgentChatPage = pathname.match(/^\/agent\/\d+$/)
   const shouldShowSidebar = !((pathname.startsWith('/agent') && !pathname.startsWith('/agent/vibe') && !isAgentChatPage)) || isExpanded
   const isAgentPage = (pathname.startsWith('/agent') && !pathname.startsWith('/agent/vibe') && !isAgentChatPage)
+  const supportsCompactMode = !isAgentPage
+  const isCompactMode =
+    supportsCompactMode && (compactPreference || compactReasons.length > 0)
+  const isCompactModeControlled = compactReasons.length > 0
+
+  useEffect(() => {
+    if (!supportsCompactMode) return
+
+    try {
+      const savedValue = window.localStorage.getItem(SIDEBAR_COMPACT_STORAGE_KEY)
+      if (savedValue === "1") {
+        setCompactPreference(true)
+      }
+    } catch {
+      // Ignore storage failures and keep expanded mode.
+    }
+  }, [supportsCompactMode])
+
+  useEffect(() => {
+    if (!supportsCompactMode) return
+
+    try {
+      window.localStorage.setItem(
+        SIDEBAR_COMPACT_STORAGE_KEY,
+        compactPreference ? "1" : "0"
+      )
+    } catch {
+      // Ignore storage failures and keep current in-memory state.
+    }
+  }, [compactPreference, supportsCompactMode])
+
+  useEffect(() => {
+    const handleCompactEvent = (event: Event) => {
+      const detail = (event as CustomEvent<SidebarCompactEventDetail>).detail
+      if (!detail?.reason) return
+
+      setCompactReasons((current) => {
+        if (detail.compact) {
+          return current.includes(detail.reason)
+            ? current
+            : [...current, detail.reason]
+        }
+
+        return current.filter((reason) => reason !== detail.reason)
+      })
+    }
+
+    window.addEventListener(
+      SIDEBAR_COMPACT_EVENT,
+      handleCompactEvent as EventListener
+    )
+
+    return () => {
+      window.removeEventListener(
+        SIDEBAR_COMPACT_EVENT,
+        handleCompactEvent as EventListener
+      )
+    }
+  }, [])
 
   // When in collapsible state and expanded, click outside sidebar to automatically collapse
   useEffect(() => {
@@ -578,6 +672,41 @@ export function Sidebar({ className }: SidebarProps) {
     return expandedMenus.includes(menuName)
   }
 
+  const isGroupActive = (group: NavigationGroup) => {
+    return group.items.some(
+      (item) =>
+        pathname === item.href ||
+        pathname.startsWith(item.href) ||
+        item.children?.some(
+          (child) => pathname === child.href || pathname.startsWith(child.href)
+        )
+    )
+  }
+
+  useEffect(() => {
+    const activeParentMenus = navigationGroups
+      .flatMap((group) => group.items)
+      .filter(
+        (item) =>
+          item.children?.length &&
+          item.children.some(
+            (child) => pathname === child.href || pathname.startsWith(child.href)
+          )
+      )
+      .map((item) => item.href)
+
+    if (!activeParentMenus.length) return
+
+    setExpandedMenus((current) => Array.from(new Set([...current, ...activeParentMenus])))
+  }, [pathname])
+
+  const historyHeaderClass =
+    "mb-1 flex items-center justify-between px-4 py-2 text-[11px] font-medium text-muted-foreground/80 tracking-[0.08em] transition-colors hover:text-foreground"
+  const navItemActiveStyle =
+    "bg-primary/10 text-primary font-semibold rounded-lg mx-2"
+  const navItemInactiveStyle =
+    "text-muted-foreground hover:bg-accent/50 hover:text-foreground mx-2 rounded-lg"
+
   if (isAgentPage && !shouldShowSidebar) {
     return (
       <div className="flex items-center justify-center w-12 bg-card border-r border-border">
@@ -595,18 +724,36 @@ export function Sidebar({ className }: SidebarProps) {
     <div ref={sidebarRef} className={cn(
       "flex flex-col bg-card border-r border-border transition-all duration-300 shrink-0",
       isAgentPage ? "h-full" : "h-full",
-      shouldShowSidebar ? "w-72" : "w-0",
+      shouldShowSidebar
+        ? supportsCompactMode && isCompactMode
+          ? "w-20"
+          : "w-72"
+        : "w-0",
       className
     )}>
       {/* Logo */}
-      <div className="flex h-16 items-center justify-between px-6 mt-2">
-        <Link href="/task" className="flex items-center gap-2">
+      <div
+        className={cn(
+          "mt-2 flex h-16 items-center justify-between",
+          supportsCompactMode && isCompactMode ? "px-3" : "px-6"
+        )}
+      >
+        <Link
+          href="/task"
+          className={cn(
+            "flex items-center gap-2",
+            supportsCompactMode && isCompactMode && "justify-center"
+          )}
+          title={branding.appName}
+        >
           <img
             src={branding.logoPath}
             alt={branding.logoAlt}
             className="h-8 w-8 rounded-lg"
           />
-          <h1 className="text-xl font-bold text-foreground">{branding.appName}</h1>
+          {!supportsCompactMode || !isCompactMode ? (
+            <h1 className="text-xl font-bold text-foreground">{branding.appName}</h1>
+          ) : null}
         </Link>
         {isAgentPage && (
           <button
@@ -616,6 +763,26 @@ export function Sidebar({ className }: SidebarProps) {
             <X className="h-5 w-5" />
           </button>
         )}
+        {!isAgentPage ? (
+          <button
+            onClick={() => setCompactPreference((current) => !current)}
+            className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+            title={
+              isCompactModeControlled
+                ? "当前由画布聚焦控制，退出展开后可手动切换"
+                : isCompactMode
+                  ? "展开侧边栏"
+                  : "收起侧边栏"
+            }
+            disabled={isCompactModeControlled}
+          >
+            {isCompactMode ? (
+              <PanelLeftOpen className="h-5 w-5" />
+            ) : (
+              <PanelLeftClose className="h-5 w-5" />
+            )}
+          </button>
+        ) : null}
       </div>
 
       {/* Navigation */}
@@ -627,193 +794,281 @@ export function Sidebar({ className }: SidebarProps) {
         {/* Sticky Navigation Groups */}
         <div className="sticky top-0 z-10 bg-card -mx-3 px-3 py-2">
           {/* Groups */}
-          {navigationGroups.map((group, groupIndex) => (
-            <div key={group.title} className={cn("mb-6", groupIndex === 0 && "mt-0")}>
-              <div className="px-4 py-2 text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">
-                {group.titleKey ? t(group.titleKey) : group.title}
-              </div>
-              <div className="space-y-1">
-                {group.items.map((item) => {
-                  const isActive = pathname === item.href ||
-                    (item.href !== "/" && pathname.startsWith(item.href))
-                  const hasChildren = item.children && item.children.length > 0
-                  const isExpanded = isMenuExpanded(item.href)
+          {navigationGroups.map((group) => {
+            const isExpanded = isMenuExpanded(group.key)
+            const isActiveGroup = isGroupActive(group)
+            const hasGroupHeader = Boolean(group.titleKey || group.title)
 
-                  const activeStyle = `
-                    bg-primary/10
-                    text-primary
-                    font-semibold
-                    rounded-lg
-                    mx-2
-                  `;
-                  const inactiveStyle = "text-muted-foreground hover:bg-accent/50 hover:text-foreground mx-2 rounded-lg"
+            return (
+              <div key={group.key} className="mb-6">
+                {hasGroupHeader ? (
+                  <button
+                    type="button"
+                    onClick={() => toggleMenu(group.key)}
+                    className={cn(
+                      historyHeaderClass,
+                      isActiveGroup
+                        ? "text-foreground"
+                        : "text-slate-400 hover:text-foreground"
+                    )}
+                  >
+                    <span className="truncate">
+                      {group.titleKey ? t(group.titleKey) : group.title}
+                    </span>
+                    {isExpanded ? (
+                      <ChevronDown className="h-3.5 w-3.5 opacity-70" />
+                    ) : (
+                      <ChevronRight className="h-3.5 w-3.5 opacity-70" />
+                    )}
+                  </button>
+                ) : null}
+                {(hasGroupHeader ? isExpanded : true) && (
+                  <div className="space-y-1">
+                    {group.items.map((item) => {
+                      const isActive =
+                        pathname === item.href ||
+                        (item.href !== "/" && pathname.startsWith(item.href)) ||
+                        Boolean(
+                          item.children?.some(
+                            (child) =>
+                              pathname === child.href ||
+                              pathname.startsWith(child.href)
+                          )
+                        )
+                      const hasChildren = item.children && item.children.length > 0
+                      const isExpanded = isMenuExpanded(item.href)
+                      const compactHref =
+                        hasChildren && item.children?.[0]?.href
+                          ? item.children[0].href
+                          : item.href
 
-                  if (hasChildren) {
-                    return (
-                      <div key={item.name} className="mb-1">
-                        <button
-                          onClick={() => toggleMenu(item.href)}
+                      if (isCompactMode) {
+                        return (
+                          <Link
+                            key={item.name}
+                            href={compactHref}
+                            title={item.nameKey ? t(item.nameKey) : item.name}
+                            className={cn(
+                              "mx-2 flex h-11 items-center justify-center rounded-xl transition-colors",
+                              isActive
+                                ? "bg-primary/10 text-primary"
+                                : "text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+                            )}
+                          >
+                            <item.icon
+                              className={cn(
+                                "h-5 w-5",
+                                isActive ? "text-primary" : item.color || "text-gray-500"
+                              )}
+                            />
+                          </Link>
+                        )
+                      }
+
+                      if (hasChildren) {
+                        return (
+                          <div key={item.name} className="mb-1">
+                            <button
+                              onClick={() => toggleMenu(item.href)}
+                              className={cn(
+                                "group flex items-center justify-between px-3 py-2 text-sm transition-colors relative w-[calc(100%-1rem)]",
+                                isActive ? navItemActiveStyle : navItemInactiveStyle
+                              )}
+                            >
+                              <div className="flex items-center gap-2.5">
+                                <item.icon
+                                  className={cn(
+                                    "h-4 w-4",
+                                    isActive ? "text-primary" : "text-gray-500"
+                                  )}
+                                />
+                                {item.nameKey ? t(item.nameKey) : item.name}
+                              </div>
+                              {isExpanded ? (
+                                <ChevronDown className="h-3 w-3 opacity-50" />
+                              ) : (
+                                <ChevronRight className="h-3 w-3 opacity-50" />
+                              )}
+                            </button>
+                            {isExpanded && item.children && (
+                              <div className="ml-4 mt-1 space-y-1 border-l border-border/40 pl-2">
+                                {item.children.map((child) => {
+                                  const isChildActive = pathname === child.href
+                                  return (
+                                    <div key={child.href}>
+                                      <Link
+                                        href={child.href}
+                                        className={cn(
+                                          "group flex items-center px-4 py-2 text-sm font-medium transition-colors rounded-lg mx-2",
+                                          isChildActive
+                                            ? "bg-primary/10 text-primary"
+                                            : "text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+                                        )}
+                                      >
+                                        <child.icon
+                                          className={cn(
+                                            "h-4 w-4 mr-2.5",
+                                            isChildActive
+                                              ? "text-primary"
+                                              : child.color || "text-muted-foreground"
+                                          )}
+                                        />
+                                        {child.nameKey ? t(child.nameKey) : child.name}
+                                      </Link>
+                                    </div>
+                                  )
+                                })}
+                              </div>
+                            )}
+                          </div>
+                        )
+                      }
+
+                      return (
+                        <Link
+                          key={item.name}
+                          href={item.href}
                           className={cn(
-                            "group flex items-center justify-between px-3 py-2 text-sm transition-colors relative w-[calc(100%-1rem)]",
-                            isActive ? activeStyle : inactiveStyle
+                            "group flex items-center px-3 py-2 text-sm font-medium transition-colors mb-1",
+                            isActive ? navItemActiveStyle : navItemInactiveStyle
                           )}
                         >
-                          <div className="flex items-center gap-3">
-                            <item.icon className={cn("h-5 w-5", isActive ? "text-primary" : "text-gray-500")} />
-                            {item.nameKey ? t(item.nameKey) : item.name}
-                          </div>
-                          {isExpanded ? (
-                            <ChevronDown className="h-3 w-3 opacity-50" />
-                          ) : (
-                            <ChevronRight className="h-3 w-3 opacity-50" />
-                          )}
-                        </button>
-                        {isExpanded && item.children && (
-                          <div className="ml-4 mt-1 space-y-1 border-l border-border/40 pl-2">
-                            {item.children.map((child) => {
-                              const isChildActive = pathname === child.href
-                              return (
-                                <div key={child.href}>
-                                  <Link
-                                    href={child.href}
-                                    className={cn(
-                                      "group flex items-center px-4 py-2 text-sm font-medium transition-colors rounded-lg mx-2",
-                                      isChildActive
-                                        ? "bg-primary/10 text-primary"
-                                        : "text-muted-foreground hover:bg-accent/50 hover:text-foreground"
-                                    )}
-                                  >
-                                    <child.icon className={cn("h-4 w-4 mr-3", isChildActive ? "text-primary" : child.color || "text-muted-foreground")} />
-                                    {child.nameKey ? t(child.nameKey) : child.name}
-                                  </Link>
-                                </div>
-                              )
-                            })}
-                          </div>
-                        )}
-                      </div>
-                    )
-                  }
-
-                  return (
-                    <Link
-                      key={item.name}
-                      href={item.href}
-                      className={cn(
-                        "group flex items-center px-3 py-2 text-sm font-medium transition-colors mb-1",
-                        isActive ? activeStyle : inactiveStyle
-                      )}
-                    >
-                      <item.icon className={cn("h-5 w-5 mr-3", isActive ? "text-primary" : "text-gray-500")} />
-                      {item.nameKey ? t(item.nameKey) : item.name}
-                    </Link>
-                  )
-                })}
+                          <item.icon
+                            className={cn(
+                              "h-4 w-4 mr-2.5",
+                              isActive ? "text-primary" : "text-gray-500"
+                            )}
+                          />
+                          {item.nameKey ? t(item.nameKey) : item.name}
+                        </Link>
+                      )
+                    })}
+                  </div>
+                )}
               </div>
-            </div>
-          ))}
+            )
+          })}
         </div>
 
         {/* History Section */}
-        <div>
-          <div
-            className="px-4 py-2 text-xs font-bold text-slate-400 uppercase tracking-wider mb-1 flex items-center justify-between transition-colors group h-8"
-            onMouseEnter={() => setIsSearchHovered(true)}
-            onMouseLeave={() => setIsSearchHovered(false)}
-          >
-            {(isSearchHovered || isSearchFocused || searchQuery) ? (
-              <div className="flex-1 relative mr-2 h-full flex items-center">
-                <SearchInput
-                  placeholder={t('nav.search')}
-                  value={searchQuery}
-                  onChange={setSearchQuery}
-                  onFocus={() => setIsSearchFocused(true)}
-                  onBlur={() => setIsSearchFocused(false)}
-                  containerClassName="w-full h-7"
-                  className="h-7 text-xs text-black bg-transparent border-slate-500/50 focus:border-primary"
-                />
-              </div>
-            ) : (
-              <span className="flex-1 truncate">{t('nav.history')}</span>
-            )}
+        {!isCompactMode ? (
+          <div>
             <div
-              className="cursor-pointer p-1 -mr-1 hover:bg-slate-200 dark:hover:bg-slate-700 rounded transition-colors"
-              onClick={() => setIsHistoryExpanded(!isHistoryExpanded)}
+              className={historyHeaderClass}
+              onMouseEnter={() => setIsSearchHovered(true)}
+              onMouseLeave={() => setIsSearchHovered(false)}
             >
-              {isHistoryExpanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-            </div>
-          </div>
-
-          {isHistoryExpanded && (
-            <div className="space-y-1">
-              {isLoadingTasks ? (
-                  <div className="flex items-center justify-center py-4">
-                    <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-                  </div>
-              ) : tasks.length > 0 ? (
-                <>
-                  {tasks.map(task => {
-                    const currentTaskId = getCurrentTaskId();
-                    return (
-                      <Link
-                        key={task.task_id}
-                        href={`/task/${task.task_id}`}
-                        title={task.title}
-                        className={cn(
-                          "group flex items-center px-3 py-2 text-sm transition-colors mb-1 truncate relative pr-8 rounded-lg mx-2",
-                          String(currentTaskId) === String(task.task_id)
-                            ? "bg-primary/10 text-primary font-medium"
-                            : "text-muted-foreground hover:bg-accent/50 hover:text-foreground"
-                        )}
-                      >
-                        <div className="relative h-4 w-4 mr-3 flex-shrink-0">
-                          {task.agent_id && task.agent_logo_url ? (
-                             <img
-                               src={`${getApiUrl()}${task.agent_logo_url}`}
-                               alt="Agent Logo"
-                               className="h-4 w-4 absolute inset-0 transition-opacity duration-200 group-hover:opacity-0 rounded-full object-cover"
-                             />
-                          ) : (
-                            <MessageSquare className={cn(
-                              "h-4 w-4 absolute inset-0 transition-opacity duration-200 group-hover:opacity-0",
-                              String(currentTaskId) === String(task.task_id) ? "text-accent-foreground" : "text-gray-500"
-                            )} />
-                          )}
-                          <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex items-center justify-center">
-                            {task.status === 'running' && <Loader2 className="h-4 w-4 animate-spin text-blue-500" />}
-                            {task.status === 'completed' && <CheckCircle2 className="h-4 w-4 text-green-500" />}
-                            {task.status === 'failed' && <XCircle className="h-4 w-4 text-red-500" />}
-                            {task.status === 'paused' && <PauseCircle className="h-4 w-4 text-yellow-500" />}
-                            {task.status === 'pending' && <Loader2 className="h-4 w-4 animate-spin text-gray-400" />}
-                          </div>
-                        </div>
-                        <span className="truncate flex-1 text-left">{task.title || "Untitled Task"}</span>
-                        {unreadTasks.has(String(task.task_id)) && (
-                          <div className="absolute right-4 top-1/2 -translate-y-1/2 h-2 w-2 rounded-full bg-primary group-hover:opacity-0 transition-opacity" />
-                        )}
-                        <button
-                          onClick={(e) => deleteTask(task.task_id, e)}
-                          className="absolute right-2 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity p-1 text-muted-foreground hover:text-red-500 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700"
-                          title={t('common.delete')}
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
-                      </Link>
-                  )})}
-                  {isLoadingMore && (
-                      <div className="flex items-center justify-center py-2">
-                        <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
-                      </div>
-                  )}
-                </>
-              ) : (
-                <div className="px-4 py-2 text-sm text-muted-foreground">
-                  {t('common.noData')}
+              {(isSearchHovered || isSearchFocused || searchQuery) ? (
+                <div className="flex-1 relative mr-2 h-full flex items-center">
+                  <SearchInput
+                    placeholder={t('nav.search')}
+                    value={searchQuery}
+                    onChange={setSearchQuery}
+                    onFocus={() => setIsSearchFocused(true)}
+                    onBlur={() => setIsSearchFocused(false)}
+                    containerClassName="w-full h-7"
+                    className="h-7 text-xs text-black bg-transparent border-slate-500/50 focus:border-primary"
+                  />
                 </div>
+              ) : (
+                <span className="flex-1 truncate">{t('nav.history')}</span>
               )}
+              <div
+                className="cursor-pointer p-1 -mr-1 hover:bg-slate-200 dark:hover:bg-slate-700 rounded transition-colors"
+                onClick={() => setIsHistoryExpanded(!isHistoryExpanded)}
+              >
+                {isHistoryExpanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+              </div>
             </div>
-          )}
-        </div>
+
+            {isHistoryExpanded && (
+              <div className="space-y-1">
+                {isLoadingTasks ? (
+                    <div className="flex items-center justify-center py-4">
+                      <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                    </div>
+                ) : tasks.length > 0 ? (
+                  <>
+                    {tasks.map(task => {
+                      const currentTaskId = getCurrentTaskId();
+                      return (
+                        <Link
+                          key={task.task_id}
+                          href={`/task/${task.task_id}`}
+                          title={task.title}
+                          className={cn(
+                            "group flex items-center px-3 py-2 text-sm transition-colors mb-1 truncate relative pr-8 rounded-lg mx-2",
+                            String(currentTaskId) === String(task.task_id)
+                              ? navItemActiveStyle
+                              : navItemInactiveStyle
+                          )}
+                        >
+                          <div className="relative h-4 w-4 mr-3 flex-shrink-0">
+                            {task.agent_id && task.agent_logo_url ? (
+                               <img
+                                 src={`${getApiUrl()}${task.agent_logo_url}`}
+                                 alt="Agent Logo"
+                                 className="h-4 w-4 absolute inset-0 transition-opacity duration-200 group-hover:opacity-0 rounded-full object-cover"
+                               />
+                            ) : (
+                              <MessageSquare className={cn(
+                                "h-4 w-4 absolute inset-0 transition-opacity duration-200 group-hover:opacity-0",
+                                String(currentTaskId) === String(task.task_id) ? "text-accent-foreground" : "text-gray-500"
+                              )} />
+                            )}
+                            <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex items-center justify-center">
+                              {task.status === 'running' && <Loader2 className="h-4 w-4 animate-spin text-blue-500" />}
+                              {task.status === 'completed' && <CheckCircle2 className="h-4 w-4 text-green-500" />}
+                              {task.status === 'failed' && <XCircle className="h-4 w-4 text-red-500" />}
+                              {task.status === 'paused' && <PauseCircle className="h-4 w-4 text-yellow-500" />}
+                              {task.status === 'pending' && <Loader2 className="h-4 w-4 animate-spin text-gray-400" />}
+                            </div>
+                          </div>
+                          <span className="truncate flex-1 text-left">{task.title || "Untitled Task"}</span>
+                          {unreadTasks.has(String(task.task_id)) && (
+                            <div className="absolute right-4 top-1/2 -translate-y-1/2 h-2 w-2 rounded-full bg-primary group-hover:opacity-0 transition-opacity" />
+                          )}
+                          <button
+                            onClick={(e) => deleteTask(task.task_id, e)}
+                            className="absolute right-2 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity p-1 text-muted-foreground hover:text-red-500 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700"
+                            title={t('common.delete')}
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </Link>
+                    )})}
+                    {isLoadingMore && (
+                        <div className="flex items-center justify-center py-2">
+                          <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
+                        </div>
+                    )}
+                  </>
+                ) : (
+                    <div className="px-4 py-2 text-sm text-muted-foreground">
+                      {t('common.noData')}
+                    </div>
+                  )}
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="mt-4">
+            <button
+              type="button"
+              onClick={() => {
+                if (!isCompactModeControlled) {
+                  setCompactPreference(false)
+                }
+                setIsHistoryExpanded(true)
+              }}
+              className="mx-2 flex h-11 w-[calc(100%-1rem)] items-center justify-center rounded-xl text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+              title={isCompactModeControlled ? "当前由画布聚焦控制，无法展开任务列表" : t('nav.history')}
+              disabled={isCompactModeControlled}
+            >
+              <MessageSquare className="h-5 w-5" />
+            </button>
+          </div>
+        )}
       </nav>
 
 
@@ -859,15 +1114,22 @@ export function Sidebar({ className }: SidebarProps) {
         )}
         <button
           onClick={() => setShowUserMenu(!showUserMenu)}
-          className="flex w-full items-center gap-2 hover:bg-accent/50 p-2 -ml-2 rounded-lg transition-colors text-left"
+          className={cn(
+            "flex w-full items-center gap-2 rounded-lg p-2 text-left transition-colors hover:bg-accent/50",
+            isCompactMode ? "justify-center -ml-0" : "-ml-2"
+          )}
         >
           <div className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center">
             <User className="h-4 w-4 text-primary" />
           </div>
-          <div className="ml-3 flex-1">
-            <p className="text-sm font-medium text-foreground">{user?.username || t('sidebar.user.defaultName')}</p>
-          </div>
-          <ChevronDown className={cn("h-4 w-4 text-muted-foreground transition-transform", showUserMenu && "rotate-180")} />
+          {!isCompactMode ? (
+            <>
+              <div className="ml-3 flex-1">
+                <p className="text-sm font-medium text-foreground">{user?.username || t('sidebar.user.defaultName')}</p>
+              </div>
+              <ChevronDown className={cn("h-4 w-4 text-muted-foreground transition-transform", showUserMenu && "rotate-180")} />
+            </>
+          ) : null}
         </button>
       </div>
 
