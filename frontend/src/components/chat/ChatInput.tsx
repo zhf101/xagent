@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { Paperclip, X, File as FileIcon, Sparkles, Pause, Play, Loader2, ArrowUp, Globe, Database, BookOpen, Bot } from "lucide-react";
+import { Paperclip, X, File as FileIcon, Sparkles, Pause, Play, Loader2, ArrowUp, Globe, Database, BookOpen, Bot, Server, FileText, Cloud } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -14,6 +14,7 @@ import { useI18n } from "@/contexts/i18n-context";
 import { ConfigDialog } from "@/components/config-dialog";
 import { apiRequest } from "@/lib/api-wrapper";
 import { toast } from "sonner";
+import { useMentions, MentionItem } from "@/hooks/use-mentions";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -91,6 +92,9 @@ export function ChatInput({
   const [isLoadingFiles, setIsLoadingFiles] = useState(false);
   const [downloadingFile, setDownloadingFile] = useState<string | null>(null);
 
+  // @ Mention picker state
+  const mentions = useMentions();
+
   // Track files for async operations
   const filesRef = useRef(files);
   useEffect(() => {
@@ -135,7 +139,26 @@ export function ChatInput({
 
   const checkTrigger = (text: string, cursor: number) => {
     const textBeforeCursor = text.slice(0, cursor);
+
+    // 检测 @ mention 触发（优先级高于 #）
+    const lastAtIndex = textBeforeCursor.lastIndexOf("@");
     const lastHashIndex = textBeforeCursor.lastIndexOf("#");
+
+    // 判断哪个触发符更靠近光标
+    if (lastAtIndex > lastHashIndex && lastAtIndex !== -1) {
+      const query = textBeforeCursor.slice(lastAtIndex + 1);
+      // @ 后面不能包含 [ 或换行（说明已经完成了一个 mention）
+      if (!query.includes("\n") && !query.includes("[")) {
+        // 关闭 file picker，打开 mention picker
+        setShowFilePicker(false);
+        setTriggerIndex(-1);
+        mentions.checkMentionTrigger(text, cursor);
+        return;
+      }
+    }
+
+    // 关闭 mention picker
+    mentions.closeMentionPicker();
 
     if (lastHashIndex !== -1) {
       // Allow trigger anywhere
@@ -381,6 +404,38 @@ export function ChatInput({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    // @ Mention picker 键盘导航
+    if (mentions.showMentionPicker) {
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        mentions.mentionNavUp();
+        return;
+      }
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        mentions.mentionNavDown();
+        return;
+      }
+      if (e.key === "Enter" || e.key === "Tab") {
+        e.preventDefault();
+        if (mentions.mentionItems.length > 0) {
+          const item = mentions.mentionItems[mentions.selectedMentionIndex];
+          mentions.selectMentionItem(
+            item,
+            () => isControlled ? (inputValue || "") : internalMessage,
+            (v) => isControlled ? onInputChange?.(v) : setInternalMessage(v)
+          );
+        }
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        mentions.closeMentionPicker();
+        return;
+      }
+    }
+
+    // # File picker 键盘导航
     if (showFilePicker) {
       if (e.key === "ArrowUp") {
         e.preventDefault();
@@ -544,6 +599,77 @@ export function ChatInput({
             )}
           </div>
         )}
+        {/* @ Mention picker */}
+        {mentions.showMentionPicker && (
+          <div className="absolute bottom-full left-0 mb-2 w-full max-w-sm rounded-lg border bg-popover shadow-md z-50 overflow-hidden">
+            {mentions.mentionPhase === "category" && (
+              <div className="px-3 py-1.5 text-xs text-muted-foreground border-b bg-muted/30">
+                {t("chatPage.mentions.selectCategory")}
+              </div>
+            )}
+            {mentions.mentionPhase === "items" && mentions.activeCategory && (
+              <div className="px-3 py-1.5 text-xs text-muted-foreground border-b bg-muted/30 flex items-center gap-1.5">
+                {mentions.activeCategory.key === "environment" && <Cloud className="h-3 w-3" />}
+                {mentions.activeCategory.key === "system" && <Server className="h-3 w-3" />}
+                {mentions.activeCategory.key === "database" && <Database className="h-3 w-3" />}
+                {mentions.activeCategory.key === "template" && <FileText className="h-3 w-3" />}
+                @{mentions.activeCategory.displayName}
+              </div>
+            )}
+            {mentions.isLoadingMentions ? (
+              <div className="p-4 flex items-center justify-center text-sm text-muted-foreground">
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                {t("common.loading")}
+              </div>
+            ) : mentions.mentionItems.length === 0 ? (
+              <div className="p-4 text-sm text-muted-foreground text-center">
+                {t("chatPage.mentions.noData")}
+              </div>
+            ) : (
+              <div className="max-h-[200px] overflow-y-auto p-1">
+                {mentions.mentionItems.map((item, index) => (
+                  <div
+                    key={item.id}
+                    className={cn(
+                      "flex items-center gap-2 px-3 py-2 text-sm rounded-md cursor-pointer transition-colors",
+                      index === mentions.selectedMentionIndex ? "bg-accent text-accent-foreground" : "hover:bg-muted"
+                    )}
+                    onClick={() => {
+                      mentions.selectMentionItem(
+                        item,
+                        () => isControlled ? (inputValue || "") : internalMessage,
+                        (v: string) => { if (isControlled) { onInputChange?.(v) } else { setInternalMessage(v) } }
+                      );
+                      setTimeout(() => textareaRef.current?.focus(), 0);
+                    }}
+                  >
+                    {mentions.mentionPhase === "category" ? (
+                      <>
+                        {item.value === "environment" && <Cloud className="h-4 w-4 shrink-0 text-purple-500" />}
+                        {item.value === "system" && <Server className="h-4 w-4 shrink-0 text-blue-500" />}
+                        {item.value === "database" && <Database className="h-4 w-4 shrink-0 text-green-500" />}
+                        {item.value === "template" && <FileText className="h-4 w-4 shrink-0 text-orange-500" />}
+                      </>
+                    ) : (
+                      <>
+                        {mentions.activeCategory?.key === "environment" && <Cloud className="h-4 w-4 shrink-0 text-muted-foreground" />}
+                        {mentions.activeCategory?.key === "system" && <Server className="h-4 w-4 shrink-0 text-muted-foreground" />}
+                        {mentions.activeCategory?.key === "database" && <Database className="h-4 w-4 shrink-0 text-muted-foreground" />}
+                        {mentions.activeCategory?.key === "template" && <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />}
+                      </>
+                    )}
+                    <div className="flex flex-col items-start min-w-0">
+                      <span className="truncate font-medium">{item.label}</span>
+                      {item.description && (
+                        <span className="truncate text-xs text-muted-foreground">{item.description}</span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
         <form
           onSubmit={handleSubmit}
         className={cn(
@@ -560,6 +686,9 @@ export function ChatInput({
             if (showFilePicker) {
               setShowFilePicker(false);
               setTriggerIndex(-1);
+            }
+            if (mentions.showMentionPicker) {
+              mentions.closeMentionPicker();
             }
           }}
           onChange={handleMessageChange}

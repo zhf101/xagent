@@ -16,12 +16,8 @@ from .sql_agent import SqlExecutorAgent
 class DatamakepoolAgentProfile:
     """造数编排 agent 的配置组装器。
 
-    当前阶段先提供最小可创建版本：
-    - 专属 system prompt
-    - 空的 tool 集
-
-    后续 Task5 再把 SQL / HTTP / Dubbo / MCP 子 agent 通过 AgentTool 挂进来。
-    """
+    组装编排 agent 所需的 system prompt 和工具集（SQL / HTTP / Dubbo / MCP 子 agent）。
+"""
 
     ORCHESTRATOR_PROMPT = """
 你是智能造数平台的编排代理。
@@ -43,12 +39,14 @@ class DatamakepoolAgentProfile:
 """.strip()
 
     @staticmethod
-    def get_orchestrator_tools(llm, memory=None, **_: object) -> List[Tool]:
+    def get_orchestrator_tools(llm, memory=None, **kwargs: object) -> List[Tool]:
         """组装编排 agent 的工具集合（四个专业子 agent 包装为 AgentTool）。"""
         sql_agent = SqlExecutorAgent(name="sql_executor", llm=llm, memory=memory)
-        http_agent = HttpExecutorAgent(name="http_executor", llm=llm, memory=memory)
+        http_agent = HttpExecutorAgent(
+            name="http_executor", llm=llm, memory=memory, db=kwargs.get("db")
+        )
         dubbo_agent = DubboExecutorAgent(
-            name="dubbo_executor", llm=llm, memory=memory
+            name="dubbo_executor", llm=llm, memory=memory, db=kwargs.get("db")
         )
         mcp_agent = McpExecutorAgent(name="mcp_executor", llm=llm, memory=memory)
 

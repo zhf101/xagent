@@ -36,6 +36,8 @@ const zh = {
     files: "文件",
     memory: "记忆",
     dataSources: "数据源",
+    sqlAssets: "SQL资产",
+    httpAssets: "HTTP资产",
     monitoring: "监控",
     knowledgeBase: "知识库",
     knowledgeBaseDetail: "知识库详情",
@@ -185,6 +187,14 @@ const zh = {
       submitting: "提交中...",
       submit: "提交回复",
       unsupportedType: "不支持的字段类型: {type}",
+    },
+    mentions: {
+      selectCategory: "选择引用类别",
+      noData: "暂无数据",
+      environment: "环境",
+      system: "系统",
+      database: "数据库",
+      template: "模板",
     },
   },
   branding: {

@@ -1,0 +1,1 @@
+"""Datamakepool Web API package."""

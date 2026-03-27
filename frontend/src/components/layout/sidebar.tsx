@@ -166,6 +166,20 @@ const navigationGroups: NavigationGroup[] = [
             color: "text-gray-500"
           },
           {
+            name: "SQL Assets",
+            nameKey: "nav.sqlAssets",
+            href: "/sql-assets",
+            icon: Layers,
+            color: "text-gray-500"
+          },
+          {
+            name: "HTTP Assets",
+            nameKey: "nav.httpAssets",
+            href: "/http-assets",
+            icon: Server,
+            color: "text-gray-500"
+          },
+          {
             name: "Memory",
             nameKey: "nav.memory",
             href: "/memory",

@@ -41,6 +41,65 @@ logger = logging.getLogger(__name__)
 chat_router = APIRouter(prefix="/api/chat", tags=["chat"])
 
 
+async def attach_legacy_scenario_meta_tools(
+    agent_service: AgentService,
+    *,
+    task: Optional[Task],
+    db: Optional[Session],
+    request: Any,
+    user: Optional[User],
+    task_id: int,
+    tool_config: Optional[Any] = None,
+) -> None:
+    """Attach datamakepool-specific progressive MCP disclosure tools to one task."""
+    if (
+        task is None
+        or db is None
+        or user is None
+        or task.agent_type != AgentType.DATAMAKEPOOL_ORCHESTRATOR.value
+    ):
+        return
+
+    if any(
+        getattr(tool, "name", None) == "legacy_scenario_catalog_search"
+        for tool in agent_service.tools
+    ):
+        return
+
+    config = tool_config
+    if config is None:
+        config = WebToolConfig(
+            db=db,
+            request=request,
+            user_id=int(user.id),
+            is_admin=bool(user.is_admin),
+            workspace_config={
+                "base_dir": str(UPLOADS_DIR / f"user_{user.id}"),
+                "task_id": f"web_task_{task_id}",
+            },
+            include_mcp_tools=False,
+            task_id=f"web_task_{task_id}",
+        )
+
+    try:
+        from ...datamakepool.tools import create_legacy_scenario_meta_tools
+
+        meta_tools = await create_legacy_scenario_meta_tools(
+            mcp_configs=config.get_mcp_server_configs(),
+            user_id=int(user.id),
+            agent_service=agent_service,
+            db=db,
+        )
+        for tool in meta_tools:
+            agent_service.add_tool(tool)
+    except Exception as exc:
+        logger.warning(
+            "Failed to attach legacy scenario meta tools for task %s: %s",
+            task_id,
+            exc,
+        )
+
+
 def create_default_llm() -> Optional[BaseLLM]:
     """Create a default LLM instance based on environment configuration"""
     try:
@@ -526,6 +585,16 @@ class AgentServiceManager:
                             raise ValueError(
                                 "User context is required for Text2SQL agent creation"
                             )
+                    elif task.agent_type_enum == AgentType.DATAMAKEPOOL_ORCHESTRATOR:
+                        logger.info(f"🎯 Creating DatamakepoolOrchestrator agent for task {task.id}")
+                        if user is not None:
+                            return await self._create_datamakepool_orchestrator_agent(
+                                task, db, user, tracer
+                            )
+                        else:
+                            raise ValueError(
+                                "User context is required for Datamakepool orchestrator agent creation"
+                            )
                     else:
                         logger.info(
                             f"❌ Task {task.id} is not Text2SQL, using standard agent creation"
@@ -727,7 +796,6 @@ class AgentServiceManager:
                         logger.info(
                             f"🔗 Database URL: {config.get('database_url', 'NOT FOUND')}"
                         )
-
                     # Unpack tools and tool_config from create_default_tools
                     tools_list, tool_config = tools
 
@@ -775,6 +843,15 @@ class AgentServiceManager:
                         memory_similarity_threshold=memory_similarity_threshold,  # Set from task config
                         system_prompt=system_prompt,  # Pass agent builder instructions
                         **agent_kwargs,  # Pass Text2SQL-specific parameters
+                    )
+                    await attach_legacy_scenario_meta_tools(
+                        self._agents[task_id],
+                        task=task,
+                        db=db,
+                        request=self.request,
+                        user=user,
+                        task_id=task_id,
+                        tool_config=tool_config,
                     )
 
                     selected_file_ids: list[str] = []
@@ -1095,6 +1172,62 @@ class AgentServiceManager:
             logger.error(f"Failed to create Text2SQL agent for task {task.id}: {e}")
             raise
 
+    async def _create_datamakepool_orchestrator_agent(
+        self, task: Task, db: Session, user: User, tracer: Tracer
+    ) -> AgentService:
+        """Create DatamakepoolOrchestratorAgent service for data_generation mode."""
+        try:
+            llm_ids = self._get_task_llm_ids(task, db)
+            user_id_for_resolution = int(user.id) if user else None
+            task_llm, task_fast_llm, task_vision_llm, task_compact_llm = (
+                resolve_llms_from_names(llm_ids, db, user_id_for_resolution)
+            )
+            if not task_llm:
+                logger.warning(
+                    f"Datamakepool orchestrator task {task.id} has no valid LLM, using default"
+                )
+                task_llm = self._default_llm
+
+            with UserContext(int(user.id)):
+                agent_service = AgentService(
+                    name=f"datamakepool_orchestrator_task_{task.id}",
+                    id=f"web_task_{task.id}",
+                    agent_type=AgentType.DATAMAKEPOOL_ORCHESTRATOR.value,
+                    llm=task_llm,
+                    fast_llm=task_fast_llm,
+                    vision_llm=task_vision_llm,
+                    compact_llm=task_compact_llm,
+                    tracer=tracer,
+                    enable_workspace=True,
+                    task_id=str(task.id),
+                    use_dag_pattern=True,
+                    workspace_base_dir=str(UPLOADS_DIR / f"user_{user.id}"),
+                    memory=get_memory_store(),
+                    # db is forwarded via **agent_kwargs → VerticalAgentFactory → agent constructor
+                    db=db,
+                )
+
+                await attach_legacy_scenario_meta_tools(
+                    agent_service,
+                    task=task,
+                    db=db,
+                    request=self.request,
+                    user=user,
+                    task_id=int(task.id),
+                )
+
+                self._agents[int(task.id)] = agent_service
+                logger.info(
+                    f"Created DatamakepoolOrchestratorAgent for task {task.id}"
+                )
+                return agent_service
+
+        except Exception as e:
+            logger.error(
+                f"Failed to create DatamakepoolOrchestratorAgent for task {task.id}: {e}"
+            )
+            raise
+
     def _infer_database_type(self, database_url: str) -> str:
         """Infer database type from connection URL"""
         if database_url.startswith("mysql://") or database_url.startswith("mysql2://"):
@@ -1270,6 +1403,16 @@ class AgentServiceManager:
                             ),  # Use user-isolated base directory
                             task_id=str(task_id),
                             memory_similarity_threshold=None,  # Reconstructed agents use default
+                        )
+                        task_user = db.query(User).filter(User.id == user_id).first()
+                        await attach_legacy_scenario_meta_tools(
+                            self._agents[task_id],
+                            task=task,
+                            db=db,
+                            request=self.request,
+                            user=task_user,
+                            task_id=task_id,
+                            tool_config=None,
                         )
                 else:
                     raise ValueError(
@@ -1560,6 +1703,15 @@ async def create_task(
                     f"Unknown agent_type '{request.agent_type}', using STANDARD"
                 )
                 agent_type_enum = AgentType.STANDARD
+
+        # Promote agent_type to DATAMAKEPOOL_ORCHESTRATOR when domain_mode is data_generation
+        if (
+            agent_type_enum == AgentType.STANDARD
+            and isinstance(request.agent_config, dict)
+            and request.agent_config.get("domain_mode") == "data_generation"
+        ):
+            agent_type_enum = AgentType.DATAMAKEPOOL_ORCHESTRATOR
+            logger.info("Promoting agent_type to DATAMAKEPOOL_ORCHESTRATOR for data_generation mode")
 
         # Convert examples to list of dicts if provided
         examples_data = None

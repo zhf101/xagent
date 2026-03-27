@@ -22,6 +22,24 @@ HIGH_RISK_MARKERS = (
     "变更结构",
 )
 
+SQL_CONTEXT_MARKERS = (
+    " sql ",
+    " select ",
+    " insert ",
+    " update ",
+    " delete ",
+    " truncate ",
+    " alter ",
+    " ddl ",
+    " from ",
+    " where ",
+    " join ",
+    "表",
+    "字段",
+    "索引",
+    "sql",
+)
+
 
 @dataclass(frozen=True)
 class ApprovalDecision:
@@ -49,13 +67,30 @@ class ApprovalGate:
         domain_mode: str,
         requester_id: int,
         system_short: str | None = None,
+        execution_kind: str | None = None,
     ) -> ApprovalDecision:
         if domain_mode != "data_generation":
             return ApprovalDecision(False, "not_data_generation")
 
+        # 架构设计 v3 明确约束：
+        # - HTTP 调用不做运行时审批
+        # - Dubbo 调用不做运行时审批
+        # - 运行时审批只针对高风险 SQL
+        if execution_kind in {"http", "dubbo", "mcp"}:
+            return ApprovalDecision(
+                False,
+                f"{execution_kind}_execution_never_requires_approval",
+            )
+
         normalized = f" {task_description.lower()} "
-        if not any(marker in normalized for marker in HIGH_RISK_MARKERS):
-            return ApprovalDecision(False, "low_risk_or_no_sql_marker")
+        if execution_kind == "sql":
+            if not any(marker in normalized for marker in HIGH_RISK_MARKERS):
+                return ApprovalDecision(False, "sql_but_not_high_risk")
+        else:
+            if not any(marker in normalized for marker in HIGH_RISK_MARKERS):
+                return ApprovalDecision(False, "low_risk_or_no_sql_marker")
+            if not any(marker in normalized for marker in SQL_CONTEXT_MARKERS):
+                return ApprovalDecision(False, "high_risk_but_not_sql")
 
         approval = self._approval_service.create_approval(
             approval_type="run_step_approval",

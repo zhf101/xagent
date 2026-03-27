@@ -22,10 +22,13 @@ class DubboExecutorAgent(VerticalAgent):
             "你是 Dubbo 造数专家。"
             "你的职责是处理 Dubbo 服务调用相关的造数步骤，优先命中已治理 Dubbo 资产，"
             "并生成可审计的服务调用方案。"
+            "你必须优先使用已治理 Dubbo 资产，不得凭空捏造真实 Dubbo 执行细节。"
         )
 
     def _get_domain_tools(self, **kwargs: Any) -> Sequence[Tool]:
-        return create_dubbo_tools()
+        return create_dubbo_tools(
+            db=kwargs.get("db"),
+        )
 
     def _get_domain_patterns(
         self, llm: BaseLLM, **kwargs: Any

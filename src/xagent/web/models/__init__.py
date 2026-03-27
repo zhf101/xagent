@@ -1,8 +1,14 @@
 from .biz_system import BizSystem
+from .datamakepool_asset import DataMakepoolAsset
+from .datamakepool_admin_binding import DataMakepoolAdminBinding
+from .datamakepool_run import DataMakepoolRun, DataMakepoolRunStep
+from .datamakepool_template import DataMakepoolTemplate, DataMakepoolTemplateVersion
+from .datamakepool_template_draft import DataMakepoolTemplateDraft
 from .agent import Agent
 from .chat_message import TaskChatMessage
 from .datamakepool_approval import DataMakepoolApproval
 from .database import Base, get_db, get_engine, get_session_local
+from .legacy_scenario_catalog import LegacyScenarioCatalog
 from .mcp import MCPServer, UserMCPServer
 from .model import Model
 from .sandbox import SandboxInfo
@@ -19,6 +25,12 @@ from .user_oauth import UserOAuth
 __all__ = [
     "Base",
     "BizSystem",
+    "DataMakepoolAdminBinding",
+    "DataMakepoolAsset",
+    "DataMakepoolRun",
+    "DataMakepoolRunStep",
+    "DataMakepoolTemplate",
+    "DataMakepoolTemplateVersion",
     "get_engine",
     "get_db",
     "get_session_local",
@@ -40,6 +52,8 @@ __all__ = [
     "Agent",
     "TaskChatMessage",
     "DataMakepoolApproval",
+    "DataMakepoolTemplateDraft",
+    "LegacyScenarioCatalog",
     "UploadedFile",
     "SandboxInfo",
 ]

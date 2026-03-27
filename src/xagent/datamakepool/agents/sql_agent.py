@@ -26,7 +26,11 @@ class SqlExecutorAgent(VerticalAgent):
         )
 
     def _get_domain_tools(self, **kwargs: Any) -> Sequence[Tool]:
-        return create_sql_tools(sql_brain=SQLBrainService())
+        return create_sql_tools(
+            sql_brain=SQLBrainService(),
+            db=kwargs.get("db"),
+            system_short=kwargs.get("system_short"),
+        )
 
     def _get_domain_patterns(
         self, llm: BaseLLM, **kwargs: Any

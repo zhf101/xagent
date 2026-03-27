@@ -1833,6 +1833,27 @@ async def handle_execute_task(
                 db.commit()
                 if task.status == TaskStatus.COMPLETED:
                     schedule_user_task_prompt_refresh(int(user.id), force=True)
+                    # 执行成功后从多 agent 执行轨迹沉淀模板草稿（仅 data_generation + orchestrator 路径）
+                    if (
+                        mode_decision.domain_mode == "data_generation"
+                        and task.agent_type_enum == AgentType.DATAMAKEPOOL_ORCHESTRATOR
+                    ):
+                        try:
+                            from xagent.datamakepool.extractors import TemplateDraftExtractor
+                            TemplateDraftExtractor(db).extract_and_save(
+                                task_description=str(task.description),
+                                result=result,
+                                task_id=int(task_id),
+                                system_short=generation_system_short,
+                                created_by=int(user.id),
+                                execution_plan=planning_decision.execution_plan,
+                                params=params,
+                                match_type=match_result.match_type,
+                            )
+                        except Exception as _draft_exc:
+                            logger.warning(
+                                f"TemplateDraftExtractor failed for task {task_id}: {_draft_exc}"
+                            )
 
                 # Send task completion event (don't duplicate result as trace system already sent)
 

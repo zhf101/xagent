@@ -48,7 +48,15 @@ def init_db(db_url: str | None = None) -> None:
     # Import all models to ensure they are registered with Base.metadata
     from . import (  # noqa: F401
         BizSystem,
+        DataMakepoolAdminBinding,
+        DataMakepoolAsset,
         DataMakepoolApproval,
+        DataMakepoolRun,
+        DataMakepoolRunStep,
+        DataMakepoolTemplate,
+        DataMakepoolTemplateDraft,
+        DataMakepoolTemplateVersion,
+        LegacyScenarioCatalog,
         MCPServer,
         Model,
         SystemSetting,

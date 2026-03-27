@@ -36,6 +36,8 @@ const en = {
     files: "Files",
     memory: "Memory",
     dataSources: "Data Sources",
+    sqlAssets: "SQL Assets",
+    httpAssets: "HTTP Assets",
     monitoring: "Monitoring",
     knowledgeBase: "Knowledge Base",
     knowledgeBaseDetail: "KB Detail",
@@ -185,6 +187,13 @@ const en = {
       submitting: "Submitting...",
       submit: "Submit Response",
       unsupportedType: "Unsupported field type: {type}",
+    },
+    mentions: {
+      selectCategory: "Select reference type",
+      noData: "No data",
+      system: "System",
+      database: "Database",
+      template: "Template",
     },
   },
   branding: {

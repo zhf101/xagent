@@ -12,6 +12,10 @@ from .api.agents import router as agents_router
 from .api.auth import auth_router
 from .api.chat import chat_router
 from .api.cloud_storage import cloud_router
+from .api.datamakepool.http_assets import http_assets_router
+from .api.datamakepool.dubbo_assets import dubbo_assets_router
+from .api.datamakepool.legacy_scenarios import legacy_scenarios_router
+from .api.datamakepool.sql_assets import sql_assets_router
 from .api.files import file_router
 from .api.kb import kb_router
 from .api.mcp import mcp_router
@@ -24,6 +28,7 @@ from .api.skills import router as skills_router
 from .api.system import system_router
 from .api.templates import router as templates_router
 from .api.text2sql import text2sql_router
+from .api.mentions import mentions_router
 from .api.tools import tools_router
 from .api.websocket import ws_router
 from .config import UPLOADS_DIR
@@ -132,6 +137,10 @@ memory_router = MemoryManagementRouter(get_memory_store).get_router()
 app.include_router(auth_router)
 app.include_router(chat_router)
 app.include_router(cloud_router)
+app.include_router(http_assets_router)
+app.include_router(dubbo_assets_router)
+app.include_router(legacy_scenarios_router)
+app.include_router(sql_assets_router)
 app.include_router(file_router)
 app.include_router(kb_router)
 app.include_router(model_router)
@@ -142,6 +151,7 @@ app.include_router(recommendation_router)
 app.include_router(memory_router)
 app.include_router(mcp_router)
 app.include_router(text2sql_router)
+app.include_router(mentions_router)
 app.include_router(tools_router)
 app.include_router(admin_users_router)
 app.include_router(skills_router)

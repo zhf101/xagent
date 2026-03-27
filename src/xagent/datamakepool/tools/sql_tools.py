@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+from sqlalchemy.orm import Session
+
 from xagent.core.tools.adapters.vibe.base import ToolCategory, ToolVisibility
 from xagent.core.tools.adapters.vibe.function import FunctionTool
+from xagent.datamakepool.assets.repositories import SqlAssetRepository
+from xagent.datamakepool.assets.service import SqlAssetResolverService
 from xagent.datamakepool.sql_brain import SQLBrainService
 
 
@@ -11,15 +15,38 @@ class DatamakepoolSqlTool(FunctionTool):
     category = ToolCategory.DATABASE
 
 
-def create_sql_tools(sql_brain: SQLBrainService | None = None) -> list[FunctionTool]:
+def create_sql_tools(
+    sql_brain: SQLBrainService | None = None,
+    db: Session | None = None,
+    system_short: str | None = None,
+) -> list[FunctionTool]:
     sql_brain = sql_brain or SQLBrainService()
 
     def sql_asset_check(task: str) -> dict:
         """Check whether the task may match an approved SQL asset."""
+        if db is None:
+            return {
+                "success": False,
+                "matched": False,
+                "message": "No database session available for SQL asset lookup.",
+            }
+        result = SqlAssetResolverService(SqlAssetRepository(db)).resolve(
+            task=task,
+            system_short=system_short,
+        )
+        if result.matched:
+            return {
+                "success": True,
+                "matched": True,
+                "asset_id": result.asset_id,
+                "asset_name": result.asset_name,
+                "config": result.config,
+                "reason": result.reason,
+            }
         return {
             "success": True,
             "matched": False,
-            "message": f"SQL asset check placeholder for: {task}",
+            "reason": result.reason,
         }
 
     def execute_sql_plan(task: str) -> dict:
