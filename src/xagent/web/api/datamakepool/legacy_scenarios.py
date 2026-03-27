@@ -50,6 +50,7 @@ class LegacyScenarioCatalogItem(BaseModel):
     used_ann: bool = False
     used_fallback: bool = False
     stage_results: list[dict[str, Any]] = []
+    score_breakdown: dict[str, float] = {}
 
 
 def _catalog_service(db: Session, user: User) -> LegacyScenarioCatalogService:

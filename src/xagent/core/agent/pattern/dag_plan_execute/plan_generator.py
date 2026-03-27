@@ -8,6 +8,14 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
+from ....observability.local_logging import (
+    log_llm_call_failed,
+    log_llm_call_finished,
+    log_llm_call_started,
+    should_log_full_llm_content,
+    summarize_messages,
+    summarize_text,
+)
 from ....model.chat.basic.base import BaseLLM
 from ....model.chat.token_context import add_token_usage
 from ....tools.adapters.vibe import Tool
@@ -1357,10 +1365,19 @@ class PlanGenerator:
         self, messages: List[Dict[str, str]], **kwargs: Any
     ) -> Any:
         """Call LLM with retry mechanism: JSON mode first, then fallback to normal mode."""
+        cleaned_messages = clean_messages(messages)
+        input_summary = (
+            summarize_text(cleaned_messages, limit=2000)
+            if should_log_full_llm_content()
+            else summarize_messages(cleaned_messages)
+        )
+        llm_started_at = log_llm_call_started(
+            model=self.llm.model_name,
+            call_type="dag_plan_generation",
+            input_summary=input_summary,
+            component="plan_generator",
+        )
         try:
-            # Clean messages before sending to LLM
-            cleaned_messages = clean_messages(messages)
-
             # Use streaming API to collect complete response
             full_content = ""
             usage = {}
@@ -1408,12 +1425,44 @@ class PlanGenerator:
 
             # Return format (compatible with original chat())
             if tool_calls:
-                return {
+                result_payload = {
                     "content": full_content,
                     "tool_calls": tool_calls,
                     "usage": usage,
                 }
-            return {"content": full_content, "usage": usage}
+                output_summary = (
+                    summarize_text(result_payload, limit=2000)
+                    if should_log_full_llm_content()
+                    else summarize_text(result_payload, limit=240)
+                )
+                log_llm_call_finished(
+                    started_at=llm_started_at,
+                    model=self.llm.model_name,
+                    call_type="dag_plan_generation",
+                    input_summary=input_summary,
+                    output_summary=output_summary,
+                    usage=usage,
+                    component="plan_generator",
+                    retry_mode="structured",
+                )
+                return result_payload
+            result_payload = {"content": full_content, "usage": usage}
+            output_summary = (
+                summarize_text(result_payload, limit=2000)
+                if should_log_full_llm_content()
+                else summarize_text(result_payload, limit=240)
+            )
+            log_llm_call_finished(
+                started_at=llm_started_at,
+                model=self.llm.model_name,
+                call_type="dag_plan_generation",
+                input_summary=input_summary,
+                output_summary=output_summary,
+                usage=usage,
+                component="plan_generator",
+                retry_mode="structured",
+            )
+            return result_payload
 
         except Exception as e:
             logger.warning(f"JSON mode call failed, retrying with normal mode: {e}")
@@ -1443,9 +1492,33 @@ class PlanGenerator:
                         call_type="plan_generation_fallback",
                     )
 
-                return {"content": full_content, "usage": usage}
+                result_payload = {"content": full_content, "usage": usage}
+                output_summary = (
+                    summarize_text(result_payload, limit=2000)
+                    if should_log_full_llm_content()
+                    else summarize_text(result_payload, limit=240)
+                )
+                log_llm_call_finished(
+                    started_at=llm_started_at,
+                    model=self.llm.model_name,
+                    call_type="dag_plan_generation",
+                    input_summary=input_summary,
+                    output_summary=output_summary,
+                    usage=usage,
+                    component="plan_generator",
+                    retry_mode="fallback",
+                )
+                return result_payload
             except Exception as e2:
                 logger.error(f"Normal mode call also failed: {e2}")
+                log_llm_call_failed(
+                    started_at=llm_started_at,
+                    model=self.llm.model_name,
+                    call_type="dag_plan_generation",
+                    input_summary=input_summary,
+                    error=e2 if isinstance(e2, Exception) else RuntimeError(str(e2)),
+                    component="plan_generator",
+                )
                 raise
 
     async def _parse_plan_response_with_retry(

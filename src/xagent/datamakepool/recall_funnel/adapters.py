@@ -110,6 +110,7 @@ class TemplateRecallAdapter:
             candidate = candidate_map[cid]
             candidate.payload = item
             candidate.final_score = 1.0 / score_map[cid]
+            candidate.score_breakdown = item.get("score_breakdown", {})
             ordered.append(candidate)
         return ordered
 
@@ -215,25 +216,52 @@ class SqlAssetRecallAdapter:
             score = 0.0
             matched_signals: list[str] = []
             if candidate.ann_score is not None:
-                score += candidate.ann_score * 0.25
+                ann_component = candidate.ann_score * 0.25
+                score += ann_component
                 matched_signals.append("ann")
+            else:
+                ann_component = 0.0
             if any(tag and tag in task_lower for tag in tags):
-                score += 0.45
+                tag_component = 0.45
+                score += tag_component
                 matched_signals.append("tags")
+            else:
+                tag_component = 0.0
             if any(table and table in task_lower for table in table_names):
-                score += 0.25
+                table_component = 0.25
+                score += table_component
                 matched_signals.append("table_names")
+            else:
+                table_component = 0.0
             if name_lower and name_lower in task_lower:
-                score += 0.2
+                name_component = 0.2
+                score += name_component
                 matched_signals.append("asset_name")
+            else:
+                name_component = 0.0
             if sql_kind and sql_kind in task_lower:
-                score += 0.15
+                kind_component = 0.15
+                score += kind_component
                 matched_signals.append("sql_kind")
+            else:
+                kind_component = 0.0
             if desc_lower and any(word in task_lower for word in desc_lower.split() if len(word) > 3):
-                score += 0.08
+                desc_component = 0.08
+                score += desc_component
                 matched_signals.append("description")
+            else:
+                desc_component = 0.0
             candidate.final_score = round(score, 4)
             candidate.matched_signals = matched_signals
+            candidate.score_breakdown = {
+                "ann_score": round(ann_component, 4),
+                "tag_score": round(tag_component, 4),
+                "table_score": round(table_component, 4),
+                "name_score": round(name_component, 4),
+                "sql_kind_score": round(kind_component, 4),
+                "description_score": round(desc_component, 4),
+                "final_score": round(score, 4),
+            }
             reranked.append(candidate)
         reranked.sort(key=lambda item: item.final_score, reverse=True)
         return reranked
@@ -245,6 +273,7 @@ class SqlAssetRecallAdapter:
                 "asset_name": item.payload.name,
                 "score": item.final_score,
                 "matched_signals": item.matched_signals,
+                "score_breakdown": item.score_breakdown,
             }
             for item in candidates[:3]
         ]
@@ -342,13 +371,20 @@ class HttpAssetRecallAdapter:
             score = 0.0
             matched_signals: list[str] = []
             if candidate.ann_score is not None:
-                score += candidate.ann_score * 0.2
+                ann_component = candidate.ann_score * 0.2
+                score += ann_component
                 matched_signals.append("ann")
+            else:
+                ann_component = 0.0
             if asset_method and asset_method == request_method:
-                score += 0.4
+                method_component = 0.4
+                score += method_component
                 matched_signals.append("method")
+            else:
+                method_component = 0.0
             if expected_path == request_path:
-                score += 1.0
+                path_component = 1.0
+                score += path_component
                 matched_signals.append("path_exact")
             else:
                 path_lower = path_template.lower()
@@ -356,10 +392,19 @@ class HttpAssetRecallAdapter:
                 asset_desc_lower = (asset.description or "").lower()
                 token_score = sum(1 for token in request_tokens if token in path_lower or token in asset_name_lower or token in asset_desc_lower)
                 if token_score:
-                    score += min(token_score * 0.08, 0.32)
+                    path_component = min(token_score * 0.08, 0.32)
+                    score += path_component
                     matched_signals.append("path_tokens")
+                else:
+                    path_component = 0.0
             candidate.final_score = round(score, 4)
             candidate.matched_signals = matched_signals
+            candidate.score_breakdown = {
+                "ann_score": round(ann_component, 4),
+                "method_score": round(method_component, 4),
+                "path_score": round(path_component, 4),
+                "final_score": round(score, 4),
+            }
             reranked.append(candidate)
         reranked.sort(key=lambda item: item.final_score, reverse=True)
         return reranked
@@ -391,6 +436,7 @@ class HttpAssetRecallAdapter:
                 "path_template": (item.payload.config or {}).get("path_template"),
                 "method": (item.payload.config or {}).get("method"),
                 "match_score": item.final_score,
+                "score_breakdown": item.score_breakdown,
             }
             for item in candidates[:3]
             if item.final_score > 0
@@ -495,23 +541,44 @@ class LegacyScenarioRecallAdapter:
             score = candidate.rule_score or 0.0
             matched_signals: list[str] = []
             if candidate.ann_score is not None:
-                score += candidate.ann_score * 0.25
+                ann_component = candidate.ann_score * 0.25
+                score += ann_component
                 matched_signals.append("ann")
+            else:
+                ann_component = 0.0
             if query.system_short and entry.system_short and entry.system_short.lower() == query.system_short.lower():
                 matched_signals.append("system_short")
+                system_component = 0.45
+            else:
+                system_component = 0.0
+            name_component = 0.0
+            desc_component = 0.0
             for token in re.split(r"\s+|，|,|；|;", query_lower):
                 if not token:
                     continue
                 if token in entry.scenario_name.lower():
+                    name_component += 0.12
                     score += 0.12
                     matched_signals.append("scenario_name")
                 if token in entry.description.lower():
+                    desc_component += 0.08
                     score += 0.08
                     matched_signals.append("description")
-            score += min((entry.usage_count or 0) * 0.015, 0.2)
-            score += min((entry.success_rate or 0) / 1000.0, 0.1)
+            popularity_component = min((entry.usage_count or 0) * 0.015, 0.2)
+            success_component = min((entry.success_rate or 0) / 1000.0, 0.1)
+            score += popularity_component
+            score += success_component
             candidate.final_score = round(score, 4)
             candidate.matched_signals = sorted(set(matched_signals))
+            candidate.score_breakdown = {
+                "ann_score": round(ann_component, 4),
+                "domain_score": round(system_component, 4),
+                "name_score": round(name_component, 4),
+                "description_score": round(desc_component, 4),
+                "popularity_score": round(popularity_component, 4),
+                "success_score": round(success_component, 4),
+                "final_score": round(score, 4),
+            }
             reranked.append(candidate)
         reranked.sort(key=lambda item: item.final_score, reverse=True)
         return reranked
@@ -522,6 +589,7 @@ class LegacyScenarioRecallAdapter:
                 **candidate.payload.to_dict(),
                 "match_score": candidate.final_score,
                 "matched_signals": candidate.matched_signals,
+                "score_breakdown": candidate.score_breakdown,
             }
             for candidate in candidates[: max(1, min(query.top_k, 10))]
             if candidate.final_score > 0

@@ -64,8 +64,8 @@ class TemplateRanker:
         candidate: dict[str, Any],
         params: dict[str, Any],
         usage_counts: dict[int, int],
-    ) -> float:
-        """对单个候选模板计算融合分。"""
+    ) -> tuple[float, dict[str, float]]:
+        """对单个候选模板计算融合分和分项拆解。"""
         # 1. 向量相似度分（cosine distance 越小越相似）
         distance = float(candidate.get("_distance", 1.0))
         vec_score = max(0.0, 1.0 - distance)
@@ -88,7 +88,13 @@ class TemplateRanker:
         used = usage_counts.get(tid, 0)
         popularity_score = min(1.0, used / 100.0)
 
-        return vec_score * 0.55 + sys_score * 0.35 + popularity_score * 0.10
+        final_score = vec_score * 0.55 + sys_score * 0.35 + popularity_score * 0.10
+        return final_score, {
+            "ann_score": round(vec_score, 4),
+            "domain_score": round(sys_score, 4),
+            "popularity_score": round(popularity_score, 4),
+            "final_score": round(final_score, 4),
+        }
 
     def rank(
         self,
@@ -114,9 +120,15 @@ class TemplateRanker:
         template_ids = [int(c.get("id", 0)) for c in candidates if c.get("id")]
         usage_counts = self._load_usage_counts(template_ids)
 
-        scored = [
-            (self._score(c, params, usage_counts), c)
-            for c in candidates
-        ]
+        scored: list[tuple[float, dict[str, float], dict[str, Any]]] = []
+        for candidate in candidates:
+            final_score, breakdown = self._score(candidate, params, usage_counts)
+            scored.append((final_score, breakdown, candidate))
+
         scored.sort(key=lambda x: x[0], reverse=True)
-        return [c for _, c in scored[:top_n]]
+        ranked: list[dict[str, Any]] = []
+        for _, breakdown, candidate in scored[:top_n]:
+            enriched = dict(candidate)
+            enriched["score_breakdown"] = breakdown
+            ranked.append(enriched)
+        return ranked

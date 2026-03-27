@@ -44,6 +44,7 @@ class HttpAssetMatchResult:
     used_ann: bool = False
     used_fallback: bool = False
     stage_results: list[dict[str, Any]] = field(default_factory=list)
+    score_breakdown: dict[str, float] = field(default_factory=dict)
 
 
 class HttpAssetResolverService:
@@ -94,6 +95,7 @@ class HttpAssetResolverService:
             used_ann=execution.used_ann,
             used_fallback=execution.used_fallback,
             stage_results=[stage.to_dict() for stage in execution.stage_results],
+            score_breakdown=payload.get("score_breakdown") or {},
         )
 
 
@@ -114,6 +116,7 @@ class SqlAssetMatchResult:
     used_ann: bool = False
     used_fallback: bool = False
     stage_results: list[dict[str, Any]] = field(default_factory=list)
+    score_breakdown: dict[str, float] = field(default_factory=dict)
 
 
 class SqlAssetResolverService:
@@ -168,6 +171,7 @@ class SqlAssetResolverService:
             used_ann=execution.used_ann,
             used_fallback=execution.used_fallback,
             stage_results=[stage.to_dict() for stage in execution.stage_results],
+            score_breakdown=payload.get("score_breakdown") or {},
         )
 
 

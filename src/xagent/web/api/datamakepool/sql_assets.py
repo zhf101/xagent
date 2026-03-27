@@ -90,6 +90,7 @@ class SqlAssetResolveResponse(BaseModel):
     used_ann: bool = False
     used_fallback: bool = False
     stage_results: List[Dict[str, Any]] = Field(default_factory=list)
+    score_breakdown: Dict[str, float] = Field(default_factory=dict)
 
 
 class DatasourceAssetOption(BaseModel):
@@ -451,4 +452,5 @@ async def resolve_sql_asset(
         used_ann=result.used_ann,
         used_fallback=result.used_fallback,
         stage_results=result.stage_results,
+        score_breakdown=result.score_breakdown,
     )

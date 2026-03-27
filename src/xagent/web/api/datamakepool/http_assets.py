@@ -97,6 +97,7 @@ class HttpAssetResolveResponse(BaseModel):
     used_fallback: bool = False
     stage_results: List[Dict[str, Any]] = Field(default_factory=list)
     fallback_candidates: List[Dict[str, Any]] = Field(default_factory=list)
+    score_breakdown: Dict[str, float] = Field(default_factory=dict)
 
 
 class HttpAssetDebugRequest(BaseModel):
@@ -402,6 +403,7 @@ async def resolve_http_asset(
         used_fallback=result.used_fallback,
         stage_results=result.stage_results,
         fallback_candidates=result.fallback_candidates,
+        score_breakdown=result.score_breakdown,
     )
 
 

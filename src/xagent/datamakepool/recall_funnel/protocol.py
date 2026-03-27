@@ -27,6 +27,7 @@ class RecallCandidate(Generic[PayloadT]):
     rule_score: float | None = None
     final_score: float = 0.0
     matched_signals: list[str] = field(default_factory=list)
+    score_breakdown: dict[str, float] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
 
 

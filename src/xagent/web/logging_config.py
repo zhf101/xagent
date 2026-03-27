@@ -87,13 +87,16 @@ def build_logging_config(level: LogLevel = "INFO", *, debug: bool = False) -> di
                 "encoding": "utf-8",
             },
         },
-        "loggers": {
-            "aiohttp": {"level": "WARNING"},
-            "sqlalchemy": {"level": "WARNING"},
-            "urllib3": {"level": "WARNING"},
-            "watchfiles": {"level": "WARNING"},
-            "watchfiles.main": {"level": "WARNING"},
-            "uvicorn.access": {
+            "loggers": {
+                "aiohttp": {"level": "WARNING"},
+                "sqlalchemy": {"level": "WARNING"},
+                "urllib3": {"level": "WARNING"},
+                "xagent.core.agent.trace": {"level": "WARNING"},
+                "xagent.core.agent.pattern.dag_plan_execute.plan_generator": {"level": "WARNING"},
+                "xagent.core.agent.pattern.dag_plan_execute.result_analyzer": {"level": "WARNING"},
+                "watchfiles": {"level": "WARNING"},
+                "watchfiles.main": {"level": "WARNING"},
+                "uvicorn.access": {
                 "level": "INFO",
                 "handlers": ["access_file"],
                 "propagate": False,

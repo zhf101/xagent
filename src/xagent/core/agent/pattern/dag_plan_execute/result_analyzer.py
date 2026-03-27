@@ -10,6 +10,14 @@ from typing import Any, Dict, List, Optional
 
 from json_repair import loads as repair_loads
 
+from ....observability.local_logging import (
+    log_llm_call_failed,
+    log_llm_call_finished,
+    log_llm_call_started,
+    should_log_full_llm_content,
+    summarize_messages,
+    summarize_text,
+)
 from ....model.chat.basic.base import BaseLLM
 from ....model.chat.token_context import add_token_usage
 from ...exceptions import LLMResponseError
@@ -549,6 +557,17 @@ STORAGE THRESHOLD: Be extremely conservative. Default to should_store = false un
 
             # Clean messages before sending to LLM
             cleaned_prompt = clean_messages(prompt)
+            input_summary = (
+                summarize_text(cleaned_prompt, limit=2000)
+                if should_log_full_llm_content()
+                else summarize_messages(cleaned_prompt)
+            )
+            llm_started_at = log_llm_call_started(
+                model=self.llm.model_name,
+                call_type="dag_final_answer",
+                input_summary=input_summary,
+                component="result_analyzer",
+            )
             # Call LLM to generate final answer
             # Use streaming API to collect complete response
             full_content = ""
@@ -573,10 +592,32 @@ STORAGE THRESHOLD: Be extremely conservative. Default to should_store = false un
                 },
             )
 
+            output_summary = (
+                summarize_text(content, limit=2000)
+                if should_log_full_llm_content()
+                else summarize_text(content, limit=240)
+            )
+            log_llm_call_finished(
+                started_at=llm_started_at,
+                model=self.llm.model_name,
+                call_type="dag_final_answer",
+                input_summary=input_summary,
+                output_summary=output_summary,
+                component="result_analyzer",
+            )
+
             return content.strip()
 
         except Exception as e:
             logger.error(f"Error generating final answer: {e}")
+            log_llm_call_failed(
+                started_at=llm_started_at if "llm_started_at" in locals() else time.perf_counter(),
+                model=self.llm.model_name,
+                call_type="dag_final_answer",
+                input_summary=input_summary if "input_summary" in locals() else summarize_text(goal, limit=240),
+                error=e if isinstance(e, Exception) else RuntimeError(str(e)),
+                component="result_analyzer",
+            )
             # Fallback to simple summary
             return self._generate_fallback_summary(history)
 
@@ -748,9 +789,19 @@ STORAGE THRESHOLD: Be extremely conservative. Default to should_store = false un
 
         This is similar to plan_generator._call_llm_with_retry and uses stream_chat().
         """
+        cleaned_messages = clean_messages(messages)
+        input_summary = (
+            summarize_text(cleaned_messages, limit=2000)
+            if should_log_full_llm_content()
+            else summarize_messages(cleaned_messages)
+        )
+        llm_started_at = log_llm_call_started(
+            model=self.llm.model_name,
+            call_type="dag_goal_check",
+            input_summary=input_summary,
+            component="result_analyzer",
+        )
         try:
-            # Clean messages before sending to LLM
-            cleaned_messages = clean_messages(messages)
 
             # Use streaming API to collect complete response
             full_content = ""
@@ -809,7 +860,23 @@ STORAGE THRESHOLD: Be extremely conservative. Default to should_store = false un
                     f"Unexpected full_content type: {type(full_content)}, value: {full_content!r}"
                 )
                 full_content = str(full_content)
-            return {"content": full_content, "usage": usage}
+            result_payload = {"content": full_content, "usage": usage}
+            output_summary = (
+                summarize_text(result_payload, limit=2000)
+                if should_log_full_llm_content()
+                else summarize_text(result_payload, limit=240)
+            )
+            log_llm_call_finished(
+                started_at=llm_started_at,
+                model=self.llm.model_name,
+                call_type="dag_goal_check",
+                input_summary=input_summary,
+                output_summary=output_summary,
+                usage=usage,
+                component="result_analyzer",
+                retry_mode="structured",
+            )
+            return result_payload
 
         except Exception as e:
             logger.warning(f"JSON mode call failed, retrying with normal mode: {e}")
@@ -866,8 +933,32 @@ STORAGE THRESHOLD: Be extremely conservative. Default to should_store = false un
                         f"Unexpected full_content type in fallback: {type(full_content)}, value: {full_content!r}"
                     )
                     full_content = str(full_content)
-                return {"content": full_content, "usage": usage}
+                result_payload = {"content": full_content, "usage": usage}
+                output_summary = (
+                    summarize_text(result_payload, limit=2000)
+                    if should_log_full_llm_content()
+                    else summarize_text(result_payload, limit=240)
+                )
+                log_llm_call_finished(
+                    started_at=llm_started_at,
+                    model=self.llm.model_name,
+                    call_type="dag_goal_check",
+                    input_summary=input_summary,
+                    output_summary=output_summary,
+                    usage=usage,
+                    component="result_analyzer",
+                    retry_mode="fallback",
+                )
+                return result_payload
 
             except Exception as e2:
                 logger.error(f"Normal mode call also failed: {e2}")
+                log_llm_call_failed(
+                    started_at=llm_started_at,
+                    model=self.llm.model_name,
+                    call_type="dag_goal_check",
+                    input_summary=input_summary,
+                    error=e2 if isinstance(e2, Exception) else RuntimeError(str(e2)),
+                    component="result_analyzer",
+                )
                 raise

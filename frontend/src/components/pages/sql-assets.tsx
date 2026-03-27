@@ -84,6 +84,7 @@ interface ResolveCandidate {
   asset_name?: string
   score?: number
   matched_signals?: string[]
+  score_breakdown?: Record<string, number>
 }
 
 interface ResolveResultState {
@@ -98,6 +99,7 @@ interface ResolveResultState {
   recall_strategy?: string
   used_ann?: boolean
   used_fallback?: boolean
+  score_breakdown?: Record<string, number>
   stage_results?: Array<{
     stage_name: string
     strategy: string
@@ -761,6 +763,16 @@ export function SqlAssetsPage() {
                   召回策略：{resolveResult.recall_strategy || "-"}
                   {` · ANN：${resolveResult.used_ann ? "是" : "否"} · 兜底：${resolveResult.used_fallback ? "是" : "否"}`}
                 </div>
+                {resolveResult.score_breakdown && Object.keys(resolveResult.score_breakdown).length > 0 ? (
+                  <div className="mt-3 space-y-2 rounded-lg border border-border/70 bg-background/70 p-3">
+                    <div className="text-xs font-medium text-foreground">分值拆解</div>
+                    {Object.entries(resolveResult.score_breakdown).map(([key, value]) => (
+                      <div key={key} className="rounded-md border border-border/70 px-3 py-2 text-xs text-muted-foreground">
+                        {key}：{value}
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
                 {resolveResult.matched_signals && resolveResult.matched_signals.length > 0 ? (
                   <div className="mt-2 text-xs text-muted-foreground">
                     命中信号：{resolveResult.matched_signals.join("、")}
@@ -791,6 +803,13 @@ export function SqlAssetsPage() {
                             ? ` · 信号：${candidate.matched_signals.join("、")}`
                             : ""}
                         </div>
+                        {candidate.score_breakdown && Object.keys(candidate.score_breakdown).length > 0 ? (
+                          <div className="mt-2 text-muted-foreground">
+                            {Object.entries(candidate.score_breakdown)
+                              .map(([key, value]) => `${key}: ${value}`)
+                              .join(" · ")}
+                          </div>
+                        ) : null}
                       </div>
                     ))}
                   </div>

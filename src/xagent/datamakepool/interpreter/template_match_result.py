@@ -55,6 +55,7 @@ class TemplateMatchResult:
     used_ann: bool = False
     used_fallback: bool = False
     stage_results: list[dict[str, Any]] = field(default_factory=list)
+    score_breakdown: dict[str, float] = field(default_factory=dict)
 
     @property
     def is_full_match(self) -> bool:
