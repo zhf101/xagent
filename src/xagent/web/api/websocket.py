@@ -22,6 +22,12 @@ from fastapi import (
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
+from xagent.core.observability.local_logging import (
+    bind_log_context,
+    log_dataflow,
+    reset_log_context,
+)
+
 from ..auth_dependencies import get_user_from_websocket_token
 from ..config import UPLOADS_DIR
 from ..models.database import get_db
@@ -499,9 +505,29 @@ async def execute_task_background(
 
     # Wait for previous background task to complete
     await background_task_manager.wait_for_previous(task_id)
+    task_agent_type = getattr(task, "agent_type", None)
+    task_agent_config = getattr(task, "agent_config", None)
+    task_domain_mode = (
+        task_agent_config.get("domain_mode")
+        if isinstance(task_agent_config, dict)
+        else None
+    )
+    tokens = bind_log_context(
+        task_id=task_id,
+        user_id=int(user.id) if user else None,
+        agent_type=task_agent_type,
+        domain_mode=task_domain_mode,
+    )
 
     try:
-        logger.info(f"Background task execution started for task {task_id}")
+        log_dataflow(
+            logger,
+            event="task_execution_started",
+            msg="后台任务开始执行",
+            task_title=getattr(task, "title", None),
+            agent_type=task_agent_type,
+            domain_mode=task_domain_mode,
+        )
 
         # Set up user context
         user_id = int(user.id) if user else None
@@ -613,7 +639,13 @@ async def execute_task_background(
             },
             task_id,
         )
-        logger.info(f"Background task {task_id} execution completed")
+        log_dataflow(
+            logger,
+            event="task_execution_finished",
+            msg="后台任务执行完成",
+            success=result.get("success", False),
+            has_chat_response=isinstance(chat_response, dict),
+        )
 
     except Exception as e:
         logger.error(f"Background task {task_id} execution failed: {e}", exc_info=True)
@@ -636,6 +668,7 @@ async def execute_task_background(
     finally:
         # Clean up background task record
         background_task_manager.cleanup_task(task_id)
+        reset_log_context(tokens)
 
 
 async def execute_continuation_background(
@@ -659,9 +692,29 @@ async def execute_continuation_background(
 
     # Wait for previous background task to complete
     await background_task_manager.wait_for_previous(task_id)
+    task_agent_type = getattr(task, "agent_type", None)
+    task_agent_config = getattr(task, "agent_config", None)
+    task_domain_mode = (
+        task_agent_config.get("domain_mode")
+        if isinstance(task_agent_config, dict)
+        else None
+    )
+    tokens = bind_log_context(
+        task_id=task_id,
+        user_id=int(user.id) if user else None,
+        agent_type=task_agent_type,
+        domain_mode=task_domain_mode,
+    )
 
     try:
-        logger.info(f"Background continuation started for task {task_id}")
+        log_dataflow(
+            logger,
+            event="task_execution_started",
+            msg="后台续跑任务开始执行",
+            task_title=getattr(task, "title", None),
+            agent_type=task_agent_type,
+            domain_mode=task_domain_mode,
+        )
 
         # Set up user context
         user_id = int(user.id) if user else None
@@ -749,7 +802,12 @@ async def execute_continuation_background(
             },
             task_id,
         )
-        logger.info(f"Background continuation for task {task_id} completed")
+        log_dataflow(
+            logger,
+            event="task_execution_finished",
+            msg="后台续跑任务执行完成",
+            success=result.get("success", False),
+        )
 
     except Exception as e:
         logger.error(
@@ -774,6 +832,7 @@ async def execute_continuation_background(
     finally:
         # Clean up background task records
         background_task_manager.cleanup_task(task_id)
+        reset_log_context(tokens)
 
 
 # Background task manager: ensures only one active background execution per task

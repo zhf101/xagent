@@ -17,6 +17,8 @@ from typing import cast
 import uvicorn
 from dotenv import load_dotenv
 
+from xagent.core.observability.local_logging import configure_local_logging
+
 from .logging_config import LogLevel, setup_logging
 
 # Load environment variables from .env file
@@ -124,7 +126,8 @@ def main() -> None:
 
     # Configure logging BEFORE importing app
     log_level = "debug" if args.debug else args.log_level
-    setup_logging(level=cast(LogLevel, log_level.upper()))
+    setup_logging(level=cast(LogLevel, log_level.upper()), debug=args.debug)
+    configure_local_logging(debug=args.debug)
 
     logger = logging.getLogger(__name__)
     warn_if_example_jwt_config(logger)
@@ -137,12 +140,17 @@ def main() -> None:
 
     logger.info("🚀 Starting xagent Web service...")
     logger.info(f"📍 Service URL: http://{args.host}:{args.port}")
+    logger.info(
+        "📝 日志文件目录：%s",
+        os.getenv("XAGENT_LOG_DIR", "logs"),
+    )
 
     if args.reload:
         logger.info("🔄 Development mode: auto-reload enabled")
 
     if args.debug:
         logger.info("🐛 Debug mode: verbose logging enabled")
+        logger.info("🧠 LLM 日志：已开启完整内容模式")
 
     try:
         uvicorn.run(

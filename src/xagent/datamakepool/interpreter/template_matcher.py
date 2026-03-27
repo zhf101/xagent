@@ -8,10 +8,15 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
+
+from xagent.core.observability.local_logging import log_decision
 
 from .template_coverage_analyzer import TemplateCoverageAnalyzer
 from .template_match_result import MatchedTemplate, TemplateMatchResult
+
+logger = logging.getLogger(__name__)
 
 
 class TemplateMatcher:
@@ -35,6 +40,13 @@ class TemplateMatcher:
         """
 
         if not candidates:
+            log_decision(
+                logger,
+                event="template_match_completed",
+                msg="模板匹配完成，但当前没有可用候选模板",
+                match_type="no_match",
+                candidate_count=0,
+            )
             return TemplateMatchResult(
                 match_type="no_match",
                 confidence=0.0,
@@ -93,7 +105,7 @@ class TemplateMatcher:
                 candidate=best_candidate,
                 match_score=best.confidence,
             )
-            return TemplateMatchResult(
+            result = TemplateMatchResult(
                 match_type=coverage["match_type"],
                 confidence=best.confidence,
                 coverage_score=coverage["coverage_score"],
@@ -103,10 +115,34 @@ class TemplateMatcher:
                 missing_requirements=coverage["missing_requirements"],
                 inferred_params=dict(params),
             )
+            log_decision(
+                logger,
+                event="template_match_completed",
+                msg="模板匹配完成",
+                match_type=result.match_type,
+                confidence=round(result.confidence, 4),
+                coverage_score=result.coverage_score,
+                template_id=best.template_id,
+                template_name=best.template_name,
+                reusable_step_count=len(result.reusable_steps),
+                missing_requirement_count=len(result.missing_requirements),
+            )
+            return result
 
-        return TemplateMatchResult(
+        result = TemplateMatchResult(
             match_type="no_match",
             confidence=min(best_score, 1.0),
             coverage_score=0.0,
             inferred_params=dict(params),
         )
+        log_decision(
+            logger,
+            event="template_match_completed",
+            msg="模板匹配完成，但未达到命中阈值",
+            match_type=result.match_type,
+            confidence=round(result.confidence, 4),
+            coverage_score=result.coverage_score,
+            best_template_id=best.template_id if best else None,
+            best_template_name=best.template_name if best else None,
+        )
+        return result

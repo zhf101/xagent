@@ -12,8 +12,13 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any, Dict
+
+from xagent.core.observability.local_logging import log_dataflow
+
+logger = logging.getLogger(__name__)
 
 
 _SYSTEMS = ("crm", "oms", "wms", "tms", "card", "cms")
@@ -59,4 +64,11 @@ def extract_parameters(text: str) -> Dict[str, Any]:
             result["entity_type"] = entity_type
             break
 
+    log_dataflow(
+        logger,
+        event="parameters_extracted",
+        msg="已提取模板匹配参数",
+        text_summary=normalized,
+        params=result,
+    )
     return result

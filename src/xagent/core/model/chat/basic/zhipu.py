@@ -12,6 +12,14 @@ except ImportError:
     # Fallback for when zai SDK is not available
     ZhipuAiClient = None
 
+from ....observability.local_logging import (
+    log_llm_call_failed,
+    log_llm_call_finished,
+    log_llm_call_started,
+    should_log_full_llm_content,
+    summarize_messages,
+    summarize_text,
+)
 from ..exceptions import LLMRetryableError, LLMTimeoutError
 from ..timeout_config import TimeoutConfig
 from ..token_context import add_token_usage
@@ -157,6 +165,18 @@ class ZhipuLLM(BaseLLM):
         if response_format:
             completion_params["response_format"] = response_format
 
+        input_summary = (
+            summarize_text(messages, limit=2000)
+            if should_log_full_llm_content()
+            else summarize_messages(messages)
+        )
+        llm_started_at = log_llm_call_started(
+            model=self._model_name,
+            call_type="chat",
+            input_summary=input_summary,
+            provider="zhipu",
+        )
+
         try:
             # Debug: Log the request parameters
             logger.debug("Zhipu API request parameters:")
@@ -215,6 +235,13 @@ class ZhipuLLM(BaseLLM):
                     model=self._model_name,
                     call_type="chat",
                 )
+                usage_payload = {
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "total_tokens": input_tokens + output_tokens,
+                }
+            else:
+                usage_payload = {}
 
             # Extract the choice
             choice = response.choices[0]
@@ -297,7 +324,7 @@ class ZhipuLLM(BaseLLM):
                         args = {}
 
                     # Return ReAct-compatible tool call format
-                    return {
+                    result_payload = {
                         "type": "tool_call",
                         "tool_calls": [
                             {
@@ -315,6 +342,21 @@ class ZhipuLLM(BaseLLM):
                         if hasattr(response, "model_dump")
                         else str(response),
                     }
+                    output_summary = (
+                        summarize_text(result_payload, limit=2000)
+                        if should_log_full_llm_content()
+                        else summarize_text(result_payload, limit=240)
+                    )
+                    log_llm_call_finished(
+                        started_at=llm_started_at,
+                        model=self._model_name,
+                        call_type="chat",
+                        input_summary=input_summary,
+                        output_summary=output_summary,
+                        usage=usage_payload,
+                        provider="zhipu",
+                    )
+                    return result_payload
 
             # Handle text content
             content = message.content
@@ -341,6 +383,20 @@ class ZhipuLLM(BaseLLM):
                         "None/empty content but tool calls present, this is expected behavior"
                     )
 
+            output_summary = (
+                summarize_text(content, limit=2000)
+                if should_log_full_llm_content()
+                else summarize_text(content, limit=240)
+            )
+            log_llm_call_finished(
+                started_at=llm_started_at,
+                model=self._model_name,
+                call_type="chat",
+                input_summary=input_summary,
+                output_summary=output_summary,
+                usage=usage_payload,
+                provider="zhipu",
+            )
             return content
 
         except Exception as e:
@@ -349,7 +405,16 @@ class ZhipuLLM(BaseLLM):
             logger.error(f"  - Exception type: {type(e).__name__}")
             logger.error(f"  - Exception message: {str(e)}")
             logger.error(f"  - Exception args: {e.args}")
-            raise RuntimeError(f"Zhipu API error: {str(e)}") from e
+            wrapped = RuntimeError(f"Zhipu API error: {str(e)}")
+            log_llm_call_failed(
+                started_at=llm_started_at,
+                model=self._model_name,
+                call_type="chat",
+                input_summary=input_summary,
+                error=wrapped,
+                provider="zhipu",
+            )
+            raise wrapped from e
 
     async def stream_chat(
         self,

@@ -1,41 +1,114 @@
-"""Unified logging configuration for xagent web application."""
+"""xagent Web 本地日志配置。"""
 
+from __future__ import annotations
+
+import os
 from logging.config import dictConfig
+from pathlib import Path
 from typing import Literal
 
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
 
 
-def setup_logging(level: LogLevel = "INFO") -> None:
-    """Configure logging for the entire application."""
+def _ensure_log_dir(log_dir: str) -> str:
+    path = Path(log_dir)
+    path.mkdir(parents=True, exist_ok=True)
+    return str(path)
+
+
+def setup_logging(level: LogLevel = "INFO", *, debug: bool = False) -> None:
+    """配置应用日志。
+
+    日志默认分流到：
+    - `app.log`：应用、决策、数据流转
+    - `access.log`：访问日志
+    - `llm.log`：LLM 调用日志
+    """
+
+    log_dir = _ensure_log_dir(os.getenv("XAGENT_LOG_DIR", "logs"))
+    llm_level = "DEBUG" if debug else level
     dictConfig(
         {
             "version": 1,
             "disable_existing_loggers": False,
+            "filters": {
+                "context": {
+                    "()": "xagent.core.observability.local_logging.ContextFilter"
+                }
+            },
             "formatters": {
-                "default": {
+                "app": {
+                    "format": (
+                        "%(asctime)s %(levelname)-8s %(name)s "
+                        "request_id=%(request_id)s task_id=%(task_id)s user_id=%(user_id)s "
+                        "agent_type=%(agent_type)s domain_mode=%(domain_mode)s run_id=%(run_id)s "
+                        "- %(message)s"
+                    ),
+                    "datefmt": "%Y-%m-%d %H:%M:%S",
+                },
+                "access": {
                     "format": "%(asctime)s %(levelname)-8s %(name)s - %(message)s",
                     "datefmt": "%Y-%m-%d %H:%M:%S",
                 }
             },
             "handlers": {
-                "default": {
+                "console": {
                     "class": "logging.StreamHandler",
-                    "formatter": "default",
+                    "formatter": "app",
+                    "filters": ["context"],
+                },
+                "app_file": {
+                    "class": "logging.handlers.RotatingFileHandler",
+                    "formatter": "app",
+                    "filters": ["context"],
+                    "filename": str(Path(log_dir) / "app.log"),
+                    "maxBytes": 10 * 1024 * 1024,
+                    "backupCount": 5,
+                    "encoding": "utf-8",
+                },
+                "access_file": {
+                    "class": "logging.handlers.RotatingFileHandler",
+                    "formatter": "access",
+                    "filename": str(Path(log_dir) / "access.log"),
+                    "maxBytes": 10 * 1024 * 1024,
+                    "backupCount": 5,
+                    "encoding": "utf-8",
+                },
+                "llm_file": {
+                    "class": "logging.handlers.RotatingFileHandler",
+                    "formatter": "app",
+                    "filters": ["context"],
+                    "filename": str(Path(log_dir) / "llm.log"),
+                    "maxBytes": 10 * 1024 * 1024,
+                    "backupCount": 5,
+                    "encoding": "utf-8",
                 }
             },
             "loggers": {
                 "aiohttp": {"level": "WARNING"},
                 "sqlalchemy": {"level": "WARNING"},
                 "urllib3": {"level": "WARNING"},
-                "uvicorn.access": {"level": "WARNING"},
-                "uvicorn.error": {"level": "INFO"},
+                "uvicorn.access": {
+                    "level": "INFO",
+                    "handlers": ["access_file"],
+                    "propagate": False,
+                },
+                "uvicorn.error": {
+                    "level": "INFO",
+                    "handlers": ["console", "app_file"],
+                    "propagate": False,
+                },
                 "httpx": {"level": "WARNING"},
                 "httpcore": {"level": "WARNING"},
+                "xagent.llm": {
+                    "level": llm_level,
+                    "handlers": ["console", "llm_file"],
+                    "propagate": False,
+                },
             },
             "root": {
                 "level": level,
-                "handlers": ["default"],
+                "handlers": ["console", "app_file"],
             },
         }
     )

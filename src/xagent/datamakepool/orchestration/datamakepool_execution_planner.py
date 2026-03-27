@@ -12,12 +12,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from typing import Any
 
+from xagent.core.observability.local_logging import log_decision
 from xagent.datamakepool.interpreter import TemplateMatchResult, TemplateMatcher, extract_parameters
 from xagent.datamakepool.templates import TemplateService
 
 from .execution_plan_composer import ExecutionPlanComposer
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -74,6 +78,14 @@ class DatamakepoolExecutionPlanner:
         # 三态路由的分界点只看 match_result，不把更多业务逻辑揉进 planner。
         if match_result.is_full_match:
             execution_plan = self._composer.compose_full_plan(match_result).to_dict()
+            log_decision(
+                logger,
+                event="execution_path_selected",
+                msg="已选择模板直执行路径",
+                execution_path="template_direct",
+                route_to_orchestrator=False,
+                match_type=match_result.match_type,
+            )
             return DatamakepoolExecutionDecision(
                 execution_path="template_direct",
                 match_result=match_result,
@@ -84,6 +96,14 @@ class DatamakepoolExecutionPlanner:
 
         if match_result.is_partial_match:
             execution_plan = self._composer.compose_partial_plan(match_result).to_dict()
+            log_decision(
+                logger,
+                event="execution_path_selected",
+                msg="已选择模板增强执行路径",
+                execution_path="template_augmented",
+                route_to_orchestrator=True,
+                match_type=match_result.match_type,
+            )
             return DatamakepoolExecutionDecision(
                 execution_path="template_augmented",
                 match_result=match_result,
@@ -95,6 +115,14 @@ class DatamakepoolExecutionPlanner:
         execution_plan = self._composer.compose_orchestrator_full_plan(
             user_input, params
         ).to_dict()
+        log_decision(
+            logger,
+            event="execution_path_selected",
+            msg="已选择全量动态规划路径",
+            execution_path="orchestrator_full",
+            route_to_orchestrator=True,
+            match_type=match_result.match_type,
+        )
         return DatamakepoolExecutionDecision(
             execution_path="orchestrator_full",
             match_result=match_result,

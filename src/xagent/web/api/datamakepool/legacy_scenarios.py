@@ -13,6 +13,7 @@ from ...auth_dependencies import get_current_user
 from ...models.database import get_db
 from ...models.user import User
 from ...tools.config import WebToolConfig
+from .security import ensure_global_governance_admin
 
 legacy_scenarios_router = APIRouter(
     prefix="/api/datamakepool/legacy-scenarios",
@@ -68,9 +69,12 @@ async def sync_legacy_scenario_catalog(
     user: User = Depends(get_current_user),
 ) -> LegacyScenarioCatalogSyncResponse:
     try:
+        ensure_global_governance_admin(user=user)
         service = _catalog_service(db, user)
         result = await service.sync_catalog()
         return LegacyScenarioCatalogSyncResponse(**result)
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(
             status_code=500, detail=f"Failed to sync legacy scenario catalog: {exc}"

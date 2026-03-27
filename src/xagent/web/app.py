@@ -1,5 +1,8 @@
 import logging
 import os
+import time
+import uuid
+from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -32,6 +35,11 @@ from .api.mentions import mentions_router
 from .api.tools import tools_router
 from .api.websocket import ws_router
 from .config import UPLOADS_DIR
+from xagent.core.observability.local_logging import (
+    bind_log_context,
+    log_dataflow,
+    reset_log_context,
+)
 from .dynamic_memory_store import get_memory_store
 from .models.database import init_db
 
@@ -45,6 +53,52 @@ __all__ = ["app"]
 app = FastAPI(
     title="xagent", description="The Agent Operating System", redirect_slashes=False
 )
+
+
+@app.middleware("http")
+async def request_logging_middleware(request: Request, call_next: Any) -> Any:
+    """为每个 HTTP 请求注入 request_id，并记录起止日志。"""
+
+    request_id = request.headers.get("x-request-id") or uuid.uuid4().hex[:12]
+    tokens = bind_log_context(request_id=request_id)
+    started_at = time.perf_counter()
+
+    log_dataflow(
+        logger,
+        event="request_started",
+        msg="收到 HTTP 请求",
+        method=request.method,
+        path=request.url.path,
+    )
+
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        elapsed_ms = round((time.perf_counter() - started_at) * 1000, 2)
+        logger.error(
+            "event=request_finished msg=\"HTTP 请求执行失败\" method=%s path=%s latency_ms=%s reason=%s",
+            request.method,
+            request.url.path,
+            elapsed_ms,
+            str(exc),
+            exc_info=True,
+        )
+        raise
+    else:
+        elapsed_ms = round((time.perf_counter() - started_at) * 1000, 2)
+        response.headers["X-Request-ID"] = request_id
+        log_dataflow(
+            logger,
+            event="request_finished",
+            msg="HTTP 请求处理完成",
+            method=request.method,
+            path=request.url.path,
+            status_code=response.status_code,
+            latency_ms=elapsed_ms,
+        )
+        return response
+    finally:
+        reset_log_context(tokens)
 
 
 @app.get("/health")

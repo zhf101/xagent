@@ -12,7 +12,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from typing import Any, Dict, Literal, cast
+
+from xagent.core.observability.local_logging import log_decision
+
+logger = logging.getLogger(__name__)
 
 
 DomainMode = Literal["data_generation", "data_consultation", "general"]
@@ -77,6 +82,14 @@ class DatamakepoolTaskModeGateway:
             # 当前阶段仅显式标记模式，为后续模板匹配和 orchestrator 切换做准备。
             context["domain_mode"] = mode
 
+        log_decision(
+            logger,
+            event="domain_mode_resolved",
+            msg="已解析任务执行模式",
+            domain_mode=mode,
+            has_base_context=bool(base_context),
+        )
+
         return TaskModeDecision(domain_mode=mode, execution_context=context)
 
     @staticmethod
@@ -93,7 +106,25 @@ class DatamakepoolTaskModeGateway:
 
         match_type = getattr(template_match_result, "match_type", None)
         if isinstance(match_type, str):
-            return match_type in {"partial_match", "no_match"}
+            should_route = match_type in {"partial_match", "no_match"}
+            log_decision(
+                logger,
+                event="execution_path_selected",
+                msg="已评估是否切换到 orchestrator",
+                domain_mode=domain_mode,
+                match_type=match_type,
+                route_to_orchestrator=should_route,
+            )
+            return should_route
 
         matched_template = getattr(template_match_result, "matched_template", None)
-        return matched_template is None
+        should_route = matched_template is None
+        log_decision(
+            logger,
+            event="execution_path_selected",
+            msg="已评估是否切换到 orchestrator",
+            domain_mode=domain_mode,
+            match_type="unknown",
+            route_to_orchestrator=should_route,
+        )
+        return should_route

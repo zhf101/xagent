@@ -7,6 +7,14 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Union
 import openai
 from openai import AsyncOpenAI
 
+from ....observability.local_logging import (
+    log_llm_call_failed,
+    log_llm_call_finished,
+    log_llm_call_started,
+    should_log_full_llm_content,
+    summarize_messages,
+    summarize_text,
+)
 from ....utils.security import redact_sensitive_text
 from ..exceptions import LLMRetryableError, LLMTimeoutError
 from ..timeout_config import TimeoutConfig
@@ -267,6 +275,18 @@ class OpenAILLM(BaseLLM):
                 "raw": resp.model_dump(),
             }
 
+        input_summary = (
+            summarize_text(messages, limit=2000)
+            if should_log_full_llm_content()
+            else summarize_messages(messages)
+        )
+        llm_started_at = log_llm_call_started(
+            model=self._model_name,
+            call_type="chat",
+            input_summary=input_summary,
+            provider="openai",
+        )
+
         try:
             # Make the API call
             response = await _make_api_call()
@@ -299,6 +319,27 @@ class OpenAILLM(BaseLLM):
                         response = await _make_api_call()
                         result = _process_response(response)
 
+            usage_payload = {}
+            if hasattr(response, "usage") and response.usage:
+                usage_payload = {
+                    "input_tokens": getattr(response.usage, "prompt_tokens", 0),
+                    "output_tokens": getattr(response.usage, "completion_tokens", 0),
+                    "total_tokens": getattr(response.usage, "total_tokens", 0),
+                }
+            output_summary = (
+                summarize_text(result, limit=2000)
+                if should_log_full_llm_content()
+                else summarize_text(result, limit=240)
+            )
+            log_llm_call_finished(
+                started_at=llm_started_at,
+                model=self._model_name,
+                call_type="chat",
+                input_summary=input_summary,
+                output_summary=output_summary,
+                usage=usage_payload,
+                provider="openai",
+            )
             return result
 
         except openai.BadRequestError as e:
@@ -318,32 +359,108 @@ class OpenAILLM(BaseLLM):
 
                 # Retry the API call without response_format
                 response = await _make_api_call()
-                return _process_response(response)
+                result = _process_response(response)
+                usage_payload = {}
+                if hasattr(response, "usage") and response.usage:
+                    usage_payload = {
+                        "input_tokens": getattr(response.usage, "prompt_tokens", 0),
+                        "output_tokens": getattr(response.usage, "completion_tokens", 0),
+                        "total_tokens": getattr(response.usage, "total_tokens", 0),
+                    }
+                output_summary = (
+                    summarize_text(result, limit=2000)
+                    if should_log_full_llm_content()
+                    else summarize_text(result, limit=240)
+                )
+                log_llm_call_finished(
+                    started_at=llm_started_at,
+                    model=self._model_name,
+                    call_type="chat",
+                    input_summary=input_summary,
+                    output_summary=output_summary,
+                    usage=usage_payload,
+                    provider="openai",
+                )
+                return result
 
-            raise RuntimeError(f"OpenAI bad request: {error_msg}") from e
+            wrapped = RuntimeError(f"OpenAI bad request: {error_msg}")
+            log_llm_call_failed(
+                started_at=llm_started_at,
+                model=self._model_name,
+                call_type="chat",
+                input_summary=input_summary,
+                error=wrapped,
+                provider="openai",
+            )
+            raise wrapped from e
 
         except openai.APITimeoutError as e:
             # Handle timeout errors
-            raise RuntimeError(f"OpenAI API timeout: {str(e)}") from e
+            wrapped = RuntimeError(f"OpenAI API timeout: {str(e)}")
+            log_llm_call_failed(
+                started_at=llm_started_at,
+                model=self._model_name,
+                call_type="chat",
+                input_summary=input_summary,
+                error=wrapped,
+                provider="openai",
+            )
+            raise wrapped from e
 
         except openai.RateLimitError as e:
             # Handle rate limit errors
-            raise RuntimeError(f"OpenAI rate limit exceeded: {e.message}") from e
+            wrapped = RuntimeError(f"OpenAI rate limit exceeded: {e.message}")
+            log_llm_call_failed(
+                started_at=llm_started_at,
+                model=self._model_name,
+                call_type="chat",
+                input_summary=input_summary,
+                error=wrapped,
+                provider="openai",
+            )
+            raise wrapped from e
 
         except openai.AuthenticationError as e:
             # Handle authentication errors
-            raise RuntimeError(f"OpenAI authentication failed: {e.message}") from e
+            wrapped = RuntimeError(f"OpenAI authentication failed: {e.message}")
+            log_llm_call_failed(
+                started_at=llm_started_at,
+                model=self._model_name,
+                call_type="chat",
+                input_summary=input_summary,
+                error=wrapped,
+                provider="openai",
+            )
+            raise wrapped from e
 
         except openai.APIError as e:
             # Handle OpenAI API errors
             error_msg = f"OpenAI API error: {e.message}"
             if (status_code := getattr(e, "status_code", None)) is not None:
                 error_msg = f"OpenAI API error ({status_code}): {e.message}"
-            raise RuntimeError(error_msg) from e
+            wrapped = RuntimeError(error_msg)
+            log_llm_call_failed(
+                started_at=llm_started_at,
+                model=self._model_name,
+                call_type="chat",
+                input_summary=input_summary,
+                error=wrapped,
+                provider="openai",
+            )
+            raise wrapped from e
 
         except Exception as e:
             # Handle any other unexpected errors
-            raise RuntimeError(f"LLM chat failed: {str(e)}") from e
+            wrapped = RuntimeError(f"LLM chat failed: {str(e)}")
+            log_llm_call_failed(
+                started_at=llm_started_at,
+                model=self._model_name,
+                call_type="chat",
+                input_summary=input_summary,
+                error=wrapped,
+                provider="openai",
+            )
+            raise wrapped from e
 
     @property
     def supports_thinking_mode(self) -> bool:

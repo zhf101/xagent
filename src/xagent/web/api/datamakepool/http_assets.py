@@ -31,6 +31,7 @@ from ...auth_dependencies import get_current_user
 from ...models.database import get_db
 from ...models.datamakepool_asset import DataMakepoolAsset
 from ...models.user import User
+from .security import ensure_system_governance_access
 
 http_assets_router = APIRouter(
     prefix="/api/datamakepool/http-assets",
@@ -176,6 +177,12 @@ async def create_http_asset(
 
     try:
         data = payload.model_dump()
+        ensure_system_governance_access(
+            db=db,
+            user=user,
+            system_short=data.get("system_short"),
+            required_role="normal_admin",
+        )
         validate_http_asset_payload(data)
         repository = HttpAssetRepository(db)
         asset = repository.create_http_asset(
@@ -194,6 +201,9 @@ async def create_http_asset(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),
         ) from e
+    except HTTPException:
+        db.rollback()
+        raise
     except Exception as e:
         db.rollback()
         raise HTTPException(
@@ -239,6 +249,12 @@ async def update_http_asset(
 
     try:
         data = payload.model_dump()
+        ensure_system_governance_access(
+            db=db,
+            user=user,
+            system_short=asset.system_short,
+            required_role="normal_admin",
+        )
         validate_http_asset_payload(data)
         asset = repository.update_http_asset(
             asset,
@@ -256,6 +272,9 @@ async def update_http_asset(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),
         ) from e
+    except HTTPException:
+        db.rollback()
+        raise
     except Exception as e:
         db.rollback()
         raise HTTPException(
@@ -280,9 +299,18 @@ async def delete_http_asset(
             detail="HTTP asset not found",
         )
     try:
+        ensure_system_governance_access(
+            db=db,
+            user=user,
+            system_short=asset.system_short,
+            required_role="normal_admin",
+        )
         repository.delete_http_asset(asset)
         db.commit()
         return {"message": "HTTP asset deleted successfully"}
+    except HTTPException:
+        db.rollback()
+        raise
     except Exception as e:
         db.rollback()
         raise HTTPException(

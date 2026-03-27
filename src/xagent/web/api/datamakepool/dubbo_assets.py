@@ -24,6 +24,7 @@ from ...auth_dependencies import get_current_user
 from ...models.database import get_db
 from ...models.datamakepool_asset import DataMakepoolAsset
 from ...models.user import User
+from .security import ensure_system_governance_access
 
 dubbo_assets_router = APIRouter(
     prefix="/api/datamakepool/dubbo-assets",
@@ -125,6 +126,12 @@ async def create_dubbo_asset(
 
     try:
         data = payload.model_dump()
+        ensure_system_governance_access(
+            db=db,
+            user=user,
+            system_short=data.get("system_short"),
+            required_role="normal_admin",
+        )
         validate_dubbo_asset_payload(data)
         repository = DubboAssetRepository(db)
         asset = repository.create_dubbo_asset(
@@ -140,6 +147,9 @@ async def create_dubbo_asset(
     except ValueError as exc:
         db.rollback()
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    except HTTPException:
+        db.rollback()
+        raise
     except Exception as exc:
         db.rollback()
         raise HTTPException(
