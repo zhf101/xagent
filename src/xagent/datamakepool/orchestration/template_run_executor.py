@@ -156,4 +156,30 @@ class TemplateRunExecutor:
                 )
 
         self._db.commit()
+        if run_id:
+            self._increment_used_count(matched.template_id)
         return run_id
+
+    def _increment_used_count(self, template_id: int) -> None:
+        """异步更新模板命中计数，失败时静默跳过。"""
+        try:
+            inspector = inspect(self._db.bind)
+            if "template_stats" not in inspector.get_table_names():
+                return
+            self._db.execute(
+                text(
+                    """
+                    INSERT INTO template_stats (template_id, views, likes, used_count)
+                    VALUES (:tid, 0, 0, 1)
+                    ON CONFLICT (template_id)
+                    DO UPDATE SET used_count = template_stats.used_count + 1
+                    """
+                ),
+                {"tid": str(template_id)},
+            )
+            self._db.commit()
+        except Exception:
+            import logging
+            logging.getLogger(__name__).warning(
+                "模板 %s used_count 更新失败", template_id, exc_info=True
+            )

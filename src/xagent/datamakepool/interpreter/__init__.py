@@ -7,6 +7,7 @@ from .risk_assessor import RiskAssessment, RiskLevel, assess_risk, resolve_sql_p
 from .template_coverage_analyzer import TemplateCoverageAnalyzer
 from .template_match_result import MatchedTemplate, TemplateMatchResult
 from .template_matcher import TemplateMatcher
+from .template_ranker import TemplateRanker
 
 __all__ = [
     "ClassificationResult",
@@ -23,4 +24,5 @@ __all__ = [
     "TemplateCoverageAnalyzer",
     "TemplateMatchResult",
     "TemplateMatcher",
+    "TemplateRanker",
 ]

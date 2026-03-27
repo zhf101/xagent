@@ -19,7 +19,6 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
-import { Switch } from "@/components/ui/switch"
 import { Select, type SelectOption } from "@/components/ui/select"
 import { SearchInput } from "@/components/ui/search-input"
 import {
@@ -39,6 +38,10 @@ import {
 import { getApiUrl } from "@/lib/utils"
 import { apiRequest } from "@/lib/api-wrapper"
 import { useI18n } from "@/contexts/i18n-context"
+import {
+  DataSourceConfigDialog,
+  type DataSourceSavePayload,
+} from "@/components/pages/data-source-config-dialog"
 
 type DatabaseStatus = "connected" | "disconnected" | "error"
 
@@ -79,24 +82,6 @@ interface BizSystemRecord {
   system_name: string
 }
 
-interface DatabaseFormState {
-  name: string
-  system_id: string
-  type: string
-  url: string
-  read_only: boolean
-  enabled: boolean
-}
-
-const EMPTY_FORM: DatabaseFormState = {
-  name: "",
-  system_id: "",
-  type: "postgresql",
-  url: "",
-  read_only: true,
-  enabled: true,
-}
-
 function formatDate(value?: string | null) {
   if (!value) return "-"
   const date = new Date(value)
@@ -132,7 +117,6 @@ export function DataSourcesPage() {
   const [viewingRecord, setViewingRecord] = useState<DatabaseRecord | null>(null)
   const [isFormDialogOpen, setIsFormDialogOpen] = useState(false)
   const [isSystemDialogOpen, setIsSystemDialogOpen] = useState(false)
-  const [form, setForm] = useState<DatabaseFormState>(EMPTY_FORM)
   const [systemForm, setSystemForm] = useState({ system_short: "", system_name: "" })
 
   const loadAll = async () => {
@@ -164,10 +148,6 @@ export function DataSourcesPage() {
         }
         const profilePayload = await profileRes.json()
         setProfiles(profilePayload)
-        setForm((prev) => ({
-          ...prev,
-          type: prev.type || profilePayload[0]?.db_type || "postgresql",
-        }))
       } catch {
         toast.error("数据库类型模板加载失败")
         setProfiles([])
@@ -185,10 +165,6 @@ export function DataSourcesPage() {
         }
         const systemPayload = await systemRes.json()
         setSystems(systemPayload)
-        setForm((prev) => ({
-          ...prev,
-          system_id: prev.system_id || (systemPayload[0] ? String(systemPayload[0].id) : ""),
-        }))
       } catch {
         toast.error("业务系统列表加载失败，请先执行数据库迁移")
         setSystems([])
@@ -211,26 +187,6 @@ export function DataSourcesPage() {
     )
   }, [databases, search, selectedSystemFilter])
 
-  const typeOptions: SelectOption[] = useMemo(
-    () =>
-      profiles.map((item) => ({
-        value: item.db_type,
-        label: item.display_name,
-        description: `${item.category} / ${item.protocol}`,
-      })),
-    [profiles]
-  )
-
-  const systemOptions: SelectOption[] = useMemo(
-    () =>
-      systems.map((item) => ({
-        value: String(item.id),
-        label: item.system_name,
-        description: item.system_short,
-      })),
-    [systems]
-  )
-
   const systemFilterOptions: SelectOption[] = useMemo(
     () => [
       {
@@ -247,40 +203,7 @@ export function DataSourcesPage() {
     [systems]
   )
 
-  const selectedProfile = useMemo(
-    () => profiles.find((item) => item.db_type === form.type) ?? null,
-    [profiles, form.type]
-  )
-
-  const openCreateDialog = () => {
-    setEditingRecord(null)
-    setForm({
-      ...EMPTY_FORM,
-      system_id: systems[0] ? String(systems[0].id) : "",
-      type: profiles[0]?.db_type || EMPTY_FORM.type,
-    })
-    setIsFormDialogOpen(true)
-  }
-
-  const openEditDialog = (record: DatabaseRecord) => {
-    setEditingRecord(record)
-    setForm({
-      name: record.name,
-      system_id: record.system_id ? String(record.system_id) : "",
-      type: record.type,
-      url: record.url,
-      read_only: record.read_only,
-      enabled: record.enabled,
-    })
-    setIsFormDialogOpen(true)
-  }
-
-  const handleSubmit = async () => {
-    if (!form.name.trim() || !form.system_id.trim() || !form.type.trim() || !form.url.trim()) {
-      toast.error("请填写名称、所属系统、数据库类型和连接字符串")
-      return
-    }
-
+  const handleSaveDataSource = async (payload: DataSourceSavePayload) => {
     setSubmitting(true)
     try {
       const url = editingRecord
@@ -291,19 +214,17 @@ export function DataSourcesPage() {
         method: editingRecord ? "PUT" : "POST",
         headers: {},
         body: JSON.stringify({
-          ...form,
-          system_id: Number(form.system_id),
+          ...payload,
         }),
       })
 
-      const payload = await response.json().catch(() => ({}))
+      const responsePayload = await response.json().catch(() => ({}))
       if (!response.ok) {
-        throw new Error(payload.detail || "保存数据源失败")
+        throw new Error(responsePayload.detail || "保存数据源失败")
       }
 
       setIsFormDialogOpen(false)
       setEditingRecord(null)
-      setForm(EMPTY_FORM)
       await loadAll()
       toast.success(editingRecord ? "数据源已更新" : "数据源已创建")
     } catch (error) {
@@ -397,7 +318,6 @@ export function DataSourcesPage() {
         throw new Error(payload.detail || "创建业务系统失败")
       }
       setSystems((prev) => [...prev, payload].sort((a, b) => a.system_short.localeCompare(b.system_short)))
-      setForm((prev) => ({ ...prev, system_id: String(payload.id) }))
       setSystemForm({ system_short: "", system_name: "" })
       setIsSystemDialogOpen(false)
       toast.success("业务系统已创建")
@@ -427,7 +347,10 @@ export function DataSourcesPage() {
               <Plus className="mr-2 h-4 w-4" />
               新增系统
             </Button>
-            <Button onClick={openCreateDialog}>
+            <Button onClick={() => {
+              setEditingRecord(null)
+              setIsFormDialogOpen(true)
+            }}>
               <Plus className="mr-2 h-4 w-4" />
               新增数据源
             </Button>
@@ -534,7 +457,10 @@ export function DataSourcesPage() {
 
                             <Tooltip>
                               <TooltipTrigger asChild>
-                                <Button size="sm" variant="outline" className="h-8 rounded-md px-2.5" onClick={() => openEditDialog(item)}>
+                                <Button size="sm" variant="outline" className="h-8 rounded-md px-2.5" onClick={() => {
+                                  setEditingRecord(item)
+                                  setIsFormDialogOpen(true)
+                                }}>
                                   <Pencil className="h-3.5 w-3.5" />
                                 </Button>
                               </TooltipTrigger>
@@ -600,81 +526,16 @@ export function DataSourcesPage() {
         </Card>
       </div>
 
-      <Dialog open={isFormDialogOpen} onOpenChange={setIsFormDialogOpen}>
-        <DialogContent className="max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>{editingRecord ? "编辑数据源" : "新增数据源"}</DialogTitle>
-            <DialogDescription>请先选择所属业务系统，再配置数据库类型和连接串。</DialogDescription>
-          </DialogHeader>
-          <div className="grid gap-4">
-            <div className="space-y-2">
-              <Label htmlFor="database-name">数据源名称</Label>
-              <Input
-                id="database-name"
-                value={form.name}
-                onChange={(event) => setForm((prev) => ({ ...prev, name: event.target.value }))}
-                placeholder="例如：CRM 主库"
-              />
-            </div>
-            <div className="space-y-2">
-              <div className="flex items-center justify-between gap-2">
-                <Label>所属系统</Label>
-                <Button variant="ghost" className="h-auto px-0 text-xs" onClick={() => setIsSystemDialogOpen(true)}>
-                  <Plus className="mr-1 h-3 w-3" />
-                  新增系统
-                </Button>
-              </div>
-              <Select
-                value={form.system_id}
-                onValueChange={(value) => setForm((prev) => ({ ...prev, system_id: value }))}
-                options={systemOptions}
-                placeholder="请选择所属业务系统"
-              />
-              {systems.length === 0 ? (
-                <div className="text-xs text-muted-foreground">
-                  当前还没有可用业务系统。若接口刚升级，请先执行数据库迁移，再新增系统。
-                </div>
-              ) : null}
-            </div>
-            <div className="space-y-2">
-              <Label>数据库类型</Label>
-              <Select
-                value={form.type}
-                onValueChange={(value) => setForm((prev) => ({ ...prev, type: value }))}
-                options={typeOptions}
-                placeholder="请选择数据库类型"
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="database-url">连接字符串</Label>
-              <Input
-                id="database-url"
-                value={form.url}
-                onChange={(event) => setForm((prev) => ({ ...prev, url: event.target.value }))}
-                placeholder={selectedProfile?.connection_example || "请输入数据库连接字符串"}
-              />
-            </div>
-            <div className="flex items-center justify-between rounded-xl border border-border bg-muted/40 px-4 py-3">
-              <div>
-                <div className="text-sm font-medium">只读模式</div>
-                <div className="text-xs text-muted-foreground">推荐默认开启，写操作场景再单独关闭。</div>
-              </div>
-              <Switch
-                checked={form.read_only}
-                onCheckedChange={(checked) => setForm((prev) => ({ ...prev, read_only: checked }))}
-              />
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setIsFormDialogOpen(false)}>
-              {t("common.cancel")}
-            </Button>
-            <Button onClick={handleSubmit} disabled={submitting || systems.length === 0}>
-              {submitting ? t("common.loading") : t("common.save")}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <DataSourceConfigDialog
+        open={isFormDialogOpen}
+        editingRecord={editingRecord}
+        systems={systems}
+        profiles={profiles}
+        submitting={submitting}
+        onOpenChange={setIsFormDialogOpen}
+        onCreateSystem={() => setIsSystemDialogOpen(true)}
+        onSubmit={handleSaveDataSource}
+      />
 
       <Dialog open={!!viewingRecord} onOpenChange={(open) => !open && setViewingRecord(null)}>
         <DialogContent className="max-w-2xl">
