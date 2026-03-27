@@ -134,6 +134,28 @@ class ContextFilter(logging.Filter):
         return True
 
 
+class HealthAccessFilter(logging.Filter):
+    """过滤掉低价值健康检查访问日志。"""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        return "/health" not in message
+
+
+class UvicornStartupNoiseFilter(logging.Filter):
+    """过滤 uvicorn 重载场景下重复出现的低价值启动提示。"""
+
+    _NOISE_KEYWORDS = (
+        "Started server process",
+        "Waiting for application startup",
+        "Application startup complete",
+    )
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        return not any(keyword in message for keyword in self._NOISE_KEYWORDS)
+
+
 def summarize_text(value: Any, *, limit: int = 200) -> str:
     """把任意值压缩成适合日志查看的单行摘要。"""
 

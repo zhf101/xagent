@@ -73,6 +73,16 @@ function notifyRefreshSubscribers(token: string) {
   refreshSubscribers = []
 }
 
+function shouldAutoSetJsonContentType(body: BodyInit | null | undefined): boolean {
+  if (body == null) return false
+  if (body instanceof FormData) return false
+  if (body instanceof URLSearchParams) return false
+  if (body instanceof Blob) return false
+  if (body instanceof ArrayBuffer) return false
+  if (ArrayBuffer.isView(body)) return false
+  return typeof body === "string"
+}
+
 // Get current tokens
 function getCurrentTokens(): { accessToken: string | null; refreshToken: string | null } {
   // Try new cache format first
@@ -164,20 +174,28 @@ export async function apiRequest(
   options: RequestInit = {}
 ): Promise<Response> {
   const { accessToken, refreshToken: refresh } = getCurrentTokens()
+  const normalizedHeaders = new Headers(options.headers || {})
+
+  if (
+    shouldAutoSetJsonContentType(options.body) &&
+    !normalizedHeaders.has("Content-Type")
+  ) {
+    normalizedHeaders.set("Content-Type", "application/json")
+  }
 
   // If no token, request directly
   if (!accessToken) {
-    return fetch(url, options)
+    return fetch(url, {
+      ...options,
+      headers: normalizedHeaders,
+    })
   }
 
   // Add authorization header
-  const headers = {
-    ...options.headers,
-    "Authorization": `Bearer ${accessToken}`,
-  }
+  normalizedHeaders.set("Authorization", `Bearer ${accessToken}`)
 
   // Fetch request with retry mechanism
-  let response = await fetchWithRetry(url, { ...options, headers })
+  let response = await fetchWithRetry(url, { ...options, headers: normalizedHeaders })
 
   // If 401 error and not a refresh request, try to refresh token
   if (response.status === 401 && !shouldSkipRefresh(url)) {
@@ -197,10 +215,8 @@ export async function apiRequest(
       // If refreshing, wait for refresh to complete
       return new Promise((resolve, reject) => {
         addRefreshSubscriber((newToken: string) => {
-          const retryHeaders = {
-            ...options.headers,
-            "Authorization": `Bearer ${newToken}`,
-          }
+          const retryHeaders = new Headers(normalizedHeaders)
+          retryHeaders.set("Authorization", `Bearer ${newToken}`)
           fetch(url, { ...options, headers: retryHeaders })
             .then(resolve)
             .catch(reject)
@@ -218,10 +234,8 @@ export async function apiRequest(
         notifyRefreshSubscribers(newToken)
 
         // Retry request with new token
-        const retryHeaders = {
-          ...options.headers,
-          "Authorization": `Bearer ${newToken}`,
-        }
+        const retryHeaders = new Headers(normalizedHeaders)
+        retryHeaders.set("Authorization", `Bearer ${newToken}`)
         response = await fetch(url, { ...options, headers: retryHeaders })
       } else {
         // Refresh failed, clear auth data and redirect to login page

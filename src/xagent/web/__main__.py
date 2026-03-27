@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 
 from xagent.core.observability.local_logging import configure_local_logging
 
-from .logging_config import LogLevel, setup_logging
+from .logging_config import LogLevel, build_logging_config, setup_logging
 
 # Load environment variables from .env file
 load_dotenv()
@@ -126,6 +126,8 @@ def main() -> None:
 
     # Configure logging BEFORE importing app
     log_level = "debug" if args.debug else args.log_level
+    if args.debug:
+        os.environ["XAGENT_LLM_LOG_FULL_CONTENT"] = "1"
     setup_logging(level=cast(LogLevel, log_level.upper()), debug=args.debug)
     configure_local_logging(debug=args.debug)
 
@@ -159,6 +161,10 @@ def main() -> None:
             port=args.port,
             reload=args.reload,
             log_level=log_level,
+            log_config=build_logging_config(
+                level=cast(LogLevel, log_level.upper()),
+                debug=args.debug,
+            ),
         )
     except KeyboardInterrupt:
         logger.info("⏹️  Service stopped")

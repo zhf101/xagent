@@ -18,6 +18,8 @@
 from importlib.metadata import version
 from typing import Any
 
+from .logging_config import build_logging_config
+
 try:
     __version__ = version("xagent")
 except Exception:
@@ -36,7 +38,16 @@ def run_server(
     """
     import uvicorn
 
-    uvicorn.run("xagent.web.app:app", host=host, port=port, reload=reload, **kwargs)
+    debug = bool(kwargs.get("debug", False))
+    log_level = str(kwargs.get("log_level", "info")).upper()
+    uvicorn.run(
+        "xagent.web.app:app",
+        host=host,
+        port=port,
+        reload=reload,
+        log_config=build_logging_config(level=log_level, debug=debug),
+        **kwargs,
+    )
 
 def __getattr__(name: str):
     if name == "app":
