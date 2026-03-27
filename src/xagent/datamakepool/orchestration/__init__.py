@@ -4,6 +4,8 @@ from .datamakepool_execution_planner import (
     DatamakepoolExecutionDecision,
     DatamakepoolExecutionPlanner,
 )
+from .entry_recall_coordinator import EntryRecallCoordinator
+from .entry_recall_models import EntryRecallCandidate, EntryRecallResult
 from .execution_plan_composer import ExecutionPlan, ExecutionPlanComposer
 from .task_entry_service import TaskEntryResult, TaskEntryService
 from .template_run_executor import TemplateRunExecutionResult, TemplateRunExecutor
@@ -11,6 +13,9 @@ from .template_run_executor import TemplateRunExecutionResult, TemplateRunExecut
 __all__ = [
     "DatamakepoolExecutionDecision",
     "DatamakepoolExecutionPlanner",
+    "EntryRecallCandidate",
+    "EntryRecallCoordinator",
+    "EntryRecallResult",
     "ExecutionPlan",
     "ExecutionPlanComposer",
     "TaskEntryResult",

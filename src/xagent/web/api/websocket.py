@@ -1743,12 +1743,10 @@ async def handle_execute_task(
             from ...datamakepool.gateway import DatamakepoolTaskModeGateway
             from ...datamakepool.interceptors import ApprovalGate
             from ...datamakepool.orchestration import (
+                EntryRecallCoordinator,
                 DatamakepoolExecutionPlanner,
                 TemplateRunExecutor,
             )
-            from ...datamakepool.templates import TemplateRetriever, TemplateService
-            from ...datamakepool.interpreter import TemplateRanker
-            from ...datamakepool.recall_funnel import load_default_embedding_adapter
             from ..services.task_prompt_recommendation_refresh import (
                 schedule_user_task_prompt_refresh,
             )
@@ -1773,29 +1771,60 @@ async def handle_execute_task(
                 task_context = mode_decision.execution_context
                 generation_system_short = None
 
-                # data_generation 先走模板匹配；命中后直接执行，不进入 agent。
+                # data_generation 入口先跑统一召回协调层，再决定模板直跑 / 增强 / 动态规划。
                 if mode_decision.domain_mode == "data_generation":
-                    template_service = TemplateService(db)
-                    embedding_adapter = load_default_embedding_adapter(db, int(user.id))
-                    template_retriever = (
-                        TemplateRetriever("data/lancedb", embedding_adapter, template_service)
-                        if embedding_adapter is not None
-                        else None
-                    )
-                    template_ranker = (
-                        TemplateRanker(db)
-                        if template_retriever is not None
-                        else None
-                    )
-                    planner = DatamakepoolExecutionPlanner(
-                        template_service,
-                        retriever=template_retriever,
-                        ranker=template_ranker,
-                    )
-                    planning_decision = planner.build_decision(str(task.description))
+                    entry_recall = await EntryRecallCoordinator(
+                        db=db,
+                        user=user,
+                    ).coordinate(str(task.description))
+                    planning_decision = entry_recall.template_decision
                     params = planning_decision.params
                     match_result = planning_decision.match_result
                     generation_system_short = params.get("system_short")
+                    task_context["entry_recall_result"] = {
+                        "selected_strategy": entry_recall.selected_strategy,
+                        "selected_candidate": (
+                            {
+                                "source_type": entry_recall.selected_candidate.source_type,
+                                "candidate_id": entry_recall.selected_candidate.candidate_id,
+                                "display_name": entry_recall.selected_candidate.display_name,
+                                "system_short": entry_recall.selected_candidate.system_short,
+                                "score": entry_recall.selected_candidate.score,
+                                "matched_signals": entry_recall.selected_candidate.matched_signals,
+                                "payload": entry_recall.selected_candidate.payload,
+                            }
+                            if entry_recall.selected_candidate is not None
+                            else None
+                        ),
+                        "template_candidates": [candidate.payload for candidate in entry_recall.template_candidates],
+                        "sql_asset_candidates": [candidate.payload for candidate in entry_recall.sql_asset_candidates],
+                        "http_asset_candidates": [candidate.payload for candidate in entry_recall.http_asset_candidates],
+                        "legacy_candidates": [candidate.payload for candidate in entry_recall.legacy_candidates],
+                        "missing_params": entry_recall.missing_params,
+                        "debug": entry_recall.debug,
+                    }
+                    if entry_recall.selected_candidate is not None and entry_recall.selected_strategy in {
+                        "sql_asset_direct",
+                        "http_asset_direct",
+                        "legacy_direct",
+                    }:
+                        candidate = entry_recall.selected_candidate
+                        missing_param_labels = [
+                            item.get("label") or item.get("field")
+                            for item in entry_recall.missing_params
+                        ]
+                        guidance = (
+                            "\n\n入口统一召回已完成："
+                            f"\n- selected_strategy={entry_recall.selected_strategy}"
+                            f"\n- selected_candidate={candidate.display_name}"
+                            f"\n- matched_signals={candidate.matched_signals}"
+                        )
+                        if missing_param_labels:
+                            guidance += (
+                                "\n- 你接下来若需要向用户补参，只能优先围绕这些字段提问："
+                                + "、".join(str(item) for item in missing_param_labels if item)
+                            )
+                        task_context["system_prompt"] = task_context.get("system_prompt", "") + guidance
                     task_context["datamakepool_match_type"] = match_result.match_type
                     task_context["datamakepool_execution_plan"] = (
                         planning_decision.execution_plan

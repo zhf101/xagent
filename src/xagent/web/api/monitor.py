@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.sql import expression
 
 from ..auth_dependencies import get_current_user
+from ...integrations.openviking import get_openviking_service
 from ..models.database import get_db
 from ..models.task import Task
 from ..models.user import User
@@ -19,6 +20,46 @@ logger = logging.getLogger(__name__)
 
 # Create router
 monitor_router = APIRouter(prefix="/api/monitor", tags=["monitor"])
+
+
+@monitor_router.get("/openviking")
+async def get_openviking_status(
+    current_user: User = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """查看 OpenViking 集成状态。"""
+    service = get_openviking_service()
+    settings = service.settings
+    if not service.is_enabled():
+        return {
+            "enabled": False,
+            "search_enabled": settings.search_enabled,
+            "memory_enabled": settings.memory_enabled,
+            "base_url": settings.base_url,
+        }
+
+    try:
+        health = await service.get_health()
+    except Exception as exc:
+        logger.warning("Failed to get OpenViking health: %s", exc)
+        health = {"healthy": False, "error": str(exc)}
+
+    observer = None
+    try:
+        observer = await service.get_observer_system(
+            user_id=int(current_user.id),
+            agent_id=f"monitor-user-{current_user.id}",
+        )
+    except Exception as exc:
+        logger.warning("Failed to get OpenViking observer status: %s", exc)
+
+    return {
+        "enabled": True,
+        "base_url": settings.base_url,
+        "search_enabled": settings.search_enabled,
+        "memory_enabled": settings.memory_enabled,
+        "health": health,
+        "observer": observer,
+    }
 
 
 def is_admin_user(user: User) -> bool:

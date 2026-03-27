@@ -10,6 +10,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from ...integrations.openviking import sync_skills_to_openviking
 from ..auth_dependencies import get_current_user
 from ..models.user import User
 
@@ -183,7 +184,21 @@ async def reload_skills(
     """
     skill_manager = request.app.state.skill_manager
     await skill_manager.reload()
+    skills = await skill_manager.list_full_skills()
+    synced = 0
+    try:
+        synced = await sync_skills_to_openviking(
+            user_id=int(current_user.id),
+            skills=skills,
+        )
+    except Exception as exc:
+        logger.warning("OpenViking skill sync failed after reload: %s", exc)
 
     return ReloadResponse(
-        message="Skills reloaded", count=len(await skill_manager.list_skills())
+        message=(
+            "Skills reloaded"
+            if synced == 0
+            else f"Skills reloaded, synced {synced} skills to OpenViking"
+        ),
+        count=len(skills),
     )

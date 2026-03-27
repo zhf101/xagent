@@ -53,6 +53,7 @@ from ...core.tools.core.RAG_tools.pipelines.document_ingestion import (
 from ...core.tools.core.RAG_tools.pipelines.document_search import run_document_search
 from ...core.tools.core.RAG_tools.pipelines.web_ingestion import run_web_ingestion
 from ...core.tools.core.RAG_tools.progress import get_progress_manager
+from ...integrations.openviking import sync_kb_resource_to_openviking
 from ...providers.vector_store.lancedb import get_connection_from_env
 from ..auth_dependencies import get_current_user
 from ..config import (
@@ -470,6 +471,23 @@ async def ingest(
             safe_filename,
             _user.id,
             result.message,
+        )
+
+    try:
+        await sync_kb_resource_to_openviking(
+            user_id=int(_user.id),
+            file_path=str(file_path),
+            collection=safe_collection,
+            file_id=str(file_record.file_id),
+            filename=safe_filename,
+        )
+    except Exception as exc:
+        logger.warning(
+            "OpenViking KB resource sync failed (collection=%s, file_id=%s, user_id=%s): %s",
+            safe_collection,
+            file_record.file_id,
+            _user.id,
+            exc,
         )
 
     return JSONResponse(

@@ -207,6 +207,11 @@ class SkillManager:
             for skill in self._skills_cache.values()
         ]
 
+    async def list_full_skills(self) -> List[Dict]:
+        """列出完整 skill 信息，供外部索引或同步使用。"""
+        await self.ensure_initialized()
+        return [dict(skill) for skill in self._skills_cache.values()]
+
     async def get_skill(self, name: str) -> Optional[Dict]:
         """Get single skill (full information including template)"""
         await self.ensure_initialized()

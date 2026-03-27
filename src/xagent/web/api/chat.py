@@ -15,6 +15,7 @@ from ...core.agent.trace import Tracer
 from ...core.model.chat.basic.base import BaseLLM
 from ...core.model.chat.basic.openai import OpenAILLM
 from ...core.model.chat.basic.zhipu import ZhipuLLM
+from ...integrations.openviking import get_openviking_service
 from ..auth_dependencies import get_current_user
 from ..config import ALLOWED_EXTERNAL_UPLOAD_DIRS, UPLOADS_DIR
 from ..dynamic_memory_store import get_memory_store
@@ -39,6 +40,60 @@ logger = logging.getLogger(__name__)
 
 # Create router
 chat_router = APIRouter(prefix="/api/chat", tags=["chat"])
+
+
+def _build_openviking_agent_id(task_id: str) -> str:
+    """统一 OpenViking agent 标识，便于按任务隔离上下文。"""
+    return f"xagent-task-{task_id}"
+
+
+def _build_openviking_assistant_message(result: Dict[str, Any]) -> str:
+    """把执行结果压缩成适合写入 OpenViking session 的文本。
+
+    这里不直接塞整段大型输出，避免把一次执行的噪声完整写进长期记忆提取链路。
+    """
+
+    output = result.get("output")
+    if output is None:
+        output = result.get("error") or str(result)
+
+    text = str(output)
+    if len(text) > 8000:
+        text = text[:8000] + "\n...[truncated by xagent for OpenViking session sync]"
+    return text
+
+
+def _get_task_agent_config(task: Task) -> Dict[str, Any]:
+    """读取 task.agent_config，并统一转成可更新的 dict。"""
+
+    if isinstance(task.agent_config, dict):
+        return dict(task.agent_config)
+    return {}
+
+
+def _get_persisted_openviking_session_id(task: Task) -> Optional[str]:
+    """从 task.agent_config 中读取 OpenViking session_id。"""
+
+    config = _get_task_agent_config(task)
+    value = config.get("openviking_session_id")
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
+def _persist_openviking_session_id(
+    task: Task,
+    db_session: Any,
+    session_id: str,
+) -> None:
+    """把 OpenViking session_id 持久化到 task.agent_config。"""
+
+    config = _get_task_agent_config(task)
+    config["openviking_session_id"] = session_id
+    task.agent_config = config  # type: ignore[assignment]
+    db_session.add(task)
+    db_session.commit()
+    db_session.refresh(task)
 
 
 async def attach_legacy_scenario_meta_tools(
@@ -301,6 +356,7 @@ class AgentServiceManager:
     def __init__(self, request: Optional[Any] = None) -> None:
         self._agents: Dict[int, AgentService] = {}
         self._sandboxes: Dict[int, Any] = {}  # user_id -> Sandbox instance
+        self._openviking_sessions: Dict[int, str] = {}
         self._default_llm = create_default_llm()
         self.request = request
 
@@ -939,6 +995,7 @@ class AgentServiceManager:
             self._cleanup_workspace_directory(task_id, user_id)
 
         # LLM configuration is now stored in Task table, no need to clean up memory storage
+        self._openviking_sessions.pop(task_id, None)
 
     async def execute_task(
         self,
@@ -968,6 +1025,10 @@ class AgentServiceManager:
         # Initialize tracker if db_session and task_id are provided
         tracker = None
         tracker_task_id = tracking_task_id or task_id
+        openviking_session_id: Optional[str] = None
+        openviking_user_id: Optional[int] = None
+        openviking_agent_id: Optional[str] = None
+        openviking_service = get_openviking_service()
         if db_session and tracker_task_id:
             try:
                 from ..tracking.task_tracker import TaskTracker
@@ -985,6 +1046,55 @@ class AgentServiceManager:
                 tracker = None
 
         try:
+            if db_session and tracker_task_id and openviking_service.memory_is_enabled():
+                try:
+                    task_record = (
+                        db_session.query(Task)
+                        .filter(Task.id == int(tracker_task_id))
+                        .first()
+                    )
+                    if task_record and task_record.user_id is not None:
+                        openviking_user_id = int(task_record.user_id)
+                        openviking_agent_id = _build_openviking_agent_id(
+                            str(tracker_task_id)
+                        )
+                        openviking_session_id = self._openviking_sessions.get(
+                            int(tracker_task_id)
+                        ) or _get_persisted_openviking_session_id(task_record)
+                        if not openviking_session_id:
+                            session_info = await openviking_service.create_session(
+                                user_id=openviking_user_id,
+                                agent_id=openviking_agent_id,
+                            )
+                            openviking_session_id = session_info.get("session_id")
+                            if openviking_session_id:
+                                self._openviking_sessions[int(tracker_task_id)] = (
+                                    openviking_session_id
+                                )
+                                _persist_openviking_session_id(
+                                    task_record,
+                                    db_session,
+                                    openviking_session_id,
+                                )
+                        else:
+                            self._openviking_sessions[int(tracker_task_id)] = (
+                                openviking_session_id
+                            )
+                        if openviking_session_id:
+                            await openviking_service.add_message(
+                                user_id=openviking_user_id,
+                                agent_id=openviking_agent_id,
+                                session_id=openviking_session_id,
+                                role="user",
+                                content=task,
+                            )
+                except Exception as exc:
+                    logger.warning(
+                        "OpenViking pre-execution session sync failed for task %s: %s",
+                        tracker_task_id,
+                        exc,
+                    )
+
             logger.info(
                 f"=== About to execute task: task_id={task_id}, has_db_session={db_session is not None} ==="
             )
@@ -1001,6 +1111,31 @@ class AgentServiceManager:
                 await update_task_title_from_agent(
                     agent_service, int(task_id), db_session
                 )
+
+            if (
+                openviking_session_id
+                and openviking_user_id is not None
+                and openviking_agent_id
+            ):
+                try:
+                    await openviking_service.add_message(
+                        user_id=openviking_user_id,
+                        agent_id=openviking_agent_id,
+                        session_id=openviking_session_id,
+                        role="assistant",
+                        content=_build_openviking_assistant_message(result),
+                    )
+                    await openviking_service.commit_session(
+                        user_id=openviking_user_id,
+                        agent_id=openviking_agent_id,
+                        session_id=openviking_session_id,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "OpenViking post-execution session sync failed for task %s: %s",
+                        tracker_task_id,
+                        exc,
+                    )
 
             return result
         finally:

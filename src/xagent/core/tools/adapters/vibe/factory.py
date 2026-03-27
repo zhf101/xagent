@@ -67,6 +67,7 @@ class ToolRegistry:
                 image_tool,
                 knowledge_tools,
                 mcp_tools,
+                openviking_tools,
                 pptx_tool,
                 skill_tools,
                 special_image_tools,
