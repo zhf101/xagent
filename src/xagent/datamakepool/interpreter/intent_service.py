@@ -19,6 +19,8 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from xagent.datamakepool.recall_funnel import RecallFunnelExecutor, RecallQuery
+from xagent.datamakepool.recall_funnel.adapters import TemplateRecallAdapter
 from .parameter_extractor import extract_parameters
 from .template_match_result import TemplateMatchResult
 from .template_matcher import TemplateMatcher
@@ -75,22 +77,29 @@ class IntentService:
         assert self._ranker is not None
         assert self._template_service is not None
 
-        system_short = params.get("system_short")
-        recalled = self._retriever.recall(user_input, system_short, top_k=50)
-
-        if not recalled:
-            return self._matcher.match(user_input, params, [])
-
-        ids = [r["template_id"] for r in recalled]
-        details = self._template_service.batch_get(ids)
-
-        # 将 ANN 距离注入模板详情，供精排使用
-        dist_map = {r["template_id"]: r["_distance"] for r in recalled}
-        for d in details:
-            d["_distance"] = dist_map.get(d["id"], 1.0)
-
-        top5 = self._ranker.rank(user_input, params, details, top_n=5)
-        return self._matcher.match(user_input, params, top5)
+        adapter = TemplateRecallAdapter(
+            matcher=self._matcher,
+            template_service=self._template_service,
+            retriever=self._retriever,
+            ranker=self._ranker,
+        )
+        query = RecallQuery(
+            query_text=user_input,
+            system_short=params.get("system_short"),
+            top_k=50,
+            context=params,
+        )
+        execution = RecallFunnelExecutor[dict[str, Any]]().run(adapter, query)
+        result = adapter.finalize(query, execution.candidates)
+        object.__setattr__(result, "recall_strategy", execution.recall_strategy)
+        object.__setattr__(result, "used_ann", execution.used_ann)
+        object.__setattr__(result, "used_fallback", execution.used_fallback)
+        object.__setattr__(
+            result,
+            "stage_results",
+            [stage.to_dict() for stage in execution.stage_results],
+        )
+        return result
 
     def interpret(
         self, user_input: str, candidates: list[dict[str, Any]]

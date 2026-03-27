@@ -17,6 +17,8 @@ from xagent.core.tools.adapters.vibe.base import ToolCategory, ToolVisibility
 from xagent.core.tools.adapters.vibe.function import FunctionTool
 from xagent.core.tools.adapters.vibe.mcp_adapter import MCPToolAdapter
 from xagent.core.tools.core.mcp.sessions import Connection, create_session
+from xagent.datamakepool.recall_funnel import RecallFunnelExecutor, RecallQuery, load_default_embedding_adapter
+from xagent.datamakepool.recall_funnel.adapters import LegacyScenarioRecallAdapter
 from xagent.datamakepool.tools.legacy_scenario_catalog_registry import (
     LegacyScenarioCatalogRegistry,
     record_legacy_scenario_execution,
@@ -103,6 +105,8 @@ class LegacyScenarioCatalogService:
         user_id: int,
         agent_service: AgentService | None,
         db: Any | None = None,
+        db_dir: str | None = None,
+        embedding_model: Any | None = None,
     ):
         self._mcp_configs = mcp_configs
         self._user_id = user_id
@@ -110,6 +114,17 @@ class LegacyScenarioCatalogService:
         self._db = db
         self._catalog: list[LegacyScenarioCatalogEntry] = []
         self._catalog_loaded_at = 0.0
+        self._indexer = None
+        self._retriever = None
+        if embedding_model is None and db is not None and hasattr(db, "query"):
+            embedding_model = load_default_embedding_adapter(db, user_id)
+        if db_dir is None and embedding_model is not None:
+            db_dir = "data/lancedb"
+        if db_dir is not None and embedding_model is not None:
+            from xagent.datamakepool.tools.legacy_scenario_indexer import LegacyScenarioIndexer
+            from xagent.datamakepool.tools.legacy_scenario_retriever import LegacyScenarioRetriever
+            self._indexer = LegacyScenarioIndexer(db_dir, embedding_model)
+            self._retriever = LegacyScenarioRetriever(db_dir, embedding_model)
 
     def _filter_legacy_configs(self) -> list[dict[str, Any]]:
         legacy_configs = []
@@ -202,6 +217,9 @@ class LegacyScenarioCatalogService:
                 ]
             )
 
+        if self._indexer is not None:
+            self._indexer.index_all([entry.to_dict() for entry in discovered])
+
         return {
             "success": True,
             "count": len(discovered),
@@ -229,6 +247,8 @@ class LegacyScenarioCatalogService:
                     for entry in discovered
                 ]
             )
+            if self._indexer is not None:
+                self._indexer.index_all([e.to_dict() for e in discovered])
 
         rows = registry.list_entries()
         if rows:
@@ -303,41 +323,33 @@ class LegacyScenarioCatalogService:
     async def search(
         self, query: str, system_short: Optional[str] = None, top_k: int = 6
     ) -> list[dict[str, Any]]:
-        registry = self._registry()
-        if registry is not None:
-            if registry.is_stale():
-                await self._get_catalog()
-            return registry.search(query, system_short, top_k)
-
         catalog = await self._get_catalog()
-        scored: list[tuple[float, LegacyScenarioCatalogEntry]] = []
-        query_lower = query.lower()
-        for entry in catalog:
-            score = 0.0
-            if system_short and entry.system_short == system_short.lower():
-                score += 0.45
-            if entry.system_short and entry.system_short in query_lower:
-                score += 0.25
-            if entry.scenario_name.lower() in query_lower:
-                score += 0.35
-            for token in re.split(r"\s+|，|,|；|;", query_lower):
-                if not token:
-                    continue
-                if token in entry.scenario_name.lower():
-                    score += 0.12
-                if token in entry.description.lower():
-                    score += 0.08
-            if score > 0:
-                scored.append((score, entry))
-
-        scored.sort(key=lambda item: item[0], reverse=True)
-        return [
-            {
-                **entry.to_dict(),
-                "match_score": round(score, 4),
-            }
-            for score, entry in scored[: max(1, min(top_k, 10))]
-        ]
+        adapter = LegacyScenarioRecallAdapter(
+            catalog=catalog,
+            retriever=self._retriever,
+        )
+        execution = RecallFunnelExecutor[LegacyScenarioCatalogEntry]().run(
+            adapter,
+            RecallQuery(
+                query_text=query,
+                system_short=system_short,
+                top_k=top_k,
+            ),
+        )
+        results = adapter.finalize(
+            RecallQuery(
+                query_text=query,
+                system_short=system_short,
+                top_k=top_k,
+            ),
+            execution.candidates,
+        )
+        for item in results:
+            item["recall_strategy"] = execution.recall_strategy
+            item["used_ann"] = execution.used_ann
+            item["used_fallback"] = execution.used_fallback
+            item["stage_results"] = [stage.to_dict() for stage in execution.stage_results]
+        return results
 
     async def get(self, scenario_id: str) -> Optional[dict[str, Any]]:
         registry = self._registry()
@@ -458,6 +470,97 @@ class LegacyScenarioCatalogService:
             "loaded_count": len(loaded_tool_names),
             "skipped": skipped,
         }
+
+
+DEFAULT_HTTP2MCP_CONFIG = [
+    {
+        "name": "http2mcp",
+        "transport": "streamable_http",
+        "config": {"url": "http://127.0.0.1:8000/mcp"},
+    }
+]
+
+
+def create_http2mcp_meta_tools(
+    *,
+    mcp_configs: list[dict[str, Any]] | None = None,
+    user_id: int = 0,
+    agent_service: AgentService | None = None,
+    db: Any | None = None,
+) -> list[LegacyScenarioMetaTool]:
+    """同步工厂：为 Http2McpExecutorAgent 创建分层渐进披露的 meta tools。
+
+    工具调用流程（LLM 必须按序）：
+    1. legacy_scenario_catalog_search  — 搜索候选场景，不加载真实 tool
+    2. legacy_scenario_catalog_get     — 获取单个场景详细 schema
+    3. legacy_scenario_tool_loader     — 确认后加载具体 MCP tool 到当前 agent
+    4. 调用已加载的 tool 完成造数
+    """
+    resolved_configs = mcp_configs if mcp_configs is not None else DEFAULT_HTTP2MCP_CONFIG
+    catalog_service = LegacyScenarioCatalogService(
+        mcp_configs=resolved_configs,
+        user_id=user_id,
+        agent_service=agent_service,
+        db=db,
+    )
+
+    async def legacy_scenario_catalog_search(
+        query: str, system_short: str | None = None, top_k: int = 5
+    ) -> dict:
+        """【第1步】按任务描述搜索存量造数场景目录，返回摘要列表（不加载真实 MCP tool）。
+
+        返回字段：scenario_id, scenario_name, description, system_short,
+        input_schema_summary, risk_level, match_score。
+        - 若结果为空说明无存量场景，输出 missing_steps 供 orchestrator 处理。
+        - 若结果只能覆盖部分步骤，在回复里区分 covered_steps 和 missing_steps。
+        """
+        results = await catalog_service.search(query, system_short, top_k)
+        return {"success": True, "results": results, "count": len(results)}
+
+    async def legacy_scenario_catalog_get(scenario_id: str) -> dict:
+        """【第2步】获取单个存量场景的完整 schema 和参数说明，用于确认是否符合当前步骤需求。"""
+        result = await catalog_service.get(scenario_id)
+        return {"success": result is not None, "scenario": result}
+
+    async def legacy_scenario_tool_loader(scenario_ids: list[str]) -> dict:
+        """【第3步】将选中的存量场景 MCP tool 加载到当前 agent，加载后即可直接调用。
+
+        每次最多加载 5 个。risk_level=high 的场景加载后须在输出中标注，等待审批。
+        """
+        if len(scenario_ids) > 5:
+            scenario_ids = scenario_ids[:5]
+        return await catalog_service.load_tools(scenario_ids)
+
+    return [
+        LegacyScenarioMetaTool(
+            legacy_scenario_catalog_search,
+            name="legacy_scenario_catalog_search",
+            description=(
+                "【第1步】搜索 http2mcp 存量造数场景目录。"
+                "返回场景摘要（scenario_id/描述/参数概要/风险级别），不加载真实 MCP tool，不消耗额外上下文。"
+                "搜索无结果时输出 missing_steps；部分命中时区分 covered_steps 和 missing_steps。"
+            ),
+            visibility=ToolVisibility.PRIVATE,
+        ),
+        LegacyScenarioMetaTool(
+            legacy_scenario_catalog_get,
+            name="legacy_scenario_catalog_get",
+            description=(
+                "【第2步】获取单个存量造数场景的完整 schema 和参数说明。"
+                "在 tool_loader 加载前用于确认场景是否满足当前步骤需求。"
+            ),
+            visibility=ToolVisibility.PRIVATE,
+        ),
+        LegacyScenarioMetaTool(
+            legacy_scenario_tool_loader,
+            name="legacy_scenario_tool_loader",
+            description=(
+                "【第3步】将选定存量造数场景的 MCP tool 加载到当前 agent（每次最多5个）。"
+                "加载完成后直接调用已加载的 tool 完成造数。risk_level=high 的场景须标注等待审批。"
+            ),
+            visibility=ToolVisibility.PRIVATE,
+        ),
+    ]
 
 
 async def create_legacy_scenario_meta_tools(

@@ -24,6 +24,9 @@ from ....datamakepool.assets import (
     HttpAssetResolverService,
     validate_http_asset_payload,
 )
+from ....datamakepool.assets.http_asset_indexer import HttpAssetIndexer
+from ....datamakepool.assets.http_asset_retriever import HttpAssetRetriever
+from ....datamakepool.recall_funnel import load_default_embedding_adapter
 from ....datamakepool.http_execution import HttpExecutionService, HttpRequestSpec
 from ....datamakepool.tools.http_tools import _merge_asset_defaults
 from ....core.workspace import TaskWorkspace
@@ -89,6 +92,11 @@ class HttpAssetResolveResponse(BaseModel):
     asset_id: Optional[int] = None
     asset_name: Optional[str] = None
     reason: Optional[str] = None
+    recall_strategy: Optional[str] = None
+    used_ann: bool = False
+    used_fallback: bool = False
+    stage_results: List[Dict[str, Any]] = Field(default_factory=list)
+    fallback_candidates: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class HttpAssetDebugRequest(BaseModel):
@@ -117,6 +125,20 @@ class HttpAssetDebugResponse(BaseModel):
     downloaded_file_id: Optional[str] = None
     downloaded_file_path: Optional[str] = None
     error: Optional[str] = None
+
+
+def _build_http_asset_vector_components(db: Session, user_id: int):
+    """按需构造 HTTP 资产向量索引组件。"""
+
+    embedding_model = load_default_embedding_adapter(db, user_id)
+    if embedding_model is None:
+        return None, None
+    db_dir = "data/lancedb"
+    return HttpAssetIndexer(db_dir, embedding_model), HttpAssetRetriever(
+        db_dir,
+        embedding_model,
+        HttpAssetRepository(db),
+    )
 
 
 def _to_response(asset: DataMakepoolAsset) -> HttpAssetResponse:
@@ -194,6 +216,20 @@ async def create_http_asset(
         )
         db.commit()
         db.refresh(asset)
+        indexer, _ = _build_http_asset_vector_components(db, int(user.id))
+        if indexer is not None:
+            try:
+                indexer.index(
+                    {
+                        "id": asset.id,
+                        "name": asset.name,
+                        "system_short": asset.system_short,
+                        "description": asset.description,
+                        "config": asset.config or {},
+                    }
+                )
+            except Exception:
+                pass
         return _to_response(asset)
     except ValueError as e:
         db.rollback()
@@ -265,6 +301,20 @@ async def update_http_asset(
         )
         db.commit()
         db.refresh(asset)
+        indexer, _ = _build_http_asset_vector_components(db, int(user.id))
+        if indexer is not None:
+            try:
+                indexer.index(
+                    {
+                        "id": asset.id,
+                        "name": asset.name,
+                        "system_short": asset.system_short,
+                        "description": asset.description,
+                        "config": asset.config or {},
+                    }
+                )
+            except Exception:
+                pass
         return _to_response(asset)
     except ValueError as e:
         db.rollback()
@@ -305,8 +355,15 @@ async def delete_http_asset(
             system_short=asset.system_short,
             required_role="normal_admin",
         )
+        asset_id = int(asset.id)
         repository.delete_http_asset(asset)
         db.commit()
+        indexer, _ = _build_http_asset_vector_components(db, int(user.id))
+        if indexer is not None:
+            try:
+                indexer.delete(asset_id)
+            except Exception:
+                pass
         return {"message": "HTTP asset deleted successfully"}
     except HTTPException:
         db.rollback()
@@ -328,7 +385,8 @@ async def resolve_http_asset(
     """根据 method + url 解析最匹配的 HTTP 资产。"""
 
     repository = HttpAssetRepository(db)
-    resolver = HttpAssetResolverService(repository)
+    _, retriever = _build_http_asset_vector_components(db, int(user.id))
+    resolver = HttpAssetResolverService(repository, retriever=retriever)
     result = resolver.resolve(
         system_short=payload.system_short,
         method=payload.method,
@@ -339,6 +397,11 @@ async def resolve_http_asset(
         asset_id=result.asset_id,
         asset_name=result.asset_name,
         reason=result.reason,
+        recall_strategy=result.recall_strategy,
+        used_ann=result.used_ann,
+        used_fallback=result.used_fallback,
+        stage_results=result.stage_results,
+        fallback_candidates=result.fallback_candidates,
     )
 
 
@@ -367,7 +430,8 @@ async def debug_http_asset(
             detail="HTTP asset not found",
         )
 
-    resolver = HttpAssetResolverService(repository)
+    _, retriever = _build_http_asset_vector_components(db, int(user.id))
+    resolver = HttpAssetResolverService(repository, retriever=retriever)
     match_result = resolver.resolve(
         system_short=payload.system_short or asset.system_short,
         method=payload.method,

@@ -1746,7 +1746,9 @@ async def handle_execute_task(
                 DatamakepoolExecutionPlanner,
                 TemplateRunExecutor,
             )
-            from ...datamakepool.templates import TemplateService
+            from ...datamakepool.templates import TemplateRetriever, TemplateService
+            from ...datamakepool.interpreter import TemplateRanker
+            from ...datamakepool.recall_funnel import load_default_embedding_adapter
             from ..services.task_prompt_recommendation_refresh import (
                 schedule_user_task_prompt_refresh,
             )
@@ -1773,7 +1775,23 @@ async def handle_execute_task(
 
                 # data_generation 先走模板匹配；命中后直接执行，不进入 agent。
                 if mode_decision.domain_mode == "data_generation":
-                    planner = DatamakepoolExecutionPlanner(TemplateService(db))
+                    template_service = TemplateService(db)
+                    embedding_adapter = load_default_embedding_adapter(db, int(user.id))
+                    template_retriever = (
+                        TemplateRetriever("data/lancedb", embedding_adapter, template_service)
+                        if embedding_adapter is not None
+                        else None
+                    )
+                    template_ranker = (
+                        TemplateRanker(db)
+                        if template_retriever is not None
+                        else None
+                    )
+                    planner = DatamakepoolExecutionPlanner(
+                        template_service,
+                        retriever=template_retriever,
+                        ranker=template_ranker,
+                    )
                     planning_decision = planner.build_decision(str(task.description))
                     params = planning_decision.params
                     match_result = planning_decision.match_result
@@ -1788,6 +1806,10 @@ async def handle_execute_task(
                         "confidence": match_result.confidence,
                         "covered_requirements": match_result.covered_requirements,
                         "missing_requirements": match_result.missing_requirements,
+                        "recall_strategy": match_result.recall_strategy,
+                        "used_ann": match_result.used_ann,
+                        "used_fallback": match_result.used_fallback,
+                        "stage_results": match_result.stage_results,
                     }
                     if match_result.matched_template:
                         task_context["datamakepool_template_match"]["matched_template"] = {

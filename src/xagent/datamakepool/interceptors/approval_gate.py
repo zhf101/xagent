@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import logging
+import re
 from sqlalchemy.orm import Session
 
 from xagent.core.observability.local_logging import log_decision
@@ -26,6 +27,76 @@ HIGH_RISK_MARKERS = (
     "修改表",
     "变更结构",
 )
+
+SYSTEM_INFO_MARKERS = (
+    "information_schema",
+    "pg_catalog",
+    "pg_tables",
+    "pg_stat",
+    "sys.",
+    "show tables",
+    "show databases",
+    "show columns",
+    "show index",
+    "系统表",
+    "元数据",
+    "数据字典",
+)
+
+AGGREGATE_MARKERS = (
+    "count(*)",
+    "count( *)",
+    "sum(",
+    "avg(",
+    "统计",
+)
+
+_LIMIT_RE = re.compile(r"\blimit\s+(\d+)", re.IGNORECASE)
+
+
+def check_sql_needs_approval(sql: str) -> tuple[bool, str]:
+    """检查生成的 SQL 是否需要审批。
+
+    在 SQL 生成后、执行前调用。覆盖以下场景：
+    - DDL / DELETE / UPDATE / TRUNCATE / DROP（高风险写操作）
+    - 系统信息查询（information_schema / pg_catalog / show tables 等）
+    - 统计聚合查询（count(*) / sum / avg / 统计）
+    - 无 LIMIT 子句（全表扫描风险）
+    - LIMIT > 50（返回行数过多）
+
+    Returns:
+        (requires_approval, reason)
+    """
+    if not sql or not sql.strip():
+        return False, "empty_sql"
+
+    normalized = f" {sql.lower()} "
+
+    # 高风险写操作 / DDL
+    write_ddl_markers = (
+        " drop ", " truncate ", " delete ", " update ", " alter ",
+        " insert ", " create ", " rename ",
+    )
+    if any(m in normalized for m in write_ddl_markers):
+        return True, "high_risk_write_or_ddl"
+
+    # 系统信息查询
+    if any(m in normalized for m in SYSTEM_INFO_MARKERS):
+        return True, "system_info_query"
+
+    # 统计聚合查询
+    if any(m in normalized for m in AGGREGATE_MARKERS):
+        return True, "aggregate_query"
+
+    # LIMIT 检查：无 LIMIT 或 LIMIT > 50
+    limit_matches = _LIMIT_RE.findall(sql)
+    if not limit_matches:
+        return True, "no_limit_clause"
+    if any(int(v) > 50 for v in limit_matches):
+        return True, "limit_exceeds_50"
+
+    return False, "ok"
+
 
 SQL_CONTEXT_MARKERS = (
     " sql ",

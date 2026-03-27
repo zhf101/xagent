@@ -103,7 +103,7 @@ class TemplateRunExecutor:
         - 这是“留痕优先”的 best-effort 行为，不把账本写入失败放大成执行失败
         """
 
-        inspector = inspect(self._db.bind)
+        inspector = inspect(self._db.get_bind())
         tables = set(inspector.get_table_names())
         if "datamakepool_runs" not in tables:
             return None
@@ -163,7 +163,7 @@ class TemplateRunExecutor:
     def _increment_used_count(self, template_id: int) -> None:
         """异步更新模板命中计数，失败时静默跳过。"""
         try:
-            inspector = inspect(self._db.bind)
+            inspector = inspect(self._db.get_bind())
             if "template_stats" not in inspector.get_table_names():
                 return
             self._db.execute(
@@ -175,7 +175,7 @@ class TemplateRunExecutor:
                     DO UPDATE SET used_count = template_stats.used_count + 1
                     """
                 ),
-                {"tid": str(template_id)},
+                {"tid": template_id},
             )
             self._db.commit()
         except Exception:

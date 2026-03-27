@@ -51,6 +51,10 @@ class TemplateMatchResult:
     covered_requirements: list[str] = field(default_factory=list)
     missing_requirements: list[str] = field(default_factory=list)
     inferred_params: dict[str, Any] = field(default_factory=dict)
+    recall_strategy: str | None = None
+    used_ann: bool = False
+    used_fallback: bool = False
+    stage_results: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def is_full_match(self) -> bool:

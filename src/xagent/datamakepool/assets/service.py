@@ -12,11 +12,22 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import dataclass, field
+import re
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
+from xagent.datamakepool.recall_funnel import RecallFunnelExecutor, RecallQuery
+from xagent.datamakepool.recall_funnel.adapters import (
+    HttpAssetRecallAdapter,
+    SqlAssetRecallAdapter,
+)
+
 from .repositories import DubboAssetRepository, HttpAssetRepository, SqlAssetRepository
+
+if TYPE_CHECKING:
+    from .http_asset_retriever import HttpAssetRetriever
+    from .sql_asset_retriever import SqlAssetRetriever
 
 
 @dataclass
@@ -28,13 +39,23 @@ class HttpAssetMatchResult:
     asset_name: str | None = None
     config: dict[str, Any] | None = None
     reason: str | None = None
+    fallback_candidates: list[dict[str, Any]] = field(default_factory=list)
+    recall_strategy: str | None = None
+    used_ann: bool = False
+    used_fallback: bool = False
+    stage_results: list[dict[str, Any]] = field(default_factory=list)
 
 
 class HttpAssetResolverService:
     """HTTP 资产解析服务。"""
 
-    def __init__(self, repository: HttpAssetRepository):
+    def __init__(
+        self,
+        repository: HttpAssetRepository,
+        retriever: "HttpAssetRetriever | None" = None,
+    ):
         self.repository = repository
+        self._retriever = retriever
 
     def resolve(
         self,
@@ -50,32 +71,29 @@ class HttpAssetResolverService:
         - 必须命中 active 资产，避免草稿/停用配置参与运行时路由
         """
 
-        assets = self.repository.list_active_http_assets(system_short=system_short)
-        request_path = urlparse(url).path.rstrip("/") or "/"
-        request_method = method.upper()
-
-        for asset in assets:
-            config = asset.config or {}
-            asset_method = str(config.get("method") or "").upper()
-            base_url = str(config.get("base_url") or "").rstrip("/")
-            path_template = str(config.get("path_template") or "").rstrip("/") or "/"
-            if asset_method and asset_method != request_method:
-                continue
-            if not base_url:
-                continue
-            expected_path = urlparse(f"{base_url}{path_template}").path.rstrip("/") or "/"
-            if expected_path == request_path:
-                return HttpAssetMatchResult(
-                    matched=True,
-                    asset_id=asset.id,
-                    asset_name=asset.name,
-                    config=config,
-                    reason=f"matched active HTTP asset '{asset.name}'",
-                )
-
+        query = RecallQuery(
+            query_text=f"{method} {url}",
+            system_short=system_short,
+            top_k=20,
+            context={"method": method, "url": url},
+        )
+        adapter = HttpAssetRecallAdapter(
+            repository=self.repository,
+            retriever=self._retriever,
+        )
+        execution = RecallFunnelExecutor[Any]().run(adapter, query)
+        payload = adapter.finalize(query, execution.candidates)
         return HttpAssetMatchResult(
-            matched=False,
-            reason="no active HTTP asset matched",
+            matched=bool(payload.get("matched")),
+            asset_id=payload.get("asset_id"),
+            asset_name=payload.get("asset_name"),
+            config=payload.get("config"),
+            reason=payload.get("reason"),
+            fallback_candidates=payload.get("fallback_candidates") or [],
+            recall_strategy=execution.recall_strategy,
+            used_ann=execution.used_ann,
+            used_fallback=execution.used_fallback,
+            stage_results=[stage.to_dict() for stage in execution.stage_results],
         )
 
 
@@ -88,13 +106,26 @@ class SqlAssetMatchResult:
     asset_name: str | None = None
     config: dict[str, Any] | None = None
     reason: str | None = None
+    score: float = 0.0
+    matched_signals: list[str] | None = None
+    candidate_count: int = 0
+    top_candidates: list[dict[str, Any]] | None = None
+    recall_strategy: str | None = None
+    used_ann: bool = False
+    used_fallback: bool = False
+    stage_results: list[dict[str, Any]] = field(default_factory=list)
 
 
 class SqlAssetResolverService:
     """SQL 资产解析服务。"""
 
-    def __init__(self, repository: SqlAssetRepository):
+    def __init__(
+        self,
+        repository: SqlAssetRepository,
+        retriever: "SqlAssetRetriever | None" = None,
+    ):
         self.repository = repository
+        self._retriever = retriever
 
     def resolve(
         self,
@@ -112,46 +143,32 @@ class SqlAssetResolverService:
         该方法只返回“当前最像的一个资产”，不负责多候选排序暴露。
         """
 
-        assets = self.repository.list_active_sql_assets(system_short=system_short)
-        task_lower = task.lower()
-        best: SqlAssetMatchResult | None = None
-        best_score = 0.0
-
-        for asset in assets:
-            config = asset.config or {}
-            tags = [str(t).lower() for t in (config.get("tags") or [])]
-            table_names = [str(t).lower() for t in (config.get("table_names") or [])]
-            sql_kind = str(config.get("sql_kind") or "").lower()
-            name_lower = asset.name.lower() if asset.name else ""
-            desc_lower = (asset.description or "").lower()
-            score = 0.0
-            if any(tag and tag in task_lower for tag in tags):
-                score += 0.45
-            if any(table and table in task_lower for table in table_names):
-                score += 0.25
-            if name_lower and name_lower in task_lower:
-                score += 0.2
-            if sql_kind and sql_kind in task_lower:
-                score += 0.15
-            if desc_lower and any(
-                word in task_lower for word in desc_lower.split() if len(word) > 3
-            ):
-                score += 0.08
-
-            if score > best_score:
-                best_score = score
-                best = SqlAssetMatchResult(
-                    matched=True,
-                    asset_id=asset.id,
-                    asset_name=asset.name,
-                    config=config,
-                    reason=f"matched active SQL asset '{asset.name}' with score={score:.2f}",
-                )
-
-        if best is not None and best_score >= 0.2:
-            return best
-
-        return SqlAssetMatchResult(matched=False, reason="no active SQL asset matched")
+        query = RecallQuery(
+            query_text=task,
+            system_short=system_short,
+            top_k=20,
+        )
+        adapter = SqlAssetRecallAdapter(
+            repository=self.repository,
+            retriever=self._retriever,
+        )
+        execution = RecallFunnelExecutor[Any]().run(adapter, query)
+        payload = adapter.finalize(query, execution.candidates)
+        return SqlAssetMatchResult(
+            matched=bool(payload.get("matched")),
+            asset_id=payload.get("asset_id"),
+            asset_name=payload.get("asset_name"),
+            config=payload.get("config"),
+            reason=payload.get("reason"),
+            score=float(payload.get("score") or 0.0),
+            matched_signals=payload.get("matched_signals"),
+            candidate_count=int(payload.get("candidate_count") or 0),
+            top_candidates=payload.get("top_candidates"),
+            recall_strategy=execution.recall_strategy,
+            used_ann=execution.used_ann,
+            used_fallback=execution.used_fallback,
+            stage_results=[stage.to_dict() for stage in execution.stage_results],
+        )
 
 
 @dataclass

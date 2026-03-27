@@ -74,6 +74,30 @@ interface ResolveFormState {
     url: string
 }
 
+interface HttpResolveResult {
+  matched: boolean
+  asset_id?: number | null
+  asset_name?: string | null
+  reason?: string | null
+  recall_strategy?: string | null
+  used_ann?: boolean
+  used_fallback?: boolean
+  stage_results?: Array<{
+    stage_name: string
+    strategy: string
+    candidate_count: number
+    fallback_reason?: string | null
+  }>
+  fallback_candidates?: Array<{
+    asset_id?: number
+    asset_name?: string
+    description?: string
+    path_template?: string
+    method?: string
+    match_score?: number
+  }>
+}
+
 interface HttpAssetDebugResult {
   success: boolean
   status_code: number
@@ -147,7 +171,7 @@ export function HttpAssetsPage() {
   const [viewingAsset, setViewingAsset] = useState<HttpAssetRecord | null>(null)
   const [form, setForm] = useState<HttpAssetFormState>(EMPTY_FORM)
   const [resolveForm, setResolveForm] = useState<ResolveFormState>(EMPTY_RESOLVE_FORM)
-  const [resolveResult, setResolveResult] = useState<any>(null)
+  const [resolveResult, setResolveResult] = useState<HttpResolveResult | null>(null)
   const [debuggingAsset, setDebuggingAsset] = useState<HttpAssetRecord | null>(null)
   const [debugSubmitting, setDebugSubmitting] = useState(false)
   const [debugResult, setDebugResult] = useState<HttpAssetDebugResult | null>(null)
@@ -632,12 +656,16 @@ export function HttpAssetsPage() {
       </div>
 
       <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
-        <DialogContent className="max-w-3xl">
-          <DialogHeader>
-            <DialogTitle>{editingAsset ? "编辑 HTTP 资产" : "新增 HTTP 资产"}</DialogTitle>
-            <DialogDescription>录入接口元数据，让 HTTP agent 后续优先命中已治理资产。</DialogDescription>
-          </DialogHeader>
-          <div className="grid gap-4 lg:grid-cols-2">
+        <DialogContent className="max-h-[90vh] max-w-3xl overflow-hidden p-0">
+          <div className="flex max-h-[90vh] flex-col">
+            <div className="border-b border-border/70 px-6 py-5">
+              <DialogHeader>
+                <DialogTitle>{editingAsset ? "编辑 HTTP 资产" : "新增 HTTP 资产"}</DialogTitle>
+                <DialogDescription>录入接口元数据，让 HTTP agent 后续优先命中已治理资产。</DialogDescription>
+              </DialogHeader>
+            </div>
+            <div className="flex-1 overflow-y-auto px-6 py-5">
+              <div className="grid gap-4 lg:grid-cols-2">
             <div className="space-y-4">
               <div className="space-y-2">
                 <Label>资产名称</Label>
@@ -720,15 +748,19 @@ export function HttpAssetsPage() {
                 />
               </div>
             </div>
+              </div>
+            </div>
+            <div className="border-t border-border/70 px-6 py-4">
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setIsCreateDialogOpen(false)}>
+                  取消
+                </Button>
+                <Button onClick={handleCreate} disabled={submitting || systems.length === 0}>
+                  {submitting ? "保存中..." : "保存"}
+                </Button>
+              </DialogFooter>
+            </div>
           </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setIsCreateDialogOpen(false)}>
-              取消
-            </Button>
-            <Button onClick={handleCreate} disabled={submitting || systems.length === 0}>
-              {submitting ? "保存中..." : "保存"}
-            </Button>
-          </DialogFooter>
         </DialogContent>
       </Dialog>
 
@@ -771,12 +803,16 @@ export function HttpAssetsPage() {
       </Dialog>
 
       <Dialog open={isDebugDialogOpen} onOpenChange={setIsDebugDialogOpen}>
-        <DialogContent className="max-w-4xl">
-          <DialogHeader>
-            <DialogTitle>HTTP 资产调试面板</DialogTitle>
-            <DialogDescription>预览原始响应、提取字段和摘要结果，不写正式运行账本。</DialogDescription>
-          </DialogHeader>
-          <div className="grid gap-4 lg:grid-cols-2">
+        <DialogContent className="max-h-[90vh] max-w-4xl overflow-hidden p-0">
+          <div className="flex max-h-[90vh] flex-col">
+            <div className="border-b border-border/70 px-6 py-5">
+              <DialogHeader>
+                <DialogTitle>HTTP 资产调试面板</DialogTitle>
+                <DialogDescription>预览原始响应、提取字段和摘要结果，不写正式运行账本。</DialogDescription>
+              </DialogHeader>
+            </div>
+            <div className="flex-1 overflow-y-auto px-6 py-5">
+              <div className="grid gap-4 lg:grid-cols-2">
             <div className="space-y-4">
               <div className="grid gap-4 md:grid-cols-2">
                 <div className="space-y-2">
@@ -846,15 +882,19 @@ export function HttpAssetsPage() {
                 </pre>
               </div>
             </div>
+              </div>
+            </div>
+            <div className="border-t border-border/70 px-6 py-4">
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setIsDebugDialogOpen(false)}>
+                  关闭
+                </Button>
+                <Button onClick={handleDebug} disabled={debugSubmitting}>
+                  {debugSubmitting ? "调试中..." : "执行预览"}
+                </Button>
+              </DialogFooter>
+            </div>
           </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setIsDebugDialogOpen(false)}>
-              关闭
-            </Button>
-            <Button onClick={handleDebug} disabled={debugSubmitting}>
-              {debugSubmitting ? "调试中..." : "执行预览"}
-            </Button>
-          </DialogFooter>
         </DialogContent>
       </Dialog>
 
@@ -896,6 +936,37 @@ export function HttpAssetsPage() {
                 <div className="mt-2 text-muted-foreground">
                   {resolveResult.asset_name ? `资产：${resolveResult.asset_name}` : resolveResult.reason || "-"}
                 </div>
+                <div className="mt-2 text-xs text-muted-foreground">
+                  召回策略：{resolveResult.recall_strategy || "-"}
+                  {` · ANN：${resolveResult.used_ann ? "是" : "否"} · 兜底：${resolveResult.used_fallback ? "是" : "否"}`}
+                </div>
+                {resolveResult.stage_results && resolveResult.stage_results.length > 0 ? (
+                  <div className="mt-3 space-y-2 rounded-lg border border-border/70 bg-background/70 p-3">
+                    <div className="text-xs font-medium text-foreground">阶段执行</div>
+                    {resolveResult.stage_results.map((stage, index) => (
+                      <div key={`${stage.stage_name}-${index}`} className="rounded-md border border-border/70 px-3 py-2 text-xs text-muted-foreground">
+                        {stage.stage_name} · {stage.strategy} · 候选 {stage.candidate_count}
+                        {stage.fallback_reason ? ` · 原因：${stage.fallback_reason}` : ""}
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+                {resolveResult.fallback_candidates && resolveResult.fallback_candidates.length > 0 ? (
+                  <div className="mt-3 space-y-2 rounded-lg border border-border/70 bg-background/70 p-3">
+                    <div className="text-xs font-medium text-foreground">候选列表</div>
+                    {resolveResult.fallback_candidates.map((candidate, index) => (
+                      <div key={`${candidate.asset_id || index}-${candidate.asset_name || "candidate"}`} className="rounded-md border border-border/70 px-3 py-2 text-xs">
+                        <div className="font-medium text-foreground">
+                          {index + 1}. {candidate.asset_name || "未命名资产"}
+                        </div>
+                        <div className="mt-1 text-muted-foreground">
+                          {candidate.method || "-"} {candidate.path_template || "-"}
+                          {candidate.match_score != null ? ` · 分数：${candidate.match_score}` : ""}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
               </div>
             ) : null}
           </div>

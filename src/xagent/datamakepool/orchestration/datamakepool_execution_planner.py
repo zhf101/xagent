@@ -16,8 +16,12 @@ import logging
 from typing import Any
 
 from xagent.core.observability.local_logging import log_decision
+from xagent.datamakepool.recall_funnel import RecallFunnelExecutor, RecallQuery
+from xagent.datamakepool.recall_funnel.adapters import TemplateRecallAdapter
 from xagent.datamakepool.interpreter import TemplateMatchResult, TemplateMatcher, extract_parameters
 from xagent.datamakepool.templates import TemplateService
+from xagent.datamakepool.interpreter.template_ranker import TemplateRanker
+from xagent.datamakepool.templates.template_retriever import TemplateRetriever
 
 from .execution_plan_composer import ExecutionPlanComposer
 
@@ -46,10 +50,14 @@ class DatamakepoolExecutionPlanner:
         template_service: TemplateService,
         matcher: TemplateMatcher | None = None,
         composer: ExecutionPlanComposer | None = None,
+        retriever: TemplateRetriever | None = None,
+        ranker: TemplateRanker | None = None,
     ):
         self._template_service = template_service
         self._matcher = matcher or TemplateMatcher(confidence_threshold=0.3)
         self._composer = composer or ExecutionPlanComposer()
+        self._retriever = retriever
+        self._ranker = ranker
 
     def build_decision(self, user_input: str) -> DatamakepoolExecutionDecision:
         """为一次用户请求构建执行决策。
@@ -73,7 +81,32 @@ class DatamakepoolExecutionPlanner:
                 enriched["step_spec"] = spec["step_spec"]
             enriched_candidates.append(enriched)
 
-        match_result = self._matcher.match(user_input, params, enriched_candidates)
+        if self._retriever is not None and self._ranker is not None:
+            adapter = TemplateRecallAdapter(
+                matcher=self._matcher,
+                template_service=self._template_service,
+                retriever=self._retriever,
+                ranker=self._ranker,
+                rule_candidates=enriched_candidates,
+            )
+            query = RecallQuery(
+                query_text=user_input,
+                system_short=params.get("system_short"),
+                top_k=50,
+                context=params,
+            )
+            execution = RecallFunnelExecutor[dict[str, Any]]().run(adapter, query)
+            match_result = adapter.finalize(query, execution.candidates)
+            object.__setattr__(match_result, "recall_strategy", execution.recall_strategy)
+            object.__setattr__(match_result, "used_ann", execution.used_ann)
+            object.__setattr__(match_result, "used_fallback", execution.used_fallback)
+            object.__setattr__(
+                match_result,
+                "stage_results",
+                [stage.to_dict() for stage in execution.stage_results],
+            )
+        else:
+            match_result = self._matcher.match(user_input, params, enriched_candidates)
 
         # 三态路由的分界点只看 match_result，不把更多业务逻辑揉进 planner。
         if match_result.is_full_match:

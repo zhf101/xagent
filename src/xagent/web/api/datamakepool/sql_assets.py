@@ -23,9 +23,13 @@ from ....datamakepool.assets import (
     SqlAssetResolverService,
     validate_sql_asset_payload,
 )
+from ....datamakepool.assets.sql_asset_indexer import SqlAssetIndexer
+from ....datamakepool.assets.sql_asset_retriever import SqlAssetRetriever
+from ....datamakepool.recall_funnel import load_default_embedding_adapter
 from ...auth_dependencies import get_current_user
 from ...models.database import get_db
 from ...models.datamakepool_asset import DataMakepoolAsset
+from ...models.text2sql import Text2SQLDatabase
 from ...models.user import User
 from .security import ensure_system_governance_access
 
@@ -47,7 +51,7 @@ class SqlAssetConfigRequest(BaseModel):
 
 class SqlAssetCreateRequest(BaseModel):
     name: str
-    system_short: str
+    system_short: Optional[str] = None
     datasource_asset_id: int
     description: Optional[str] = None
     status: str = "active"
@@ -78,6 +82,14 @@ class SqlAssetResolveResponse(BaseModel):
     asset_id: Optional[int] = None
     asset_name: Optional[str] = None
     reason: Optional[str] = None
+    score: float = 0.0
+    matched_signals: List[str] = Field(default_factory=list)
+    candidate_count: int = 0
+    top_candidates: List[Dict[str, Any]] = Field(default_factory=list)
+    recall_strategy: Optional[str] = None
+    used_ann: bool = False
+    used_fallback: bool = False
+    stage_results: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class DatasourceAssetOption(BaseModel):
@@ -85,6 +97,22 @@ class DatasourceAssetOption(BaseModel):
     name: str
     system_short: str
     description: Optional[str] = None
+    db_type: Optional[str] = None
+    status: Optional[str] = None
+
+
+def _build_sql_asset_vector_components(db: Session, user_id: int):
+    """按需构造 SQL 资产向量索引组件。"""
+
+    embedding_model = load_default_embedding_adapter(db, user_id)
+    if embedding_model is None:
+        return None, None
+    db_dir = "data/lancedb"
+    return SqlAssetIndexer(db_dir, embedding_model), SqlAssetRetriever(
+        db_dir,
+        embedding_model,
+        SqlAssetRepository(db),
+    )
 
 
 def _to_response(asset: DataMakepoolAsset) -> SqlAssetResponse:
@@ -133,21 +161,48 @@ async def list_sql_datasources(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> List[DatasourceAssetOption]:
-    """列出可绑定到 SQL 资产的数据源资产。"""
+    """列出可绑定到 SQL 资产的数据源。
+
+    当前优先复用用户已经在 Text2SQL 页面配置过的数据源，并在后台自动同步成
+    datamakepool 的 datasource 资产，避免用户维护两套数据源定义。
+    """
 
     try:
         repository = SqlAssetRepository(db)
-        assets = repository.list_datasource_assets(system_short=system_short)
+        databases = (
+            db.query(Text2SQLDatabase)
+            .filter(Text2SQLDatabase.user_id == user.id)
+            .order_by(Text2SQLDatabase.created_at.desc())
+            .all()
+        )
+        synced_assets: list[DataMakepoolAsset] = []
+        normalized_system = str(system_short or "").strip()
+        for database in databases:
+            source_system_short = str(
+                getattr(getattr(database, "system", None), "system_short", "") or ""
+            ).strip()
+            if normalized_system and source_system_short != normalized_system:
+                continue
+            synced_assets.append(
+                repository.upsert_datasource_asset_from_text2sql_database(
+                    database,
+                    updated_by=int(user.id),
+                )
+            )
+        db.commit()
         return [
             DatasourceAssetOption(
                 id=asset.id,
                 name=asset.name,
                 system_short=asset.system_short,
                 description=asset.description,
+                db_type=str((asset.config or {}).get("db_type") or ""),
+                status=asset.status,
             )
-            for asset in assets
+            for asset in synced_assets
         ]
     except Exception as exc:
+        db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to list datasource assets: {exc}",
@@ -170,7 +225,13 @@ async def create_sql_asset(
     repository = SqlAssetRepository(db)
     datasource = repository.get_datasource_asset(payload.datasource_asset_id)
     try:
+        if datasource is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="datasource_asset_id is invalid",
+            )
         data = payload.model_dump()
+        data["system_short"] = datasource.system_short
         ensure_system_governance_access(
             db=db,
             user=user,
@@ -187,6 +248,20 @@ async def create_sql_asset(
         )
         db.commit()
         db.refresh(asset)
+        indexer, _ = _build_sql_asset_vector_components(db, int(user.id))
+        if indexer is not None:
+            try:
+                indexer.index(
+                    {
+                        "id": asset.id,
+                        "name": asset.name,
+                        "system_short": asset.system_short,
+                        "description": asset.description,
+                        "config": asset.config or {},
+                    }
+                )
+            except Exception:
+                pass
         return _to_response(asset)
     except ValueError as exc:
         db.rollback()
@@ -239,7 +314,13 @@ async def update_sql_asset(
     datasource = repository.get_datasource_asset(payload.datasource_asset_id)
 
     try:
+        if datasource is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="datasource_asset_id is invalid",
+            )
         data = payload.model_dump()
+        data["system_short"] = datasource.system_short
         ensure_system_governance_access(
             db=db,
             user=user,
@@ -256,6 +337,20 @@ async def update_sql_asset(
         )
         db.commit()
         db.refresh(asset)
+        indexer, _ = _build_sql_asset_vector_components(db, int(user.id))
+        if indexer is not None:
+            try:
+                indexer.index(
+                    {
+                        "id": asset.id,
+                        "name": asset.name,
+                        "system_short": asset.system_short,
+                        "description": asset.description,
+                        "config": asset.config or {},
+                    }
+                )
+            except Exception:
+                pass
         return _to_response(asset)
     except ValueError as exc:
         db.rollback()
@@ -293,8 +388,15 @@ async def delete_sql_asset(
             system_short=asset.system_short,
             required_role="normal_admin",
         )
+        asset_id = int(asset.id)
         repository.delete_sql_asset(asset)
         db.commit()
+        indexer, _ = _build_sql_asset_vector_components(db, int(user.id))
+        if indexer is not None:
+            try:
+                indexer.delete(asset_id)
+            except Exception:
+                pass
         return {"message": "SQL asset deleted successfully"}
     except HTTPException:
         db.rollback()
@@ -313,17 +415,40 @@ async def resolve_sql_asset(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> SqlAssetResolveResponse:
-    """根据任务描述解析最匹配的 SQL 资产。"""
+    """根据任务描述做 SQL 资产粗匹配测试。"""
+
+    normalized_system = str(payload.system_short or "").strip()
+    if not normalized_system:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="system_short is required for SQL asset resolve",
+        )
+
+    ensure_system_governance_access(
+        db=db,
+        user=user,
+        system_short=normalized_system,
+        required_role="normal_admin",
+    )
 
     repository = SqlAssetRepository(db)
-    resolver = SqlAssetResolverService(repository)
+    _, retriever = _build_sql_asset_vector_components(db, int(user.id))
+    resolver = SqlAssetResolverService(repository, retriever=retriever)
     result = resolver.resolve(
         task=payload.task,
-        system_short=payload.system_short,
+        system_short=normalized_system,
     )
     return SqlAssetResolveResponse(
         matched=result.matched,
         asset_id=result.asset_id,
         asset_name=result.asset_name,
         reason=result.reason,
+        score=result.score,
+        matched_signals=result.matched_signals or [],
+        candidate_count=result.candidate_count,
+        top_candidates=result.top_candidates or [],
+        recall_strategy=result.recall_strategy,
+        used_ann=result.used_ann,
+        used_fallback=result.used_fallback,
+        stage_results=result.stage_results,
     )

@@ -1,4 +1,10 @@
-"""Text2SQL database management API routes"""
+"""Text2SQL database management API routes
+是数据库连接配置管理：
+  - 用户在这里注册数据库（填表单或 URL）、测试连通性、绑定到业务系统
+  - 把连接配置持久化到 text2sql_databases 表
+  - 不涉及 LLM 生成 SQL（除了一个 /predict 图表预测接口）
+  - 是整个平台的基础设施，供所有模块使用
+"""
 
 import logging
 from typing import Any, Dict, List, Literal, Optional

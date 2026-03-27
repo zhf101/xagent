@@ -35,10 +35,17 @@ async def create_legacy_scenario_meta_tools(*args: Any, **kwargs: Any):
     return await _impl(*args, **kwargs)
 
 
+def create_http2mcp_meta_tools(*args: Any, **kwargs: Any):
+    from .legacy_scenario_meta_tools import create_http2mcp_meta_tools as _impl
+
+    return _impl(*args, **kwargs)
+
+
 __all__ = [
     "create_sql_tools",
     "create_http_tools",
     "create_dubbo_tools",
     "create_mcp_tools",
     "create_legacy_scenario_meta_tools",
+    "create_http2mcp_meta_tools",
 ]

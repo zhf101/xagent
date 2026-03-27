@@ -45,6 +45,11 @@ class LegacyScenarioCatalogItem(BaseModel):
     success_rate: int = 0
     last_used_at: Optional[str] = None
     match_score: Optional[float] = None
+    recall_strategy: Optional[str] = None
+    matched_signals: list[str] = []
+    used_ann: bool = False
+    used_fallback: bool = False
+    stage_results: list[dict[str, Any]] = []
 
 
 def _catalog_service(db: Session, user: User) -> LegacyScenarioCatalogService:

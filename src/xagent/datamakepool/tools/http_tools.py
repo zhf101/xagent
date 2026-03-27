@@ -69,6 +69,7 @@ def create_http_tools(
             "asset_id": asset_match.asset_id if asset_match else None,
             "asset_name": asset_match.asset_name if asset_match else None,
             "asset_reason": asset_match.reason if asset_match else None,
+            "fallback_candidates": asset_match.fallback_candidates if asset_match else [],
             "message": f"HTTP request plan validated for {spec.method} {spec.url}",
         }
 

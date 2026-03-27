@@ -8,8 +8,8 @@ from xagent.core.agent.tools.agent_tool import AgentTool
 from xagent.core.tools.adapters.vibe import Tool
 
 from .dubbo_agent import DubboExecutorAgent
+from .http2mcp_agent import Http2McpExecutorAgent
 from .http_agent import HttpExecutorAgent
-from .mcp_agent import McpExecutorAgent
 from .sql_agent import SqlExecutorAgent
 
 
@@ -36,6 +36,18 @@ class DatamakepoolAgentProfile:
 - 你应优先产生清晰、可审计、可沉淀为模板的执行步骤
 - 如果上下文中存在 datamakepool_execution_plan / datamakepool_template_match 信息，
   应把 reusable_steps 视为已知可复用骨架，只对 missing_requirements 做补充规划
+
+## 存量造数场景优先策略
+
+规划 DAG 之前，必须先评估是否存在可用的存量造数场景：
+- 完全命中：用户需求的所有步骤都能在 http2mcp_executor 的存量目录中找到匹配场景
+  → 所有步骤交给 http2mcp_executor 执行
+- 部分命中：存量目录覆盖部分步骤（http2mcp_executor 返回 covered_steps + missing_steps）
+  → covered_steps 交给 http2mcp_executor（在 step context 中传入对应 scenario_id）
+  → missing_steps 按步骤类型分配给 sql_executor / http_executor / dubbo_executor
+  → DAG 中正确设置 depends_on，保证执行顺序
+- 完全未命中：http2mcp_executor 返回空 covered_steps
+  → 直接按步骤类型分配给对应专业 executor
 """.strip()
 
     @staticmethod
@@ -48,11 +60,22 @@ class DatamakepoolAgentProfile:
         dubbo_agent = DubboExecutorAgent(
             name="dubbo_executor", llm=llm, memory=memory, db=kwargs.get("db")
         )
-        mcp_agent = McpExecutorAgent(name="mcp_executor", llm=llm, memory=memory)
+        http2mcp_agent = Http2McpExecutorAgent(
+            name="http2mcp_executor",
+            llm=llm,
+            memory=memory,
+            mcp_configs=kwargs.get("mcp_configs"),
+            user_id=kwargs.get("user_id", 0),
+            agent_service=kwargs.get("agent_service"),
+            db=kwargs.get("db"),
+        )
 
         return [
             AgentTool(sql_agent, custom_description="执行 SQL 造数任务"),
             AgentTool(http_agent, custom_description="调用 HTTP 接口造数"),
             AgentTool(dubbo_agent, custom_description="调用 Dubbo 服务造数"),
-            AgentTool(mcp_agent, custom_description="调用存量造数 MCP 能力"),
+            AgentTool(
+                http2mcp_agent,
+                custom_description="优先搜索存量造数场景并通过 http2mcp 网关执行，支持部分命中后将缺口步骤交给其他 executor",
+            ),
         ]

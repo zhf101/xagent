@@ -85,6 +85,22 @@ ai-document = ["docling>=2.68.0"]
 # PostgreSQL driver (uses psycopg2-binary for convenience)
 # Note: For production, consider installing psycopg2 from source instead
 postgresql = ["psycopg2-binary>=2.9.0"]
+mysql = ["pymysql>=1.1.0"]
+sqlserver = ["pymssql>=2.3.0", "pyodbc>=5.1.0"]
+oracle = ["oracledb>=2.0.0", "pyodbc>=5.1.0"]
+mongodb = ["pymongo>=4.6.0"]
+redis = ["redis>=5.0.0"]
+clickhouse = ["clickhouse-connect>=0.7.0"]
+database-drivers = [
+  "psycopg2-binary>=2.9.0",
+  "pymysql>=1.1.0",
+  "pymssql>=2.3.0",
+  "oracledb>=2.0.0",
+  "pyodbc>=5.1.0",
+  "pymongo>=4.6.0",
+  "redis>=5.0.0",
+  "clickhouse-connect>=0.7.0",
+]
 
 duckdb = ["duckdb>=1.0.0,<2.0", "duckdb-engine>=0.10.0,<1.0"]
 
@@ -106,6 +122,13 @@ all = [
   "pypdf2>=3.0.1",
   "docling>=2.68.0",
   "psycopg2-binary>=2.9.0",
+  "pymysql>=1.1.0",
+  "pymssql>=2.3.0",
+  "oracledb>=2.0.0",
+  "pyodbc>=5.1.0",
+  "pymongo>=4.6.0",
+  "redis>=5.0.0",
+  "clickhouse-connect>=0.7.0",
   "playwright>=1.40.0",
   "chromadb",
   "pymilvus>=2.6.9,<3.0.0"

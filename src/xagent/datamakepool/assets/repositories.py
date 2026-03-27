@@ -14,6 +14,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from xagent.web.models.text2sql import Text2SQLDatabase
 from xagent.web.models.datamakepool_asset import DataMakepoolAsset
 
 
@@ -78,6 +79,23 @@ class HttpAssetRepository:
         self.db.flush()
         return asset
 
+    def list_active_http_asset_ids_by_method(
+        self,
+        method: str,
+        system_short: str | None = None,
+    ) -> set[int]:
+        """按 method 粗筛活跃 HTTP 资产 ID，用于规则候选并集。"""
+
+        assets = self.list_active_http_assets(system_short=system_short)
+        method_upper = str(method or "").upper()
+        matched_ids: set[int] = set()
+        for asset in assets:
+            config = asset.config or {}
+            asset_method = str(config.get("method") or "").upper()
+            if not asset_method or asset_method == method_upper:
+                matched_ids.add(int(asset.id))
+        return matched_ids
+
     def update_http_asset(
         self,
         asset: DataMakepoolAsset,
@@ -131,6 +149,77 @@ class SqlAssetRepository:
             query = query.filter(DataMakepoolAsset.status == status)
         return query.order_by(DataMakepoolAsset.id.asc()).all()
 
+    def get_synced_datasource_asset_for_text2sql_database(
+        self,
+        text2sql_database_id: int,
+    ) -> DataMakepoolAsset | None:
+        """根据 Text2SQL 数据源 ID 查找已同步的 datasource 资产。"""
+
+        candidates = (
+            self.db.query(DataMakepoolAsset)
+            .filter(DataMakepoolAsset.asset_type == "datasource")
+            .order_by(DataMakepoolAsset.id.asc())
+            .all()
+        )
+        for asset in candidates:
+            config = asset.config or {}
+            if config.get("source_type") != "text2sql_database":
+                continue
+            if int(config.get("source_database_id") or 0) == text2sql_database_id:
+                return asset
+        return None
+
+    def upsert_datasource_asset_from_text2sql_database(
+        self,
+        database: Text2SQLDatabase,
+        *,
+        updated_by: int | None = None,
+    ) -> DataMakepoolAsset:
+        """把 Text2SQL 数据源同步为 datamakepool datasource 资产。
+
+        这样 SQL 资产页面可以直接复用你已经在“数据源配置”里创建的连接定义，
+        不需要要求用户再额外维护一套 datasource 资产。
+        """
+
+        asset = self.get_synced_datasource_asset_for_text2sql_database(int(database.id))
+        config = {
+            "source_type": "text2sql_database",
+            "source_database_id": int(database.id),
+            "db_type": database.type.value if database.type else None,
+            "url": database.url,
+            "read_only": bool(database.read_only),
+            "enabled": bool(database.enabled),
+        }
+        status = "active" if bool(database.enabled) else "disabled"
+        description = f"同步自 Text2SQL 数据源：{database.name}"
+        system_short = str(getattr(database.system, "system_short", "") or "").strip()
+
+        if asset is None:
+            asset = DataMakepoolAsset(
+                name=database.name,
+                asset_type="datasource",
+                system_short=system_short,
+                status=status,
+                description=description,
+                config=config,
+                created_by=updated_by,
+                updated_by=updated_by,
+                version=1,
+            )
+            self.db.add(asset)
+            self.db.flush()
+            return asset
+
+        asset.name = database.name
+        asset.system_short = system_short
+        asset.status = status
+        asset.description = description
+        asset.config = config
+        asset.updated_by = updated_by
+        asset.version = int(asset.version or 1) + 1
+        self.db.flush()
+        return asset
+
     def list_sql_assets(
         self,
         system_short: str | None = None,
@@ -154,6 +243,16 @@ class SqlAssetRepository:
         """返回运行时可被 matcher / resolver 选择的 SQL 资产。"""
 
         return self.list_sql_assets(system_short=system_short, status="active")
+
+    def list_popular_active_sql_asset_ids(
+        self,
+        system_short: str | None = None,
+        limit: int = 5,
+    ) -> set[int]:
+        """返回一小批热门 SQL 资产 ID，作为粗召回兜底候选。"""
+
+        assets = self.list_active_sql_assets(system_short=system_short)
+        return {int(asset.id) for asset in assets[: max(limit, 0)]}
 
     def get_by_id(self, asset_id: int) -> DataMakepoolAsset | None:
         """按主键读取任意资产。"""

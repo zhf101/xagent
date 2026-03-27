@@ -8,6 +8,7 @@ from xagent.core.tools.adapters.vibe.base import ToolCategory, ToolVisibility
 from xagent.core.tools.adapters.vibe.function import FunctionTool
 from xagent.datamakepool.assets.repositories import SqlAssetRepository
 from xagent.datamakepool.assets.service import SqlAssetResolverService
+from xagent.datamakepool.interceptors import check_sql_needs_approval
 from xagent.datamakepool.sql_brain import SQLBrainService
 
 
@@ -47,10 +48,17 @@ def create_sql_tools(
             "success": True,
             "matched": False,
             "reason": result.reason,
+            "top_candidates": result.top_candidates or [],
+            "candidate_count": result.candidate_count,
         }
 
     def execute_sql_plan(task: str) -> dict:
-        """Generate a SQL-oriented data generation plan through SQL Brain."""
+        """Generate a SQL execution plan through SQL Brain.
+
+        This function generates a SQL plan only — it does NOT execute any SQL.
+        The returned SQL should be reviewed and submitted for approval if required
+        before actual execution.
+        """
         result = sql_brain.generate_sql_plan(task)
         sql = result.get("sql")
         intermediate_sql = result.get("intermediate_sql")
@@ -59,8 +67,10 @@ def create_sql_tools(
             if sql
             else f"SQL Brain requested intermediate SQL: {intermediate_sql}"
         )
+        approval_required, approval_reason = check_sql_needs_approval(sql or intermediate_sql or "")
         return {
             "success": True,
+            "executed": False,
             "output": output,
             "sql": sql,
             "intermediate_sql": intermediate_sql,
@@ -68,6 +78,8 @@ def create_sql_tools(
             "verification": result.get("verification"),
             "repair": result.get("repair"),
             "metadata": result.get("metadata"),
+            "requires_approval": approval_required,
+            "approval_reason": approval_reason,
         }
 
     return [
@@ -80,7 +92,7 @@ def create_sql_tools(
         DatamakepoolSqlTool(
             execute_sql_plan,
             name="execute_sql_plan",
-            description="Prepare SQL-oriented execution guidance for data generation tasks.",
+            description="Generate a SQL execution plan (plan only, not executed). Returns generated SQL for review before execution.",
             visibility=ToolVisibility.PRIVATE,
         ),
     ]

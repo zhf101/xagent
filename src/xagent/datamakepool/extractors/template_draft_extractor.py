@@ -35,7 +35,7 @@ class TemplateDraftExtractor:
         params: dict[str, Any] | None = None,
         match_type: str | None = None,
     ) -> int | None:
-        inspector = inspect(self._db.bind)
+        inspector = inspect(self._db.get_bind())
         if "datamakepool_template_drafts" not in inspector.get_table_names():
             return None
 

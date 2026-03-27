@@ -6,6 +6,7 @@ import { Eye, Pencil, Plus, RefreshCw, Target, Trash2 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -41,6 +42,8 @@ interface DatasourceOption {
   name: string
   system_short: string
   description?: string | null
+  db_type?: string | null
+  status?: string | null
 }
 
 interface SqlAssetRecord {
@@ -74,6 +77,33 @@ interface SqlAssetFormState {
 interface ResolveFormState {
   system_short: string
   task: string
+}
+
+interface ResolveCandidate {
+  asset_id?: number
+  asset_name?: string
+  score?: number
+  matched_signals?: string[]
+}
+
+interface ResolveResultState {
+  matched: boolean
+  asset_id?: number | null
+  asset_name?: string | null
+  reason?: string | null
+  score?: number
+  matched_signals?: string[]
+  candidate_count?: number
+  top_candidates?: ResolveCandidate[]
+  recall_strategy?: string
+  used_ann?: boolean
+  used_fallback?: boolean
+  stage_results?: Array<{
+    stage_name: string
+    strategy: string
+    candidate_count: number
+    fallback_reason?: string | null
+  }>
 }
 
 const EMPTY_FORM: SqlAssetFormState = {
@@ -127,7 +157,8 @@ export function SqlAssetsPage() {
   const [viewingAsset, setViewingAsset] = useState<SqlAssetRecord | null>(null)
   const [form, setForm] = useState<SqlAssetFormState>(EMPTY_FORM)
   const [resolveForm, setResolveForm] = useState<ResolveFormState>(EMPTY_RESOLVE_FORM)
-  const [resolveResult, setResolveResult] = useState<any>(null)
+  const [resolveResult, setResolveResult] = useState<ResolveResultState | null>(null)
+  const [showAdvanced, setShowAdvanced] = useState(false)
 
   const loadAll = async () => {
     setLoading(true)
@@ -156,9 +187,12 @@ export function SqlAssetsPage() {
       setDatasources(datasourcePayload)
       setForm((prev) => ({
         ...prev,
-        system_short: prev.system_short || systemPayload[0]?.system_short || "",
-        datasource_asset_id:
-          prev.datasource_asset_id || String(datasourcePayload[0]?.id || ""),
+        datasource_asset_id: prev.datasource_asset_id || String(datasourcePayload[0]?.id || ""),
+        system_short:
+          prev.system_short ||
+          datasourcePayload[0]?.system_short ||
+          systemPayload[0]?.system_short ||
+          "",
       }))
       setResolveForm((prev) => ({
         ...prev,
@@ -219,17 +253,18 @@ export function SqlAssetsPage() {
   )
 
   const datasourceOptions: SelectOption[] = useMemo(() => {
-    return datasources
-      .filter(
-        (item) =>
-          !form.system_short || item.system_short === form.system_short
-      )
-      .map((item) => ({
-        value: String(item.id),
-        label: item.name,
-        description: item.system_short,
-      }))
-  }, [datasources, form.system_short])
+    return datasources.map((item) => ({
+      value: String(item.id),
+      label: item.name,
+      description: `${item.system_short}${item.db_type ? ` / ${item.db_type}` : ""}`,
+    }))
+  }, [datasources])
+
+  const selectedDatasource = useMemo(
+    () =>
+      datasources.find((item) => String(item.id) === form.datasource_asset_id) ?? null,
+    [datasources, form.datasource_asset_id]
+  )
 
   const sqlKindOptions: SelectOption[] = [
     { value: "select", label: "SELECT" },
@@ -241,16 +276,18 @@ export function SqlAssetsPage() {
 
   const openCreateDialog = () => {
     setEditingAsset(null)
+    setShowAdvanced(false)
     setForm({
       ...EMPTY_FORM,
-      system_short: systems[0]?.system_short || "",
       datasource_asset_id: String(datasources[0]?.id || ""),
+      system_short: datasources[0]?.system_short || "",
     })
     setIsFormDialogOpen(true)
   }
 
   const openEditDialog = (asset: SqlAssetRecord) => {
     setEditingAsset(asset)
+    setShowAdvanced(false)
     setForm({
       name: asset.name,
       system_short: asset.system_short,
@@ -275,10 +312,13 @@ export function SqlAssetsPage() {
   const handleCreate = async () => {
     if (
       !form.name.trim() ||
-      !form.system_short.trim() ||
       !form.datasource_asset_id.trim()
     ) {
-      toast.error("请填写名称、系统和 datasource 资产")
+      toast.error("请先填写资产名称并选择已配置的数据源")
+      return
+    }
+    if (!selectedDatasource?.system_short) {
+      toast.error("当前数据源缺少 system_short，无法创建 SQL 资产")
       return
     }
 
@@ -304,7 +344,7 @@ export function SqlAssetsPage() {
         headers: {},
         body: JSON.stringify({
           name: form.name,
-          system_short: form.system_short,
+          system_short: selectedDatasource.system_short,
           datasource_asset_id: Number(form.datasource_asset_id),
           description: form.description || null,
           sensitivity_level: form.sensitivity_level || null,
@@ -533,43 +573,44 @@ export function SqlAssetsPage() {
       </div>
 
       <Dialog open={isFormDialogOpen} onOpenChange={setIsFormDialogOpen}>
-        <DialogContent className="max-w-3xl">
-          <DialogHeader>
-            <DialogTitle>{editingAsset ? "编辑 SQL 资产" : "新增 SQL 资产"}</DialogTitle>
-            <DialogDescription>录入 SQL 元数据，让 SQL agent 后续优先命中已治理资产。</DialogDescription>
-          </DialogHeader>
-          <div className="grid gap-4 lg:grid-cols-2">
+        <DialogContent className="max-h-[90vh] max-w-3xl overflow-hidden p-0">
+          <div className="flex max-h-[90vh] flex-col">
+            <div className="border-b border-border/70 px-6 py-5">
+              <DialogHeader>
+                <DialogTitle>{editingAsset ? "编辑 SQL 资产" : "新增 SQL 资产"}</DialogTitle>
+                <DialogDescription>录入 SQL 元数据，让 SQL agent 后续优先命中已治理资产。</DialogDescription>
+              </DialogHeader>
+            </div>
+            <div className="flex-1 overflow-y-auto px-6 py-5">
+              <div className="grid gap-4 lg:grid-cols-2">
             <div className="space-y-4">
               <div className="space-y-2">
-                <Label>资产名称</Label>
-                <Input value={form.name} onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))} />
+                <Label>先选择数据源</Label>
+                <Select
+                  value={form.datasource_asset_id}
+                  onValueChange={(value) => {
+                    const nextDatasource =
+                      datasources.find((item) => String(item.id) === value) ?? null
+                    setForm((prev) => ({
+                      ...prev,
+                      datasource_asset_id: value,
+                      system_short: nextDatasource?.system_short || "",
+                    }))
+                  }}
+                  options={datasourceOptions}
+                  placeholder="请选择已配置的数据源"
+                />
+                <div className="text-xs text-muted-foreground">
+                  SQL 资产直接挂在你已配置的数据源下面，不再额外手填 system_short。
+                </div>
               </div>
               <div className="space-y-2">
                 <Label>所属系统</Label>
-                <Select
-                  value={form.system_short}
-                  onValueChange={(value) =>
-                    setForm((prev) => ({
-                      ...prev,
-                      system_short: value,
-                      datasource_asset_id:
-                        String(
-                          datasources.find((item) => item.system_short === value)?.id || ""
-                        ),
-                    }))
-                  }
-                  options={systemOptions}
-                  placeholder="请选择所属系统"
-                />
+                <Input value={selectedDatasource?.system_short || form.system_short} readOnly />
               </div>
               <div className="space-y-2">
-                <Label>数据源资产</Label>
-                <Select
-                  value={form.datasource_asset_id}
-                  onValueChange={(value) => setForm((prev) => ({ ...prev, datasource_asset_id: value }))}
-                  options={datasourceOptions}
-                  placeholder="请选择 datasource 资产"
-                />
+                <Label>资产名称</Label>
+                <Input value={form.name} onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))} />
               </div>
               <div className="space-y-2">
                 <Label>SQL 类型</Label>
@@ -583,46 +624,68 @@ export function SqlAssetsPage() {
                 <Label>描述</Label>
                 <Input value={form.description} onChange={(e) => setForm((prev) => ({ ...prev, description: e.target.value }))} />
               </div>
-              <div className="space-y-2">
-                <Label>敏感等级</Label>
-                <Input value={form.sensitivity_level} onChange={(e) => setForm((prev) => ({ ...prev, sensitivity_level: e.target.value }))} placeholder="low / medium / high" />
-              </div>
             </div>
             <div className="space-y-4">
               <div className="space-y-2">
-                <Label>表名（逗号分隔）</Label>
+                <Label>关联表（可选，逗号分隔）</Label>
                 <Input value={form.table_names} onChange={(e) => setForm((prev) => ({ ...prev, table_names: e.target.value }))} placeholder="crm_user, crm_profile" />
+                <div className="text-xs text-muted-foreground">用于帮助命中这条 SQL 资产，不是必须精确声明所有表。</div>
               </div>
               <div className="space-y-2">
-                <Label>标签（逗号分隔）</Label>
+                <Label>标签（可选，逗号分隔）</Label>
                 <Input value={form.tags} onChange={(e) => setForm((prev) => ({ ...prev, tags: e.target.value }))} placeholder="用户, 查询, 用户画像" />
-              </div>
-              <div className="space-y-2">
-                <Label>审批策略</Label>
-                <Input value={form.approval_policy} onChange={(e) => setForm((prev) => ({ ...prev, approval_policy: e.target.value }))} placeholder="none / requester_confirm / system_admin_confirm" />
-              </div>
-              <div className="space-y-2">
-                <Label>风险等级</Label>
-                <Input value={form.risk_level} onChange={(e) => setForm((prev) => ({ ...prev, risk_level: e.target.value }))} placeholder="low / medium / high / critical" />
-              </div>
-              <div className="space-y-2">
-                <Label>参数 Schema JSON</Label>
-                <Textarea rows={5} value={form.parameter_schema_json} onChange={(e) => setForm((prev) => ({ ...prev, parameter_schema_json: e.target.value }))} />
               </div>
               <div className="space-y-2">
                 <Label>SQL Template</Label>
                 <Textarea rows={7} value={form.sql_template} onChange={(e) => setForm((prev) => ({ ...prev, sql_template: e.target.value }))} placeholder="select * from crm_user where user_id = :user_id" />
               </div>
+              <Collapsible open={showAdvanced} onOpenChange={setShowAdvanced}>
+                <div className="rounded-xl border border-border bg-muted/20 p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-medium">高级治理配置</div>
+                      <div className="text-xs text-muted-foreground">只有在确实需要时再填写审批策略、风险等级和参数契约。</div>
+                    </div>
+                    <CollapsibleTrigger asChild>
+                      <Button variant="outline" size="sm">
+                        {showAdvanced ? "收起" : "展开"}
+                      </Button>
+                    </CollapsibleTrigger>
+                  </div>
+                  <CollapsibleContent className="mt-4 space-y-4">
+                    <div className="space-y-2">
+                      <Label>审批策略</Label>
+                      <Input value={form.approval_policy} onChange={(e) => setForm((prev) => ({ ...prev, approval_policy: e.target.value }))} placeholder="none / requester_confirm / system_admin_confirm" />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>风险等级</Label>
+                      <Input value={form.risk_level} onChange={(e) => setForm((prev) => ({ ...prev, risk_level: e.target.value }))} placeholder="low / medium / high / critical" />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>参数 Schema JSON</Label>
+                      <Textarea rows={5} value={form.parameter_schema_json} onChange={(e) => setForm((prev) => ({ ...prev, parameter_schema_json: e.target.value }))} />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>敏感等级</Label>
+                      <Input value={form.sensitivity_level} onChange={(e) => setForm((prev) => ({ ...prev, sensitivity_level: e.target.value }))} placeholder="low / medium / high" />
+                    </div>
+                  </CollapsibleContent>
+                </div>
+              </Collapsible>
+            </div>
+              </div>
+            </div>
+            <div className="border-t border-border/70 px-6 py-4">
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setIsFormDialogOpen(false)}>
+                  取消
+                </Button>
+                <Button onClick={handleCreate} disabled={submitting || datasourceOptions.length === 0}>
+                  {submitting ? "保存中..." : "保存"}
+                </Button>
+              </DialogFooter>
             </div>
           </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setIsFormDialogOpen(false)}>
-              取消
-            </Button>
-            <Button onClick={handleCreate} disabled={submitting || datasourceOptions.length === 0}>
-              {submitting ? "保存中..." : "保存"}
-            </Button>
-          </DialogFooter>
         </DialogContent>
       </Dialog>
 
@@ -663,8 +726,8 @@ export function SqlAssetsPage() {
       <Dialog open={isResolveDialogOpen} onOpenChange={setIsResolveDialogOpen}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
-            <DialogTitle>SQL 资产命中测试</DialogTitle>
-            <DialogDescription>输入系统和任务描述，验证是否能命中已治理 SQL 资产。</DialogDescription>
+            <DialogTitle>SQL 资产粗匹配测试</DialogTitle>
+            <DialogDescription>输入系统和任务描述，查看当前元数据匹配到的 SQL 资产候选结果。</DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
             <div className="space-y-2">
@@ -691,6 +754,47 @@ export function SqlAssetsPage() {
                 <div className="mt-2 text-muted-foreground">
                   {resolveResult.asset_name ? `资产：${resolveResult.asset_name}` : resolveResult.reason || "-"}
                 </div>
+                <div className="mt-2 text-xs text-muted-foreground">
+                  匹配分：{resolveResult.score ?? 0} · 候选数：{resolveResult.candidate_count ?? 0}
+                </div>
+                <div className="mt-2 text-xs text-muted-foreground">
+                  召回策略：{resolveResult.recall_strategy || "-"}
+                  {` · ANN：${resolveResult.used_ann ? "是" : "否"} · 兜底：${resolveResult.used_fallback ? "是" : "否"}`}
+                </div>
+                {resolveResult.matched_signals && resolveResult.matched_signals.length > 0 ? (
+                  <div className="mt-2 text-xs text-muted-foreground">
+                    命中信号：{resolveResult.matched_signals.join("、")}
+                  </div>
+                ) : null}
+                {resolveResult.stage_results && resolveResult.stage_results.length > 0 ? (
+                  <div className="mt-3 space-y-2 rounded-lg border border-border/70 bg-background/70 p-3">
+                    <div className="text-xs font-medium text-foreground">阶段执行</div>
+                    {resolveResult.stage_results.map((stage, index) => (
+                      <div key={`${stage.stage_name}-${index}`} className="rounded-md border border-border/70 px-3 py-2 text-xs text-muted-foreground">
+                        {stage.stage_name} · {stage.strategy} · 候选 {stage.candidate_count}
+                        {stage.fallback_reason ? ` · 原因：${stage.fallback_reason}` : ""}
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+                {resolveResult.top_candidates && resolveResult.top_candidates.length > 0 ? (
+                  <div className="mt-3 space-y-2 rounded-lg border border-border/70 bg-background/70 p-3">
+                    <div className="text-xs font-medium text-foreground">候选列表</div>
+                    {resolveResult.top_candidates.map((candidate, index) => (
+                      <div key={`${candidate.asset_id || index}-${candidate.asset_name || "candidate"}`} className="rounded-md border border-border/70 px-3 py-2 text-xs">
+                        <div className="font-medium text-foreground">
+                          {index + 1}. {candidate.asset_name || "未命名资产"}
+                        </div>
+                        <div className="mt-1 text-muted-foreground">
+                          分数：{candidate.score ?? 0}
+                          {candidate.matched_signals && candidate.matched_signals.length > 0
+                            ? ` · 信号：${candidate.matched_signals.join("、")}`
+                            : ""}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
               </div>
             ) : null}
           </div>

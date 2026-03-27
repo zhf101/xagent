@@ -94,19 +94,27 @@ class LegacyScenarioCatalogRegistry:
         scored: list[tuple[float, LegacyScenarioCatalog]] = []
         for row in rows:
             score = 0.0
-            if system_short and row.system_short == system_short.lower():
+            if system_short and row.system_short and row.system_short.lower() == system_short.lower():
                 score += 0.45
-            if row.system_short and row.system_short in query_lower:
+            if row.system_short and row.system_short.lower() in query_lower:
                 score += 0.25
             if row.scenario_name and row.scenario_name.lower() in query_lower:
                 score += 0.35
+            # tag 匹配：business_tags 和 entity_tags
+            for tag in (row.business_tags or []):
+                if str(tag).lower() in query_lower:
+                    score += 0.18
+            for tag in (row.entity_tags or []):
+                if str(tag).lower() in query_lower:
+                    score += 0.12
+            # 逐词匹配场景名和描述（修复：description 检查移入 for 循环内）
             for token in re.split(r"\s+|，|,|；|;", query_lower):
                 if not token:
                     continue
                 if row.scenario_name and token in row.scenario_name.lower():
                     score += 0.12
-            if row.description and token in row.description.lower():
-                score += 0.08
+                if row.description and token in row.description.lower():
+                    score += 0.08
             score += min((row.usage_count or 0) * 0.015, 0.2)
             score += min((row.success_rate or 0) / 1000.0, 0.1)
             if row.last_used_at is not None:
@@ -119,7 +127,7 @@ class LegacyScenarioCatalogRegistry:
                 scored.append((score, row))
 
         scored.sort(key=lambda item: item[0], reverse=True)
-        return [
+        results = [
             {
                 "scenario_id": row.scenario_id,
                 "scenario_name": row.scenario_name,
@@ -141,6 +149,36 @@ class LegacyScenarioCatalogRegistry:
             }
             for score, row in scored[: max(1, min(top_k, 10))]
         ]
+
+        # 宽召回降级：若词面打分全部为 0，按热度（usage_count）返回 top-k 兜底候选
+        # 让 agent LLM 判断是否适用，而非直接返回空列表
+        if not results and rows:
+            fallback = sorted(rows, key=lambda r: int(r.usage_count or 0), reverse=True)
+            results = [
+                {
+                    "scenario_id": row.scenario_id,
+                    "scenario_name": row.scenario_name,
+                    "server_name": row.server_name,
+                    "tool_name": row.tool_name,
+                    "tool_load_ref": row.tool_load_ref,
+                    "description": row.description,
+                    "system_short": row.system_short,
+                    "business_tags": row.business_tags or [],
+                    "entity_tags": row.entity_tags or [],
+                    "input_schema_summary": row.input_schema_summary or [],
+                    "status": row.status,
+                    "approval_policy": row.approval_policy,
+                    "risk_level": row.risk_level,
+                    "usage_count": row.usage_count or 0,
+                    "success_rate": row.success_rate or 0,
+                    "last_used_at": row.last_used_at.isoformat() if row.last_used_at else None,
+                    "match_score": 0.0,
+                    "recall_strategy": "fallback_by_popularity",
+                }
+                for row in fallback[: max(1, min(top_k, 10))]
+            ]
+
+        return results
 
     def record_execution(self, scenario_id: str, success: bool) -> None:
         row = self.get_entry(scenario_id)
