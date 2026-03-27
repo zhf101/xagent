@@ -33,6 +33,9 @@ class BizSystem(Base):  # type: ignore
     )
 
     text2sql_databases = relationship("Text2SQLDatabase", back_populates="system")
+    user_system_bindings = relationship(
+        "UserSystemBinding", back_populates="system", cascade="all, delete-orphan"
+    )
 
     def to_dict(self) -> Dict[str, Any]:
         """导出给 API/前端使用的结构化字典。"""

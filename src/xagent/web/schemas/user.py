@@ -8,6 +8,10 @@ class UserResponse(BaseModel):
     id: int
     username: str
     is_admin: bool
+    is_active: bool | None = None
+    auth_source: str | None = None
+    display_name: str | None = None
+    email: str | None = None
     created_at: str
     updated_at: str
 

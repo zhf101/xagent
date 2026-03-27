@@ -33,6 +33,14 @@ class HttpExecutionService:
         self.file_bridge = HttpFileBridge(workspace)
 
     async def execute(self, spec: HttpRequestSpec) -> HttpExecutionResult:
+        """执行 HTTP 请求计划。
+
+        路由规则：
+        - download 模式优先
+        - 存在 `file_parts` 时走 multipart
+        - 其他情况走标准请求
+        """
+
         if spec.download.enabled:
             return await self._execute_download(spec)
         if spec.file_parts:
@@ -40,6 +48,8 @@ class HttpExecutionService:
         return await self._execute_standard(spec)
 
     async def _execute_standard(self, spec: HttpRequestSpec) -> HttpExecutionResult:
+        """执行普通 JSON / form / raw body 请求。"""
+
         headers = self._prepare_headers(spec)
         request_kwargs: dict[str, Any] = {
             "method": spec.method,
@@ -59,6 +69,7 @@ class HttpExecutionService:
         async with httpx.AsyncClient(timeout=spec.timeout) as client:
             response = await client.request(**request_kwargs)
 
+        # 请求结束后立即把响应归一化成结构化结果，避免上层依赖 httpx.Response。
         body = self._parse_response_body(response)
         extracted_fields, summary = extract_http_response(body, spec.response_extract)
         return HttpExecutionResult(
@@ -77,6 +88,13 @@ class HttpExecutionService:
         )
 
     async def _execute_multipart(self, spec: HttpRequestSpec) -> HttpExecutionResult:
+        """执行 multipart 上传请求。
+
+        关键约束：
+        - 所有 file_id 必须先通过 workspace 解析到实体文件
+        - 无论请求成功与否，都要关闭已打开的文件句柄
+        """
+
         headers = self._prepare_headers(spec, include_content_type=False)
         files = []
         opened_files = []
@@ -134,6 +152,8 @@ class HttpExecutionService:
                 handle.close()
 
     async def _execute_download(self, spec: HttpRequestSpec) -> HttpExecutionResult:
+        """执行文件下载请求并把结果桥接回 workspace。"""
+
         headers = self._prepare_headers(spec)
         request_kwargs: dict[str, Any] = {
             "method": spec.method,
@@ -151,6 +171,7 @@ class HttpExecutionService:
 
         async with httpx.AsyncClient(timeout=spec.timeout) as client:
             async with client.stream(**request_kwargs) as response:
+                # 下载模式下，HTTP 非 2xx 仍尽量返回可读 body，便于前端调试。
                 if not (200 <= response.status_code < 300):
                     body = await response.aread()
                     return HttpExecutionResult(
@@ -166,6 +187,7 @@ class HttpExecutionService:
                         },
                     )
 
+                # 下载文件名优先级：显式配置 > 响应头 > URL path 回退。
                 filename = self._resolve_download_filename(spec, response)
                 target = self.file_bridge.prepare_download_target(
                     output_dir=spec.download.output_dir,
@@ -209,10 +231,13 @@ class HttpExecutionService:
         *,
         include_content_type: bool = True,
     ) -> dict[str, str]:
+        """根据请求规格补齐认证头、Accept 与 Content-Type。"""
+
         headers = dict(spec.headers or {})
         if "Accept" not in headers:
             headers["Accept"] = "application/json, application/octet-stream;q=0.9, */*;q=0.8"
 
+        # 认证逻辑统一在这里收口，避免三条执行路径各自拼装。
         if spec.auth_type and spec.auth_token:
             if spec.auth_type == "bearer":
                 headers["Authorization"] = f"Bearer {spec.auth_token}"
@@ -234,6 +259,8 @@ class HttpExecutionService:
 
     @staticmethod
     def _parse_response_body(response: httpx.Response) -> Any:
+        """把 httpx.Response 转成更适合上层消费的 Python 对象。"""
+
         content_type = response.headers.get("content-type", "").lower()
         if "application/json" in content_type:
             try:
@@ -246,6 +273,8 @@ class HttpExecutionService:
 
     @staticmethod
     def _decode_bytes_body(body: bytes, headers: dict[str, str]) -> Any:
+        """在下载失败等场景下，把 bytes 响应尽量转成可读内容。"""
+
         content_type = headers.get("content-type", "").lower()
         if "application/json" in content_type:
             try:
@@ -256,6 +285,15 @@ class HttpExecutionService:
 
     @staticmethod
     def _resolve_download_filename(spec: HttpRequestSpec, response: httpx.Response) -> str:
+        """解析下载文件名。
+
+        优先级：
+        1. 用户显式指定的 output_filename
+        2. 响应头 `content-disposition`
+        3. 请求 URL path 的最后一段
+        4. 默认值 `download.bin`
+        """
+
         if spec.download.output_filename:
             return spec.download.output_filename
 

@@ -1,4 +1,14 @@
-"""HTTP and Dubbo asset resolution services."""
+"""Datamakepool 资产解析服务。
+
+这里的“解析”不是执行资产，而是把外部请求意图映射到平台里已登记的资产定义。
+它承担的是 resolver 职责，目标是给后续执行层一个稳定、可解释的匹配结果：
+
+- HTTP：根据 method + 归一化 path 匹配
+- SQL：根据任务描述中的关键词、标签、表名做轻量打分
+- Dubbo：根据接口名 + 方法名精确匹配
+
+当前策略刻意偏确定性，先保证行为可解释，后续再考虑更复杂的召回与排序。
+"""
 
 from __future__ import annotations
 
@@ -11,6 +21,8 @@ from .repositories import DubboAssetRepository, HttpAssetRepository, SqlAssetRep
 
 @dataclass
 class HttpAssetMatchResult:
+    """HTTP 资产解析结果。"""
+
     matched: bool
     asset_id: int | None = None
     asset_name: str | None = None
@@ -19,6 +31,8 @@ class HttpAssetMatchResult:
 
 
 class HttpAssetResolverService:
+    """HTTP 资产解析服务。"""
+
     def __init__(self, repository: HttpAssetRepository):
         self.repository = repository
 
@@ -29,6 +43,13 @@ class HttpAssetResolverService:
         method: str,
         url: str,
     ) -> HttpAssetMatchResult:
+        """按 method + path 匹配已激活的 HTTP 资产。
+
+        关键约束：
+        - 当前只比较 method 与 URL path，不比较 query string
+        - 必须命中 active 资产，避免草稿/停用配置参与运行时路由
+        """
+
         assets = self.repository.list_active_http_assets(system_short=system_short)
         request_path = urlparse(url).path.rstrip("/") or "/"
         request_method = method.upper()
@@ -60,6 +81,8 @@ class HttpAssetResolverService:
 
 @dataclass
 class SqlAssetMatchResult:
+    """SQL 资产解析结果。"""
+
     matched: bool
     asset_id: int | None = None
     asset_name: str | None = None
@@ -68,6 +91,8 @@ class SqlAssetMatchResult:
 
 
 class SqlAssetResolverService:
+    """SQL 资产解析服务。"""
+
     def __init__(self, repository: SqlAssetRepository):
         self.repository = repository
 
@@ -77,7 +102,16 @@ class SqlAssetResolverService:
         task: str,
         system_short: str | None = None,
     ) -> SqlAssetMatchResult:
-        """Match a task description against active SQL assets by keyword/tag."""
+        """根据任务描述匹配 SQL 资产。
+
+        当前使用轻量启发式打分：
+        - tag 命中权重最高
+        - 表名、资产名、sql_kind 次之
+        - description 只做弱补充，不作为强信号
+
+        该方法只返回“当前最像的一个资产”，不负责多候选排序暴露。
+        """
+
         assets = self.repository.list_active_sql_assets(system_short=system_short)
         task_lower = task.lower()
         best: SqlAssetMatchResult | None = None
@@ -122,6 +156,8 @@ class SqlAssetResolverService:
 
 @dataclass
 class DubboAssetMatchResult:
+    """Dubbo 资产解析结果。"""
+
     matched: bool
     asset_id: int | None = None
     asset_name: str | None = None
@@ -130,6 +166,8 @@ class DubboAssetMatchResult:
 
 
 class DubboAssetResolverService:
+    """Dubbo 资产解析服务。"""
+
     def __init__(self, repository: DubboAssetRepository):
         self.repository = repository
 
@@ -140,6 +178,8 @@ class DubboAssetResolverService:
         service_interface: str,
         method_name: str,
     ) -> DubboAssetMatchResult:
+        """按接口名 + 方法名精确匹配 Dubbo 资产。"""
+
         assets = self.repository.list_active_dubbo_assets(system_short=system_short)
         service_interface = service_interface.strip()
         method_name = method_name.strip()

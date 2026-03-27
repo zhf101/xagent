@@ -69,6 +69,14 @@ class ApprovalGate:
         system_short: str | None = None,
         execution_kind: str | None = None,
     ) -> ApprovalDecision:
+        """评估一次请求是否需要运行时审批。
+
+        当前策略非常保守且明确：
+        - 只在 `data_generation` 模式下生效
+        - HTTP / Dubbo / MCP 不做运行时审批
+        - SQL 只对高风险语义触发审批单
+        """
+
         if domain_mode != "data_generation":
             return ApprovalDecision(False, "not_data_generation")
 

@@ -1,4 +1,8 @@
-"""HTTP 响应提取器。"""
+"""HTTP 响应提取器。
+
+该模块把各种响应体统一映射成“字段提取结果 + 摘要文本”，
+避免上层直接操作原始 response body 的具体结构。
+"""
 
 from __future__ import annotations
 
@@ -6,6 +10,8 @@ from typing import Any
 
 
 def _get_by_path(payload: Any, path: str | None) -> Any:
+    """按 `a.b.0.c` 这种轻量路径从 dict/list 结构中取值。"""
+
     if not path:
         return None
     current = payload
@@ -31,7 +37,13 @@ def extract_http_response(
     body: Any,
     response_extract: dict[str, Any] | None,
 ) -> tuple[dict[str, Any], str | None]:
-    """按轻量规则从 HTTP 响应中提取字段和摘要。"""
+    """按轻量规则从 HTTP 响应中提取字段和摘要。
+
+    支持：
+    - `fields`：多个别名字段映射
+    - `data_path` / `message_path` / `success_path`
+    - `summary_template`：基于提取字段拼装摘要
+    """
 
     config = response_extract or {}
     extracted_fields: dict[str, Any] = {}
@@ -53,6 +65,7 @@ def extract_http_response(
     if success_path:
         extracted_fields["success_flag"] = _get_by_path(body, str(success_path))
 
+    # 当模板字符串格式化失败时静默降级，避免响应摘要影响主流程。
     summary = None
     summary_template = config.get("summary_template")
     if summary_template and isinstance(summary_template, str):

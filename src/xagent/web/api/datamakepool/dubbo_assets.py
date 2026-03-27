@@ -1,4 +1,11 @@
-"""Dubbo asset management API."""
+"""Dubbo 资产管理 API。
+
+该模块聚焦 Dubbo 资产定义的管理与解析：
+- 资产列表/创建/详情
+- 根据接口名和方法名做运行前解析
+
+当前阶段不在这里执行 Dubbo 调用，只提供给上层编排做资产登记和路由。
+"""
 
 from __future__ import annotations
 
@@ -74,6 +81,8 @@ class DubboAssetResolveResponse(BaseModel):
 
 
 def _to_response(asset: DataMakepoolAsset) -> DubboAssetResponse:
+    """把 ORM 模型转换成响应对象。"""
+
     return DubboAssetResponse(
         id=asset.id,
         name=asset.name,
@@ -93,6 +102,8 @@ async def list_dubbo_assets(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> List[DubboAssetResponse]:
+    """列出 Dubbo 资产。"""
+
     try:
         repository = DubboAssetRepository(db)
         assets = repository.list_active_dubbo_assets(system_short=system_short)
@@ -110,6 +121,8 @@ async def create_dubbo_asset(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> DubboAssetResponse:
+    """创建 Dubbo 资产。"""
+
     try:
         data = payload.model_dump()
         validate_dubbo_asset_payload(data)
@@ -141,6 +154,8 @@ async def get_dubbo_asset(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> DubboAssetResponse:
+    """读取 Dubbo 资产详情。"""
+
     repository = DubboAssetRepository(db)
     asset = repository.get_by_id(asset_id)
     if asset is None or asset.asset_type != "dubbo":
@@ -157,6 +172,8 @@ async def resolve_dubbo_asset(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> DubboAssetResolveResponse:
+    """根据接口名和方法名解析匹配的 Dubbo 资产。"""
+
     repository = DubboAssetRepository(db)
     resolver = DubboAssetResolverService(repository)
     result = resolver.resolve(

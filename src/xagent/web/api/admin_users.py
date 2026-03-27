@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from ..auth_dependencies import get_current_user
@@ -27,7 +28,13 @@ async def get_users(
 
     # Apply search filter
     if search:
-        query = query.filter(User.username.like(f"%{search}%"))
+        query = query.filter(
+            or_(
+                User.username.like(f"%{search}%"),
+                User.display_name.like(f"%{search}%"),
+                User.email.like(f"%{search}%"),
+            )
+        )
 
     # Get total count
     total = query.count()

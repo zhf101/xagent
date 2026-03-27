@@ -250,6 +250,9 @@ async def setup_admin(
             username=request.username,
             password_hash=hash_password(request.password),
             is_admin=True,
+            is_active=True,
+            auth_source="local",
+            display_name=request.username,
         )
         db.add(user)
         db.flush()
@@ -319,7 +322,13 @@ def create_user(
     Users will use admin's defaults via fallback logic until they set their own.
     """
     password_hash = hash_password(password)
-    user = User(username=username, password_hash=password_hash)
+    user = User(
+        username=username,
+        password_hash=password_hash,
+        is_active=True,
+        auth_source="local",
+        display_name=username,
+    )
     db.add(user)
     db.flush()  # Get the user ID without committing
     db.refresh(user)

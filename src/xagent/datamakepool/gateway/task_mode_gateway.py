@@ -38,6 +38,11 @@ class DatamakepoolTaskModeGateway:
 
     @staticmethod
     def resolve_domain_mode(task: Any) -> DomainMode:
+        """从 task.agent_config 中解析 domain_mode。
+
+        解析失败时统一回退为 `general`，避免脏数据把执行入口打挂。
+        """
+
         agent_config = getattr(task, "agent_config", None)
         if not isinstance(agent_config, dict):
             return "general"
@@ -57,6 +62,11 @@ class DatamakepoolTaskModeGateway:
         task: Any,
         base_context: Dict[str, Any] | None = None,
     ) -> TaskModeDecision:
+        """根据 task 模式构造执行前上下文。
+
+        这里只做最轻量的模式分流，不承担模板匹配和 orchestrator 规划。
+        """
+
         mode = cls.resolve_domain_mode(task)
         context: Dict[str, Any] = dict(base_context or {})
 
@@ -73,6 +83,8 @@ class DatamakepoolTaskModeGateway:
     def should_route_to_orchestrator(
         domain_mode: DomainMode, template_match_result: Any | None
     ) -> bool:
+        """判断当前请求是否应该切到 datamakepool orchestrator。"""
+
         if domain_mode != "data_generation":
             return False
 

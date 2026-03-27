@@ -1,4 +1,14 @@
-"""SQL asset management API."""
+"""SQL 资产管理 API。
+
+这组接口负责：
+- SQL 资产增删改查
+- 数据源资产选择列表
+- 根据任务描述解析最匹配的 SQL 资产
+
+注意：
+- 这里只管理 SQL 资产定义，不直接执行 SQL
+- datasource 是 SQL 资产的宿主连接，因此在创建/更新时需要单独校验
+"""
 
 from __future__ import annotations
 
@@ -77,6 +87,8 @@ class DatasourceAssetOption(BaseModel):
 
 
 def _to_response(asset: DataMakepoolAsset) -> SqlAssetResponse:
+    """把 ORM 模型映射成 API 响应。"""
+
     return SqlAssetResponse(
         id=asset.id,
         name=asset.name,
@@ -98,6 +110,8 @@ async def list_sql_assets(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> List[SqlAssetResponse]:
+    """列出 SQL 资产。"""
+
     try:
         repository = SqlAssetRepository(db)
         assets = repository.list_sql_assets(
@@ -118,6 +132,8 @@ async def list_sql_datasources(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> List[DatasourceAssetOption]:
+    """列出可绑定到 SQL 资产的数据源资产。"""
+
     try:
         repository = SqlAssetRepository(db)
         assets = repository.list_datasource_assets(system_short=system_short)
@@ -143,6 +159,13 @@ async def create_sql_asset(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> SqlAssetResponse:
+    """创建 SQL 资产。
+
+    关键约束：
+    - `datasource_asset_id` 必须指向 datasource 资产
+    - 通过 validator 后才允许落库
+    """
+
     repository = SqlAssetRepository(db)
     datasource = repository.get_datasource_asset(payload.datasource_asset_id)
     try:
@@ -175,6 +198,8 @@ async def get_sql_asset(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> SqlAssetResponse:
+    """读取单个 SQL 资产详情。"""
+
     repository = SqlAssetRepository(db)
     asset = repository.get_by_id(asset_id)
     if asset is None or asset.asset_type != "sql":
@@ -192,6 +217,8 @@ async def update_sql_asset(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> SqlAssetResponse:
+    """更新 SQL 资产并同步提升版本号。"""
+
     repository = SqlAssetRepository(db)
     asset = repository.get_by_id(asset_id)
     if asset is None or asset.asset_type != "sql":
@@ -231,6 +258,8 @@ async def delete_sql_asset(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> Dict[str, str]:
+    """删除 SQL 资产。"""
+
     repository = SqlAssetRepository(db)
     asset = repository.get_by_id(asset_id)
     if asset is None or asset.asset_type != "sql":
@@ -256,6 +285,8 @@ async def resolve_sql_asset(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> SqlAssetResolveResponse:
+    """根据任务描述解析最匹配的 SQL 资产。"""
+
     repository = SqlAssetRepository(db)
     resolver = SqlAssetResolverService(repository)
     result = resolver.resolve(

@@ -1,4 +1,15 @@
-"""HTTP 资产管理 API。"""
+"""HTTP 资产管理 API。
+
+这组接口承担三类职责：
+- HTTP 资产的后台管理（增删改查）
+- 运行前的资产解析（resolve）
+- 调试态的真实请求执行（debug）
+
+边界说明：
+- 权限认证由通用依赖层处理
+- 配置合法性校验交给 validator
+- 真正执行 HTTP 请求由 `HttpExecutionService` 负责
+"""
 
 from __future__ import annotations
 
@@ -108,6 +119,8 @@ class HttpAssetDebugResponse(BaseModel):
 
 
 def _to_response(asset: DataMakepoolAsset) -> HttpAssetResponse:
+    """把 ORM 模型转换成对外响应模型。"""
+
     return HttpAssetResponse(
         id=asset.id,
         name=asset.name,
@@ -128,6 +141,11 @@ async def list_http_assets(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> List[HttpAssetResponse]:
+    """列出 HTTP 资产。
+
+    只负责查询和响应转换；权限、过滤合法性和事务控制都保持最小化。
+    """
+
     try:
         repository = HttpAssetRepository(db)
         assets = repository.list_http_assets(
@@ -148,6 +166,14 @@ async def create_http_asset(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> HttpAssetResponse:
+    """创建 HTTP 资产。
+
+    状态影响：
+    - 校验 payload
+    - 新增一条 HTTP 资产记录
+    - 成功后提交事务并返回最新版本
+    """
+
     try:
         data = payload.model_dump()
         validate_http_asset_payload(data)
@@ -182,6 +208,8 @@ async def get_http_asset(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> HttpAssetResponse:
+    """按 ID 读取 HTTP 资产详情。"""
+
     repository = HttpAssetRepository(db)
     asset = repository.get_by_id(asset_id)
     if asset is None or asset.asset_type != "http":
@@ -199,6 +227,8 @@ async def update_http_asset(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> HttpAssetResponse:
+    """更新 HTTP 资产定义并递增版本号。"""
+
     repository = HttpAssetRepository(db)
     asset = repository.get_by_id(asset_id)
     if asset is None or asset.asset_type != "http":
@@ -240,6 +270,8 @@ async def delete_http_asset(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> Dict[str, str]:
+    """删除 HTTP 资产。"""
+
     repository = HttpAssetRepository(db)
     asset = repository.get_by_id(asset_id)
     if asset is None or asset.asset_type != "http":
@@ -265,6 +297,8 @@ async def resolve_http_asset(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> HttpAssetResolveResponse:
+    """根据 method + url 解析最匹配的 HTTP 资产。"""
+
     repository = HttpAssetRepository(db)
     resolver = HttpAssetResolverService(repository)
     result = resolver.resolve(
@@ -287,6 +321,16 @@ async def debug_http_asset(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> HttpAssetDebugResponse:
+    """调试执行一条 HTTP 资产。
+
+    关键语义：
+    - 先确认 asset_id 对应的是 HTTP 资产
+    - 再根据请求信息尝试命中资产默认配置
+    - 最后交给 `HttpExecutionService` 做真实请求
+
+    该接口的主要目标是帮助后台配置资产时快速验证，不承担正式运行账本职责。
+    """
+
     repository = HttpAssetRepository(db)
     asset = repository.get_by_id(asset_id)
     if asset is None or asset.asset_type != "http":
@@ -317,6 +361,8 @@ async def debug_http_asset(
         response_extract=payload.response_extract,
     )
 
+    # 如果当前请求能命中已登记资产，就把资产默认配置与调试输入合并，
+    # 保持“调试结果尽量接近真实运行时行为”。
     if match_result.matched and match_result.config:
         spec = _merge_asset_defaults(spec, match_result.config)
 
@@ -327,6 +373,7 @@ async def debug_http_asset(
     executor = HttpExecutionService(workspace=workspace)
     result = await executor.execute(spec)
 
+    # debug 结果会把下载文件重新桥接回 workspace，便于前端继续消费。
     return HttpAssetDebugResponse(
         success=result.success,
         status_code=result.status_code,

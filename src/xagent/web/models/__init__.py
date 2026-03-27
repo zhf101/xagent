@@ -19,7 +19,7 @@ from .template_stats import TemplateStats
 from .text2sql import Text2SQLDatabase
 from .tool_config import ToolConfig, ToolUsage
 from .uploaded_file import UploadedFile
-from .user import User, UserDefaultModel, UserModel
+from .user import User, UserDefaultModel, UserExternalProfile, UserModel, UserSystemBinding
 from .user_oauth import UserOAuth
 
 __all__ = [
@@ -37,6 +37,8 @@ __all__ = [
     "User",
     "UserModel",
     "UserDefaultModel",
+    "UserExternalProfile",
+    "UserSystemBinding",
     "UserOAuth",
     "Model",
     "MCPServer",

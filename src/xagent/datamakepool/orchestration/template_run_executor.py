@@ -1,4 +1,13 @@
-"""Template direct execution path for datamakepool V3."""
+"""模板直执行器。
+
+当 planner 判断为 `template_direct` 时，这个执行器负责：
+- 读取模板当前版本的执行规格
+- 尽量写入 Run / RunStep 账本
+- 返回一份对聊天层友好的执行结果摘要
+
+当前版本重点是把“模板直跑这条路径”先跑通并留痕，
+并没有真正逐步调用 HTTP / SQL / Dubbo 资产。
+"""
 
 from __future__ import annotations
 
@@ -15,6 +24,8 @@ from xagent.datamakepool.templates.service import TemplateService
 
 @dataclass
 class TemplateRunExecutionResult:
+    """模板直执行的返回结果。"""
+
     success: bool
     run_id: int | None
     template_id: int
@@ -38,6 +49,14 @@ class TemplateRunExecutor:
         matched: MatchedTemplate,
         params: dict[str, Any],
     ) -> TemplateRunExecutionResult:
+        """执行一次模板命中结果。
+
+        状态影响：
+        - 尝试写入 `datamakepool_runs`
+        - 如果存在步骤快照，再补写 `datamakepool_run_steps`
+        - 成功后返回结构化结果，但当前不在这里拼装真实业务产物
+        """
+
         spec = self._template_service.get_template_execution_spec(matched.template_id)
         step_spec = (spec or {}).get("step_spec") or []
         step_count = len(step_spec) if isinstance(step_spec, list) else 0
@@ -77,6 +96,13 @@ class TemplateRunExecutor:
         params: dict[str, Any],
         step_spec: list[dict[str, Any]],
     ) -> int | None:
+        """尽力写入 Run 与 RunStep 账本。
+
+        关键约束：
+        - 如果表还没建好，直接返回 `None`，不阻塞主流程
+        - 这是“留痕优先”的 best-effort 行为，不把账本写入失败放大成执行失败
+        """
+
         inspector = inspect(self._db.bind)
         tables = set(inspector.get_table_names())
         if "datamakepool_runs" not in tables:
@@ -105,6 +131,8 @@ class TemplateRunExecutor:
         )
         run_id = inserted.scalar_one_or_none()
 
+        # RunStep 目前只同步模板步骤骨架，状态统一记为 completed，
+        # 表示“模板直执行路径已按版本定义完成登记”。
         if run_id and "datamakepool_run_steps" in tables:
             for index, step in enumerate(step_spec, start=1):
                 self._db.execute(
