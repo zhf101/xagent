@@ -1170,7 +1170,7 @@ Build when you need.`
       compact: "Long Context Model",
       embedding: "Embedding Model",
       image: "Image Generation Model",
-      image_edit: "Image Edit",
+      image_edit: "Image Edit Model",
       asr: "Speech Recognition Model",
       tts: "Text-to-Speech Model",
       shared: "Shared",

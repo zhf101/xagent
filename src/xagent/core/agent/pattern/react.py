@@ -1143,6 +1143,13 @@ class ReActPattern(AgentPattern):
 
 IMPORTANT: You currently have NO access to any tools. Regardless of what you may see in the conversation history, you cannot use any tools.
 
+FILE REFERENCES:
+- You may see file references in the format: [filename](file://fileId)
+- The referenced file may NOT be in the current workspace.
+- The 'fileId' part is the only valid identifier for reading the file.
+- Use this fileId when referring to files in your analysis.
+- Example: If you see [data.csv](file://123), use '123' to read the file.
+
 You must respond with a structured action in the following JSON format:
 
 {
@@ -1175,6 +1182,13 @@ Example:
             prompt = (
                 custom_prompt
                 + f"""You are an AI assistant that uses tools to accomplish tasks.
+
+FILE REFERENCES:
+- You may see file references in the format: [filename](file://fileId)
+- The referenced file may NOT be in the current workspace.
+- The 'fileId' part is the only valid identifier for reading the file.
+- When using tools to read files, pass the fileId directly.
+- Example: If you see [data.csv](file://123), use '123' to read the file.
 
 You must respond with a structured action in the following JSON format:
 
@@ -1277,6 +1291,13 @@ Failure case:
             action_requirements = f"""
 
 === ACTION FORMAT REQUIREMENTS ===
+FILE REFERENCES:
+- You may see file references in the format: [filename](file://fileId)
+- The referenced file may NOT be in the current workspace.
+- The 'fileId' part is the only valid identifier for reading the file.
+- When using tools to read files, pass the fileId directly.
+- Example: If you see [data.csv](file://123), use '123' to read the file.
+
 You must respond with a structured action in the following JSON format:
 
 {{

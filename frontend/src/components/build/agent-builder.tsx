@@ -16,7 +16,10 @@ import { PlusCircle, MessageSquare, Upload, Download, Settings2, Check, Zap, Boo
 import { useI18n } from "@/contexts/i18n-context"
 import { useAuth } from "@/contexts/auth-context"
 import { FileAttachment } from "@/components/file/file-attachment"
+import { createFileChipHTML } from "@/components/chat/FileChip"
 import { MultiSelect } from "@/components/ui/multi-select"
+import { useFileMention } from "@/hooks/use-file-mention"
+import { FileMentionDropdown } from "@/components/chat/FileMentionDropdown"
 import { Select } from "@/components/ui/select"
 import {
   InfoTooltip,
@@ -33,6 +36,19 @@ import {
 import { useRouter, useSearchParams } from "next/navigation"
 import { KnowledgeBaseCreationDialog } from "@/components/kb/knowledge-base-creation-dialog"
 import { toast } from "sonner"
+import { FileIcon } from "lucide-react"
+import { cn } from "@/lib/utils"
+
+interface FileItem {
+  file_id: string;
+  filename: string;
+  file_size: number;
+  modified_time: number;
+  file_type?: string;
+  relative_path?: string;
+  task_id?: number;
+  user_id?: number;
+}
 
 interface KnowledgeBase {
   name: string
@@ -146,6 +162,100 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
   const [kbs, setKbs] = useState<KnowledgeBase[]>([])
   const [skills, setSkills] = useState<Skill[]>([])
   const [tools, setTools] = useState<Tool[]>([])
+
+  // File picker state for Instructions
+  const instructionsRef = useRef<HTMLDivElement>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const [isInstructionsFocused, setIsInstructionsFocused] = useState(false)
+  const lastInstructionsRef = useRef(instructions)
+
+  const handleInstructionsInput = () => {
+    const editor = instructionsRef.current;
+    if (!editor) return;
+
+    // Serialize content: replace chips with markdown link containing file:// scheme
+    const clone = editor.cloneNode(true) as HTMLElement;
+    const chips = clone.querySelectorAll('[data-file-path]');
+    chips.forEach((chip) => {
+      const path = chip.getAttribute('data-file-path');
+      const fileId = chip.getAttribute('data-file-id');
+      const filename = chip.getAttribute('data-filename') || path?.split('/').pop() || path;
+
+      // Use fileId if available, otherwise path (fallback)
+      const id = fileId || path;
+      chip.replaceWith(document.createTextNode(`[${filename}](file://${id})`));
+    });
+
+    // Use innerText to preserve newlines
+    let text = clone.innerText;
+    // Remove zero-width spaces if any (sometimes added by contentEditable)
+    text = text.replace(/\u200B/g, '');
+
+    lastInstructionsRef.current = text;
+    setInstructions(text);
+
+    fileMention.checkTrigger();
+  };
+
+  const fileMention = useFileMention(instructionsRef, containerRef, handleInstructionsInput, t);
+
+  const handleInstructionsPaste = (e: React.ClipboardEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const text = e.clipboardData.getData("text/plain");
+    document.execCommand("insertText", false, text);
+    handleInstructionsInput();
+  };
+
+  // Handle click on delete button for chips
+  useEffect(() => {
+    const editor = instructionsRef.current;
+    if (!editor) return;
+
+    const handleClick = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      const deleteBtn = target.closest('.file-chip-delete');
+      if (deleteBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        const chip = deleteBtn.closest('[data-file-path]');
+        if (chip) {
+          chip.remove();
+          // Trigger input handling manually
+          handleInstructionsInput();
+        }
+        return;
+      }
+    };
+
+    editor.addEventListener('click', handleClick);
+    return () => editor.removeEventListener('click', handleClick);
+  }, []);
+
+  // Sync state -> DOM
+  useEffect(() => {
+    const editor = instructionsRef.current;
+    if (!editor) return;
+
+    if (instructions !== lastInstructionsRef.current) {
+      if (!instructions) {
+        editor.innerHTML = "";
+      } else if (document.activeElement !== editor) {
+        // Escape HTML to prevent XSS
+        let html = instructions
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;");
+
+        // Restore file:// links
+        html = html.replace(/\[([^\]]+)\]\(file:\/\/([^)]+)\)/g, (match, filename, id) => {
+          return createFileChipHTML(id, id, filename);
+        });
+
+        editor.innerHTML = html;
+      }
+      lastInstructionsRef.current = instructions;
+    }
+  }, [instructions]);
 
   // Chat State
   const [messages, setMessages] = useState<Message[]>([])
@@ -1030,14 +1140,43 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
               {isOptimizing ? t("builds.configForm.instructions.optimizing") : t("builds.configForm.instructions.optimize")}
             </Button>
           </div>
-          <Textarea
-            id="instructions"
-            placeholder={t("builds.configForm.instructions.placeholder")}
-            className="min-h-[150px] font-mono text-sm"
-            value={instructions}
-            onChange={(e) => setInstructions(e.target.value)}
-            disabled={isOptimizing}
-          />
+          <div className="relative" ref={containerRef}>
+            <FileMentionDropdown
+              show={fileMention.showFilePicker}
+              isLoading={fileMention.isLoadingFiles}
+              filteredFiles={fileMention.filteredFiles}
+              selectedFileIndex={fileMention.selectedFileIndex}
+              onInsert={fileMention.insertFile}
+              t={t}
+              position={fileMention.dropdownPosition}
+            />
+
+            <div
+              className={cn(
+                "relative rounded-md border shadow-sm transition-all duration-300 bg-background",
+                isInstructionsFocused ? "border-primary ring-1 ring-primary" : "border-input hover:border-border",
+                isOptimizing ? "opacity-50 pointer-events-none" : ""
+              )}
+            >
+              <div
+                ref={instructionsRef}
+                contentEditable={!isOptimizing}
+                className="min-h-[150px] w-full rounded-md bg-transparent px-3 py-2 font-mono text-sm outline-none overflow-y-auto break-words whitespace-pre-wrap text-left"
+                onInput={handleInstructionsInput}
+                onKeyDown={fileMention.handleKeyDown}
+                onPaste={handleInstructionsPaste as any}
+                onFocus={() => setIsInstructionsFocused(true)}
+                onBlur={() => setIsInstructionsFocused(false)}
+                role="textbox"
+                aria-multiline="true"
+              />
+              {!instructions && (
+                <div className="absolute top-2 left-3 text-muted-foreground pointer-events-none text-sm font-mono">
+                  {t("builds.configForm.instructions.placeholder")}
+                </div>
+              )}
+            </div>
+          </div>
         </div>
 
         {/* Execution Mode */}

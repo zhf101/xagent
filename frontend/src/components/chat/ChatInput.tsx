@@ -1,13 +1,15 @@
 import { useState, useRef, useEffect } from "react";
+import { createFileChipHTML } from "./FileChip";
 import { useRouter } from "next/navigation";
 import { Paperclip, X, File as FileIcon, Sparkles, Pause, Play, Loader2, ArrowUp, Globe } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
 import { cn, getApiUrl } from "@/lib/utils";
 import { useI18n } from "@/contexts/i18n-context";
+import { useApp } from "@/contexts/app-context-chat";
 import { ConfigDialog } from "@/components/config-dialog";
 import { apiRequest } from "@/lib/api-wrapper";
-import { toast } from "sonner";
+import { useFileMention, FileItem } from "@/hooks/use-file-mention";
+import { FileMentionDropdown } from "./FileMentionDropdown";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -18,15 +20,6 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-
-interface FileItem {
-  filename: string;
-  file_size: number;
-  modified_time: number;
-  file_type?: string;
-  workspace_id?: string;
-  relative_path?: string;
-}
 
 interface ChatInputProps {
   onSend: (message: string, config?: any) => void | Promise<void>;
@@ -70,14 +63,45 @@ export function ChatInput({
   const [isFocused, setIsFocused] = useState(false);
   const [showNoModelAlert, setShowNoModelAlert] = useState(false);
 
-  // File picker state
-  const [showFilePicker, setShowFilePicker] = useState(false);
-  const [fileList, setFileList] = useState<FileItem[]>([]);
-  const [filteredFiles, setFilteredFiles] = useState<FileItem[]>([]);
-  const [selectedFileIndex, setSelectedFileIndex] = useState(0);
-  const [triggerIndex, setTriggerIndex] = useState<number>(-1);
-  const [isLoadingFiles, setIsLoadingFiles] = useState(false);
-  const [downloadingFile, setDownloadingFile] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const editorRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const isSubmittingRef = useRef(false);
+  const { t } = useI18n();
+  const { openFilePreview } = useApp();
+
+  const handleInput = () => {
+    const editor = editorRef.current;
+    if (!editor) return;
+
+    // Serialize content: replace chips with markdown link containing file:// scheme
+    const clone = editor.cloneNode(true) as HTMLElement;
+    const chips = clone.querySelectorAll('[data-file-path]');
+    chips.forEach((chip) => {
+      const path = chip.getAttribute('data-file-path');
+      const fileId = chip.getAttribute('data-file-id');
+      const filename = chip.getAttribute('data-filename') || path?.split('/').pop() || path;
+
+      // Use fileId if available, otherwise path (fallback)
+      const id = fileId || path;
+      chip.replaceWith(document.createTextNode(`[${filename}](file://${id})`));
+    });
+
+    // Use innerText to preserve newlines
+    let text = clone.innerText;
+    // Remove zero-width spaces if any (sometimes added by contentEditable)
+    text = text.replace(/\u200B/g, '');
+
+    if (isControlled) {
+      onInputChange?.(text);
+    } else {
+      setInternalMessage(text);
+    }
+
+    fileMention.checkTrigger();
+  };
+
+  const fileMention = useFileMention(editorRef, containerRef, handleInput, t);
 
   // Track files for async operations
   const filesRef = useRef(files);
@@ -89,149 +113,51 @@ export function ChatInput({
   const isControlled = inputValue !== undefined;
   const message = isControlled ? inputValue : internalMessage;
 
-  const handleMessageChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    const newValue = e.target.value;
-    const cursor = e.target.selectionStart;
 
-    if (isControlled) {
-      onInputChange?.(newValue);
-    } else {
-      setInternalMessage(newValue);
-    }
+  // Handle click on delete button and file chip preview
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
 
-    checkTrigger(newValue, cursor);
-  };
-
-  const fetchFiles = async () => {
-    if (fileList.length > 0) return;
-    setIsLoadingFiles(true);
-    try {
-      const response = await apiRequest(`${getApiUrl()}/api/files/list`);
-      if (response.ok) {
-        const data = await response.json();
-        if (data && data.files) {
-          setFileList(data.files);
+    const handleClick = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      const deleteBtn = target.closest('.file-chip-delete');
+      if (deleteBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        const chip = deleteBtn.closest('[data-file-path]');
+        if (chip) {
+          chip.remove();
+          // Trigger input event manually to update state
+          const event = new Event('input', { bubbles: true });
+          editor.dispatchEvent(event);
         }
-      }
-    } catch (error) {
-      console.error(t("files.previewDialog.errors.loadFailed"), error);
-      toast.error(t("files.previewDialog.errors.loadFailed"));
-    } finally {
-      setIsLoadingFiles(false);
-    }
-  };
-
-  const checkTrigger = (text: string, cursor: number) => {
-    const textBeforeCursor = text.slice(0, cursor);
-    const lastHashIndex = textBeforeCursor.lastIndexOf("#");
-
-    if (lastHashIndex !== -1) {
-      // Allow trigger anywhere
-      const query = textBeforeCursor.slice(lastHashIndex + 1);
-      if (!query.includes(" ") && !query.includes("\n")) {
-        setTriggerIndex(lastHashIndex);
-        setShowFilePicker(true);
-        fetchFiles();
-
-        // Filter files
-        const lowerQuery = query.toLowerCase();
-        const filtered = fileList.filter(f =>
-          (f.filename.toLowerCase().includes(lowerQuery) ||
-           (f.relative_path && f.relative_path.toLowerCase().includes(lowerQuery)))
-        );
-        setFilteredFiles(filtered);
-        setSelectedFileIndex(0);
         return;
       }
-    }
-    setShowFilePicker(false);
-    setTriggerIndex(-1);
-  };
 
-  // Update filtered files when fileList changes (e.g. after fetch)
-  useEffect(() => {
-    if (showFilePicker && fileList.length > 0 && triggerIndex !== -1) {
-       if (message.length > triggerIndex) {
-         const query = message.slice(triggerIndex + 1).split(/[\s\n]/)[0];
-         const lowerQuery = query.toLowerCase();
-         const filtered = fileList.filter(f =>
-            (f.filename.toLowerCase().includes(lowerQuery) ||
-             (f.relative_path && f.relative_path.toLowerCase().includes(lowerQuery)))
+      // Handle file chip preview click
+      const chip = target.closest('.file-chip-preview');
+      if (chip) {
+        e.preventDefault();
+        e.stopPropagation();
+        const filePath = chip.getAttribute('data-file-path');
+        if (filePath) {
+          // If we have fileId mapped in our list, use it. Otherwise use the path as fileId fallback.
+          const fileInfo = fileMention.fileList.find((f: FileItem) => f.relative_path === filePath || f.filename === filePath);
+          const fileName = fileInfo?.filename || filePath.split('/').pop() || filePath;
+
+          openFilePreview(
+            fileInfo?.file_id || filePath, // use file_id as fileId if available, fallback to path
+            fileName,
+            [{ fileName, fileId: fileInfo?.file_id || filePath }]
           );
-          setFilteredFiles(filtered);
-       }
-    }
-  }, [fileList, showFilePicker, triggerIndex, message]);
-
-  const insertFile = async (file: FileItem) => {
-    const fileId = file.relative_path || file.filename;
-    if (downloadingFile) return;
-
-    setDownloadingFile(fileId);
-
-    try {
-      const filePath = file.relative_path || file.filename;
-      const response = await apiRequest(`${getApiUrl()}/api/files/download/${encodeURIComponent(filePath)}`);
-
-      if (response.ok) {
-        const blob = await response.blob();
-
-        const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB
-        if (blob.size > MAX_FILE_SIZE) {
-          toast.error(t("files.fileTooLarge"));
-          return;
         }
-
-        const newFile = new File([blob], file.filename, {
-          type: file.file_type || blob.type || 'application/octet-stream',
-          lastModified: file.modified_time * 1000
-        });
-
-        if (onFilesChange) {
-          // Use ref to get latest files to avoid stale closure
-          onFilesChange([...filesRef.current, newFile]);
-        }
-
-        // Success: Remove query from text and close picker
-        const currentText = textareaRef.current?.value || (isControlled ? inputValue || "" : internalMessage);
-
-        if (triggerIndex !== -1) {
-            let endIndex = currentText.indexOf(" ", triggerIndex);
-            if (endIndex === -1) endIndex = currentText.indexOf("\n", triggerIndex);
-            if (endIndex === -1) endIndex = currentText.length;
-
-            const prefix = currentText.slice(0, triggerIndex);
-            const suffix = currentText.slice(endIndex);
-            const newText = prefix + suffix;
-
-            if (isControlled) {
-                onInputChange?.(newText);
-            } else {
-                setInternalMessage(newText);
-            }
-        }
-
-        setShowFilePicker(false);
-        setTriggerIndex(-1);
-      } else {
-        console.error("Failed to download file:", response.statusText);
-        toast.error(t("files.downloadFailed") || "Failed to download file");
       }
-    } catch (error) {
-      console.error("Error fetching file:", error);
-      toast.error(t("files.downloadFailed") || "Failed to download file");
-    } finally {
-      setDownloadingFile(null);
-      // Restore focus
-      setTimeout(() => textareaRef.current?.focus(), 0);
-    }
-  };
+    };
 
-
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const isSubmittingRef = useRef(false);
-  const { t } = useI18n();
+    editor.addEventListener('click', handleClick);
+    return () => editor.removeEventListener('click', handleClick);
+  }, [fileMention.fileList, openFilePreview]);
   const [agentConfig, setAgentConfig] = useState<{
     model: string;
     smallFastModel?: string;
@@ -363,29 +289,8 @@ export function ChatInput({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (showFilePicker) {
-      if (e.key === "ArrowUp") {
-        e.preventDefault();
-        setSelectedFileIndex(prev => Math.max(0, prev - 1));
-        return;
-      }
-      if (e.key === "ArrowDown") {
-        e.preventDefault();
-        setSelectedFileIndex(prev => Math.min(filteredFiles.length - 1, prev + 1));
-        return;
-      }
-      if (e.key === "Enter" || e.key === "Tab") {
-        e.preventDefault();
-        if (filteredFiles.length > 0) {
-          insertFile(filteredFiles[selectedFileIndex]);
-        }
-        return;
-      }
-      if (e.key === "Escape") {
-        e.preventDefault();
-        setShowFilePicker(false);
-        return;
-      }
+    if (fileMention.handleKeyDown(e)) {
+      return;
     }
 
     if (e.key === "Enter" && !e.shiftKey) {
@@ -398,7 +303,7 @@ export function ChatInput({
     }
   };
 
-  const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+  const handlePaste = (e: React.ClipboardEvent<HTMLDivElement>) => {
     const items = Array.from(e.clipboardData.items || []);
     const fileItems = items.filter(item => item.kind === 'file');
 
@@ -434,6 +339,13 @@ export function ChatInput({
       if (pastedFiles.length > 0) {
         onFilesChange?.([...files, ...pastedFiles]);
       }
+    } else {
+      // Strip formatting from text paste
+      e.preventDefault();
+      const text = e.clipboardData.getData("text/plain");
+      document.execCommand("insertText", false, text);
+      // Trigger input handling manually as execCommand might not bubble up to React's onInput reliably in all browsers
+      handleInput();
     }
   };
 
@@ -448,6 +360,28 @@ export function ChatInput({
   const removeFile = (index: number) => {
     onFilesChange?.(files.filter((_, i) => i !== index));
   };
+
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+
+    if (!message) {
+      if (editor.innerHTML !== "") {
+        editor.innerHTML = "";
+      }
+    } else if (document.activeElement !== editor && editor.innerText.trim() === "") {
+      // Restore file:// links
+      let html = message.replace(/\[([^\]]+)\]\(file:\/\/([^)]+)\)/g, (match, filename, id) => {
+        // We use the ID as the path since we don't have the real path anymore
+        return createFileChipHTML(id, id, filename);
+      });
+      // Fallback for old backticked messages to not break existing chat history
+      html = html.replace(/`([^`]+)`/g, (match, path) => {
+        return createFileChipHTML(path);
+      });
+      editor.innerHTML = html;
+    }
+  }, [message]);
 
   const formatFileSize = (bytes: number) => {
     if (bytes < 1024) return bytes + " B";
@@ -485,47 +419,16 @@ export function ChatInput({
       )}
 
       {/* Input area */}
-      <div className="relative">
-        {showFilePicker && (
-          <div className="absolute bottom-full left-0 mb-2 w-full max-w-sm rounded-lg border bg-popover shadow-md z-50 overflow-hidden">
-            {isLoadingFiles ? (
-              <div className="p-4 flex items-center justify-center text-sm text-muted-foreground">
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                {t("common.loading")}
-              </div>
-            ) : filteredFiles.length === 0 ? (
-              <div className="p-4 text-sm text-muted-foreground text-center">
-                {t("files.table.empty.noMatch")}
-              </div>
-            ) : (
-              <div className="max-h-[200px] overflow-y-auto p-1">
-                {filteredFiles.map((file, index) => (
-                  <div
-                    key={index}
-                    className={cn(
-                      "flex items-center gap-2 px-3 py-2 text-sm rounded-md cursor-pointer transition-colors overflow-scroll",
-                      index === selectedFileIndex ? "bg-accent text-accent-foreground" : "hover:bg-muted",
-                      downloadingFile === (file.relative_path || file.filename) && "opacity-70"
-                    )}
-                    onClick={() => insertFile(file)}
-                  >
-                    {downloadingFile === (file.relative_path || file.filename) ? (
-                      <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
-                    ) : (
-                      <FileIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
-                    )}
-                    <div className="flex flex-col items-start">
-                      <span className="truncate font-medium">{file.filename}</span>
-                      {file.relative_path && file.relative_path !== file.filename && (
-                        <span className="truncate text-xs text-muted-foreground">{file.relative_path}</span>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
+      <div className="relative" ref={containerRef}>
+        <FileMentionDropdown
+          show={fileMention.showFilePicker}
+          isLoading={fileMention.isLoadingFiles}
+          filteredFiles={fileMention.filteredFiles}
+          selectedFileIndex={fileMention.selectedFileIndex}
+          onInsert={fileMention.insertFile}
+          t={t}
+          position={fileMention.dropdownPosition}
+        />
         <form
           onSubmit={handleSubmit}
         className={cn(
@@ -535,24 +438,26 @@ export function ChatInput({
             : "border-border shadow-sm hover:border-border/80"
         )}
       >
-        <Textarea
-          ref={textareaRef}
-          value={message}
-          onClick={() => {
-            if (showFilePicker) {
-              setShowFilePicker(false);
-              setTriggerIndex(-1);
-            }
-          }}
-          onChange={handleMessageChange}
+        <div
+          ref={editorRef}
+          contentEditable
+          className={cn(
+            "min-h-[130px] max-h-[300px] w-full rounded-md border-0 bg-transparent px-3 py-2 text-[15px] outline-none placeholder:text-muted-foreground/60 overflow-y-auto resize-none focus-visible:ring-0 focus-visible:ring-offset-0 pb-14 whitespace-pre-wrap break-words text-left",
+            isLoading ? "opacity-50 pointer-events-none" : ""
+          )}
+          onInput={handleInput}
           onKeyDown={handleKeyDown}
-          onPaste={handlePaste}
+          onPaste={handlePaste as any}
           onFocus={() => setIsFocused(true)}
           onBlur={() => setIsFocused(false)}
-          placeholder={t("chatPage.input.placeholder")}
-          className="min-h-[130px] max-h-[300px] resize-none border-0 bg-transparent dark:bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0 pb-14 text-[15px] placeholder:text-muted-foreground/60"
-          disabled={isLoading || !!downloadingFile}
+          role="textbox"
+          aria-multiline="true"
         />
+        {!message && (
+          <div className="absolute top-2 left-3 text-muted-foreground/60 pointer-events-none text-[14px]">
+            {t("chatPage.input.placeholder")}
+          </div>
+        )}
 
         {/* Bottom toolbar */}
         <div className="absolute bottom-0 left-0 right-0 flex items-center justify-between px-4 py-3 bg-card">

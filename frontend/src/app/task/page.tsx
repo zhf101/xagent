@@ -5,10 +5,11 @@ import { Bot, Presentation, BarChart, Image as ImageIcon, Zap } from "lucide-rea
 import { useI18n } from "@/contexts/i18n-context";
 import { useApp } from "@/contexts/app-context-chat";
 import { ChatStartScreen } from "@/components/chat/ChatStartScreen";
+import { FilePreviewDialog } from "@/components/file/file-preview-dialog";
 
 function TaskHomePageContent() {
   const { t } = useI18n();
-  const { sendMessage, state, dispatch } = useApp();
+  const { sendMessage, state, dispatch, closeFilePreview } = useApp();
   const [files, setFiles] = useState<File[]>([]);
   const [inputValue, setInputValue] = useState("");
 
@@ -82,6 +83,14 @@ function TaskHomePageContent() {
           />
         </main>
       </div>
+
+      {/* File Preview Modal */}
+      <FilePreviewDialog
+        open={state.filePreview.isOpen}
+        onOpenChange={(open) => {
+          if (!open) closeFilePreview()
+        }}
+      />
     </div>
   );
 }

@@ -762,6 +762,12 @@ class PlanGenerator:
 - **confirm**: Yes/No confirmation
 - **number_input**: Numeric input with min/max
 
+FILE REFERENCES:
+- You may see file references in the format: [filename](file://fileId)
+- The referenced file may NOT be in the current workspace.
+- The 'fileId' part is the only valid identifier for reading the file.
+- If the user provides a file reference, they likely want you to process it (which usually implies type="plan").
+
 ## Important Guidelines
 - Use the SAME LANGUAGE as the user's goal for all text
 - Only use "plan" type when multi-step tool execution is clearly needed
@@ -1104,6 +1110,12 @@ When you return type="chat" (direct answer mode), you are providing a TEXT RESPO
             "IMPORTANT: Not every step needs to use a tool. Some steps can be pure analysis or organization tasks.\n"
             "- Use tools for: web searches, calculations, code execution, data processing\n"
             "- For pure analysis tasks (summarizing, organizing, explaining, formatting results): set tool_name to null or empty string\n\n"
+            "FILE REFERENCES:\n"
+            "- You may see file references in the format: [filename](file://fileId)\n"
+            "- The referenced file may NOT be in the current workspace.\n"
+            "- The 'fileId' part is the only valid identifier for reading the file.\n"
+            "- When using tools to read files, pass the fileId directly.\n"
+            "- Example: If you see [data.csv](file://123), use '123' to read the file.\n\n"
             "CONDITIONAL BRANCHING:\n"
             "- Some steps can be CONDITIONAL NODES that branch execution based on runtime conditions\n"
             "- Use 'conditional_branches' field to define a step as a conditional node\n"

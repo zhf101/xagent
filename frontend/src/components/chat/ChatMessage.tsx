@@ -3,9 +3,11 @@ import { Bot, ChevronDown, ChevronUp, Copy, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { TraceEventRenderer } from "./TraceEventRenderer";
 import { useI18n } from "@/contexts/i18n-context";
+import { useApp } from "@/contexts/app-context-chat";
 import { MarkdownRenderer } from "@/components/ui/markdown-renderer";
 import { Button } from "@/components/ui/button";
 import { normalizeTimestampMs } from "@/lib/time-utils";
+import { FileChip } from "./FileChip";
 
 interface ToolArgs {
   code?: string;
@@ -128,6 +130,7 @@ function ExpandableMessage({ content }: { content: string }) {
   const [isOverflowing, setIsOverflowing] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
   const { t } = useI18n();
+  const { openFilePreview } = useApp();
 
   useEffect(() => {
     if (contentRef.current) {
@@ -135,16 +138,78 @@ function ExpandableMessage({ content }: { content: string }) {
     }
   }, [content]);
 
+  if (!content) return null;
+
+  const markdownRegex = /\[([^\]]+)\]\(file:\/\/([^)]+)\)/g;
+  const backtickRegex = /`([^`]+)`/g;
+
+  const segments: React.ReactNode[] = [];
+  let lastIndex = 0;
+
+  const processText = (text: string, startIndex: number) => {
+    let textLastIndex = 0;
+    let match;
+    const regex = new RegExp(backtickRegex);
+
+    while ((match = regex.exec(text)) !== null) {
+      if (match.index > textLastIndex) {
+        segments.push(text.substring(textLastIndex, match.index));
+      }
+
+      const path = match[1];
+      const fileName = path.split('/').pop() || path;
+      segments.push(
+        <FileChip
+          className="bg-[#F3F4F6]"
+          key={`bt-${startIndex + match.index}`}
+          path={path}
+          onClick={() => openFilePreview?.(path, fileName, [{ fileName, fileId: path }])}
+        />
+      );
+
+      textLastIndex = regex.lastIndex;
+    }
+
+    if (textLastIndex < text.length) {
+      segments.push(text.substring(textLastIndex));
+    }
+  };
+
+  let match;
+  while ((match = markdownRegex.exec(content)) !== null) {
+    if (match.index > lastIndex) {
+      processText(content.substring(lastIndex, match.index), lastIndex);
+    }
+
+    const [_, filename, id] = match;
+
+    segments.push(
+      <FileChip
+        className="bg-[#F3F4F6]"
+        key={`md-${match.index}`}
+        path={id}
+        filename={filename}
+        onClick={() => openFilePreview?.(id, filename, [{ fileName: filename, fileId: id }])}
+      />
+    );
+
+    lastIndex = markdownRegex.lastIndex;
+  }
+
+  if (lastIndex < content.length) {
+    processText(content.substring(lastIndex), lastIndex);
+  }
+
   return (
     <div className="relative">
       <div
         ref={contentRef}
         className={cn(
-          "text-sm leading-relaxed whitespace-pre-wrap transition-all duration-300",
+          "text-sm leading-relaxed whitespace-pre-wrap break-words transition-all duration-300 py-[2px]",
           !isExpanded && "max-h-[240px] overflow-hidden"
         )}
       >
-        {content}
+        {segments}
       </div>
       {isOverflowing && !isExpanded && (
         <>
