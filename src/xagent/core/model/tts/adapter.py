@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from .base import BaseTTS
-from .xinference import XinferenceTTS
 
 
 def get_tts_model_instance(db_model: Any) -> BaseTTS:
@@ -28,6 +27,8 @@ def get_tts_model_instance(db_model: Any) -> BaseTTS:
     base_url = str(db_model.base_url) if db_model.base_url else None
 
     if provider == "xinference":
+        from .xinference import XinferenceTTS
+
         return XinferenceTTS(
             model=model_name,
             model_uid=model_name,
@@ -70,6 +71,8 @@ def get_tts_model(
         >>> audio = tts.synthesize("Hello, world!")
     """
     if provider == "xinference":
+        from .xinference import XinferenceTTS
+
         return XinferenceTTS(model=model or "chat-tts", **kwargs)
     else:
         raise ValueError(
@@ -80,5 +83,4 @@ def get_tts_model(
 __all__ = [
     "get_tts_model_instance",
     "get_tts_model",
-    "XinferenceTTS",
 ]

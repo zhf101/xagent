@@ -11,8 +11,6 @@ os.environ["OAUTHLIB_RELAX_TOKEN_SCOPE"] = "1"
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
-from google_auth_oauthlib.flow import Flow  # type: ignore
-from googleapiclient.discovery import build  # type: ignore
 from jose import JWTError, jwt
 from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
@@ -744,6 +742,28 @@ def get_google_client_config() -> Optional[Dict[str, Any]]:
     }
 
 
+def _get_google_flow_class():
+    try:
+        from google_auth_oauthlib.flow import Flow  # type: ignore
+    except ImportError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="Google OAuth dependencies are not installed",
+        ) from exc
+    return Flow
+
+
+def _get_google_build():
+    try:
+        from googleapiclient.discovery import build  # type: ignore
+    except ImportError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="Google OAuth dependencies are not installed",
+        ) from exc
+    return build
+
+
 GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/userinfo.email",
     "https://www.googleapis.com/auth/userinfo.profile",
@@ -792,6 +812,7 @@ async def google_login(
             status_code=500,
         )
 
+    Flow = _get_google_flow_class()
     flow = Flow.from_client_config(
         client_config, scopes=GOOGLE_SCOPES, redirect_uri=redirect_uri
     )
@@ -849,6 +870,7 @@ async def google_callback(request: Request, db: Session = Depends(get_db)) -> An
         )
 
     try:
+        Flow = _get_google_flow_class()
         flow = Flow.from_client_config(
             client_config,
             scopes=GOOGLE_SCOPES,
@@ -865,6 +887,7 @@ async def google_callback(request: Request, db: Session = Depends(get_db)) -> An
 
         # Get user info
         try:
+            build = _get_google_build()
             service = build(
                 "oauth2", "v2", credentials=credentials, cache_discovery=False
             )

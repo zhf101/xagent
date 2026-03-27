@@ -8,10 +8,6 @@ from sqlalchemy.orm import Session
 
 from ...core.model.chat.basic.adapter import create_base_llm
 from ...core.model.chat.basic.base import BaseLLM
-from ...core.model.chat.basic.claude import ClaudeLLM
-from ...core.model.chat.basic.gemini import GeminiLLM
-from ...core.model.chat.basic.openai import OpenAILLM
-from ...core.model.chat.basic.zhipu import ZhipuLLM
 from ...core.model.model import (
     ChatModelConfig,
     EmbeddingModelConfig,
@@ -812,6 +808,8 @@ def create_llm_from_env() -> Optional[BaseLLM]:
     openai_key = os.getenv("OPENAI_API_KEY")
     if openai_key:
         try:
+            from ...core.model.chat.basic.openai import OpenAILLM
+
             model_name = os.getenv("OPENAI_MODEL_NAME", "gpt-4")
             base_url = os.getenv("OPENAI_BASE_URL")
             return OpenAILLM(
@@ -826,6 +824,8 @@ def create_llm_from_env() -> Optional[BaseLLM]:
     zhipu_key = os.getenv("ZHIPU_API_KEY")
     if zhipu_key:
         try:
+            from ...core.model.chat.basic.zhipu import ZhipuLLM
+
             model_name = os.getenv("ZHIPU_MODEL_NAME", "glm-4")
             base_url = os.getenv("ZHIPU_BASE_URL")
             return ZhipuLLM(
@@ -840,6 +840,8 @@ def create_llm_from_env() -> Optional[BaseLLM]:
     gemini_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
     if gemini_key:
         try:
+            from ...core.model.chat.basic.gemini import GeminiLLM
+
             model_name = os.getenv("GEMINI_MODEL_NAME", "gemini-2.0-flash-exp")
             base_url = os.getenv("GEMINI_BASE_URL")
             return GeminiLLM(
@@ -854,6 +856,8 @@ def create_llm_from_env() -> Optional[BaseLLM]:
     claude_key = os.getenv("ANTHROPIC_API_KEY") or os.getenv("CLAUDE_API_KEY")
     if claude_key:
         try:
+            from ...core.model.chat.basic.claude import ClaudeLLM
+
             model_name = os.getenv("CLAUDE_MODEL_NAME", "claude-3-5-sonnet-20241022")
             base_url = os.getenv("CLAUDE_BASE_URL")
             return ClaudeLLM(

@@ -20,8 +20,6 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.responses import JSONResponse
-from googleapiclient.discovery import build  # type: ignore
-from googleapiclient.http import MediaIoBaseDownload  # type: ignore
 from pydantic import BaseModel
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
@@ -72,6 +70,28 @@ from .cloud_storage import get_google_credentials
 
 T = TypeVar("T", bound=Callable[..., Any])
 logger = logging.getLogger(__name__)
+
+
+def _get_google_build():
+    try:
+        from googleapiclient.discovery import build  # type: ignore
+    except ImportError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="Google Drive dependencies are not installed",
+        ) from exc
+    return build
+
+
+def _get_google_media_download():
+    try:
+        from googleapiclient.http import MediaIoBaseDownload  # type: ignore
+    except ImportError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="Google Drive dependencies are not installed",
+        ) from exc
+    return MediaIoBaseDownload
 
 
 def handle_kb_exceptions(func: T) -> T:
@@ -513,6 +533,7 @@ async def ingest_cloud(
                         )
 
                     # Build service (blocking)
+                    build = _get_google_build()
                     service = await asyncio.to_thread(
                         build, "drive", "v3", credentials=creds, cache_discovery=False
                     )
@@ -523,6 +544,7 @@ async def ingest_cloud(
 
                     # Download file directly to disk
                     try:
+                        MediaIoBaseDownload = _get_google_media_download()
 
                         def _download_file() -> None:
                             request_file = service.files().get_media(

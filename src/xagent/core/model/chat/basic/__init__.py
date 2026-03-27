@@ -1,10 +1,30 @@
 from .adapter import create_base_llm
-from .azure_openai import AzureOpenAILLM
 from .base import BaseLLM
-from .claude import ClaudeLLM
-from .gemini import GeminiLLM
-from .openai import OpenAILLM
-from .zhipu import ZhipuLLM
+
+try:
+    from .openai import OpenAILLM
+except Exception:
+    OpenAILLM = None  # type: ignore[assignment]
+
+try:
+    from .azure_openai import AzureOpenAILLM
+except Exception:
+    AzureOpenAILLM = None  # type: ignore[assignment]
+
+try:
+    from .zhipu import ZhipuLLM
+except Exception:
+    ZhipuLLM = None  # type: ignore[assignment]
+
+try:
+    from .gemini import GeminiLLM
+except Exception:
+    GeminiLLM = None  # type: ignore[assignment]
+
+try:
+    from .claude import ClaudeLLM
+except Exception:
+    ClaudeLLM = None  # type: ignore[assignment]
 
 __all__ = [
     "BaseLLM",

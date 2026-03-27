@@ -3,13 +3,7 @@ import os
 from ....model import ChatModelConfig, ModelConfig
 from ....retry import create_retry_wrapper
 from ..error import retry_on
-from .azure_openai import AzureOpenAILLM
 from .base import BaseLLM
-from .claude import ClaudeLLM
-from .gemini import GeminiLLM
-from .openai import OpenAILLM
-from .xinference import XinferenceLLM
-from .zhipu import ZhipuLLM
 
 
 def create_base_llm(model: ModelConfig) -> BaseLLM:
@@ -20,6 +14,8 @@ def create_base_llm(model: ModelConfig) -> BaseLLM:
         raise TypeError(f"Invalid model type: {type(model).__name__}")
 
     if model.model_provider == "openai":
+        from .openai import OpenAILLM
+
         llm: BaseLLM = OpenAILLM(
             model_name=model.model_name,
             api_key=model.api_key,
@@ -35,6 +31,8 @@ def create_base_llm(model: ModelConfig) -> BaseLLM:
         "zai-coding-plan",
         "zhipuai-coding-plan",
     ):
+        from .openai import OpenAILLM
+
         llm = OpenAILLM(
             model_name=model.model_name,
             api_key=model.api_key,
@@ -49,6 +47,8 @@ def create_base_llm(model: ModelConfig) -> BaseLLM:
         "minimax-cn-coding-plan",
         "kimi-for-coding",
     ):
+        from .claude import ClaudeLLM
+
         llm = ClaudeLLM(
             model_name=model.model_name,
             api_key=model.api_key,
@@ -59,6 +59,8 @@ def create_base_llm(model: ModelConfig) -> BaseLLM:
             abilities=model.abilities,
         )
     elif model.model_provider == "azure_openai":
+        from .azure_openai import AzureOpenAILLM
+
         llm = AzureOpenAILLM(
             model_name=model.model_name,
             azure_endpoint=model.base_url,  # Reuse base_url as azure_endpoint
@@ -70,6 +72,8 @@ def create_base_llm(model: ModelConfig) -> BaseLLM:
             abilities=model.abilities,
         )
     elif model.model_provider == "zhipu":
+        from .zhipu import ZhipuLLM
+
         llm = ZhipuLLM(
             model_name=model.model_name,
             api_key=model.api_key,
@@ -80,6 +84,8 @@ def create_base_llm(model: ModelConfig) -> BaseLLM:
             abilities=model.abilities,
         )
     elif model.model_provider == "gemini":
+        from .gemini import GeminiLLM
+
         llm = GeminiLLM(
             model_name=model.model_name,
             api_key=model.api_key,
@@ -90,6 +96,8 @@ def create_base_llm(model: ModelConfig) -> BaseLLM:
             abilities=model.abilities,
         )
     elif model.model_provider == "claude":
+        from .claude import ClaudeLLM
+
         llm = ClaudeLLM(
             model_name=model.model_name,
             api_key=model.api_key,
@@ -100,6 +108,8 @@ def create_base_llm(model: ModelConfig) -> BaseLLM:
             abilities=model.abilities,
         )
     elif model.model_provider == "xinference":
+        from .xinference import XinferenceLLM
+
         llm = XinferenceLLM(
             model_name=model.model_name,
             base_url=model.base_url,

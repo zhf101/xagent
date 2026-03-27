@@ -5,9 +5,6 @@ import os
 from typing import Any, Dict, List, Optional, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from google.auth.transport.requests import Request  # type: ignore
-from google.oauth2.credentials import Credentials  # type: ignore
-from googleapiclient.discovery import build  # type: ignore
 from sqlalchemy.orm import Session
 
 from ..auth_dependencies import get_current_user
@@ -21,6 +18,39 @@ cloud_router = APIRouter(prefix="/api/cloud", tags=["Cloud Storage"])
 
 # Google OAuth Constants
 GOOGLE_TOKEN_URI = "https://oauth2.googleapis.com/token"
+
+
+def _get_google_request_class():
+    try:
+        from google.auth.transport.requests import Request  # type: ignore
+    except ImportError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="Google Drive dependencies are not installed",
+        ) from exc
+    return Request
+
+
+def _get_google_credentials_class():
+    try:
+        from google.oauth2.credentials import Credentials  # type: ignore
+    except ImportError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="Google Drive dependencies are not installed",
+        ) from exc
+    return Credentials
+
+
+def _get_google_build():
+    try:
+        from googleapiclient.discovery import build  # type: ignore
+    except ImportError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="Google Drive dependencies are not installed",
+        ) from exc
+    return build
 
 
 def get_google_credentials(
@@ -53,6 +83,7 @@ def get_google_credentials(
             status_code=500, detail="Google OAuth configuration missing"
         )
 
+    Credentials = _get_google_credentials_class()
     creds = Credentials(
         token=oauth_account.access_token,
         refresh_token=oauth_account.refresh_token,
@@ -65,6 +96,7 @@ def get_google_credentials(
     # Check if token needs refresh
     if creds.expired and creds.refresh_token:
         try:
+            Request = _get_google_request_class()
             creds.refresh(Request())
             # Update token in DB
             oauth_account.access_token = creds.token
@@ -117,6 +149,7 @@ async def list_google_drives(
         creds = get_google_credentials(cast(int, user.id), db, account_id)
 
         # Build Drive API service
+        build = _get_google_build()
         service = build("drive", "v3", credentials=creds, cache_discovery=False)
 
         drives_list = [{"id": "root", "name": "My Drive", "kind": "drive#drive"}]
@@ -155,6 +188,7 @@ async def list_google_drive_files(
 
         # Build Drive API service
         # cache_discovery=False to avoid file system issues and timeouts
+        build = _get_google_build()
         service = build("drive", "v3", credentials=creds, cache_discovery=False)
 
         # Query for files in folder, not trashed

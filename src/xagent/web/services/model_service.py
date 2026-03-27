@@ -18,7 +18,6 @@ from ...core.model.chat.basic.base import BaseLLM
 from ...core.model.image.dashscope import DashScopeImageModel
 from ...core.model.image.gemini import GeminiImageModel
 from ...core.model.image.openai import OpenAIImageModel
-from ...core.model.image.xinference import XinferenceImageModel
 
 logger = logging.getLogger(__name__)
 
@@ -520,6 +519,8 @@ def get_image_models(db: Session, user_id: Optional[int] = None) -> Dict[str, An
                     )
                     _add_image_model_with_id(image_models, image_model, db_model)
                 elif model_provider == "xinference":
+                    from ...core.model.image.xinference import XinferenceImageModel
+
                     image_model = XinferenceImageModel(
                         model_name=str(db_model.model_name),
                         api_key=api_key,
