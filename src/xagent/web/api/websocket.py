@@ -503,6 +503,11 @@ async def execute_task_background(
     """Execute task in background without blocking WebSocket message loop"""
     from ..models.task import Task, TaskStatus
     from ..services.chat_history_service import persist_assistant_message
+    from ...datamakepool.conversation import (
+        ConversationRuntimeService,
+        DataGenerationConversationService,
+    )
+    from ...datamakepool.gateway import DatamakepoolTaskModeGateway
 
     # Wait for previous background task to complete
     await background_task_manager.wait_for_previous(task_id)
@@ -532,6 +537,7 @@ async def execute_task_background(
 
         # Set up user context
         user_id = int(user.id) if user else None
+        execution_run_id = context.get("datamakepool_execution_run_id")
 
         with UserContext(user_id):
             # Get agent service
@@ -615,6 +621,36 @@ async def execute_task_background(
                     if isinstance(chat_response, dict)
                     else None,
                 )
+
+                if (
+                    DatamakepoolTaskModeGateway.resolve_domain_mode(task_updated)
+                    == "data_generation"
+                ):
+                    conversation_service = DataGenerationConversationService(db_new)
+                    session = conversation_service.get_or_create_session(
+                        task=task_updated,
+                        user_id=int(task.user_id),
+                        goal=str(task_updated.description or user_message),
+                    )
+                    session.state = (
+                        "completed" if result.get("success", False) else "clarifying"
+                    )
+                    session.latest_summary = str(ai_response or "")
+                    db_new.add(session)
+                    db_new.commit()
+                    if execution_run_id:
+                        ConversationRuntimeService(db_new).finish_execution_run(
+                            run_id=int(execution_run_id),
+                            status="completed"
+                            if result.get("success", False)
+                            else "failed",
+                            summary=str(ai_response or ""),
+                            result_payload={
+                                "success": bool(result.get("success", False)),
+                                "output": ai_response,
+                                "metadata": result.get("metadata", {}),
+                            },
+                        )
         finally:
             db_new.close()
 
@@ -1203,12 +1239,22 @@ async def handle_chat_message(
             from ..models.task import Task, TaskStatus
             from ..services.chat_history_service import (
                 load_task_transcript,
+                persist_assistant_message,
                 persist_user_message,
             )
             from ..services.task_execution_context_service import (
                 load_task_execution_recovery_state,
             )
             from .chat import get_agent_manager
+            from ...datamakepool.conversation import (
+                DataGenerationConversationOrchestrator,
+                ConversationRuntimeService,
+                ConversationResponseBuilder,
+                DataGenerationConversationService,
+                ProbeService,
+            )
+            from ...datamakepool.gateway import DatamakepoolTaskModeGateway
+            from ...datamakepool.orchestration import EntryRecallCoordinator
 
             # Get database session
             db_gen = get_db()
@@ -1366,16 +1412,128 @@ async def handle_chat_message(
 
                 # DAG plan-execute will automatically send user_message trace event
 
-                # Get agent service
-                agent_service = await get_agent_manager().get_agent_for_task(
-                    task_id, db, user=user
-                )
-
                 persisted_user_message = persist_user_message(
                     db,
                     task_id=task_id,
                     user_id=int(user.id),
                     content=user_message,
+                )
+
+                domain_mode = DatamakepoolTaskModeGateway.resolve_domain_mode(task)
+                if (
+                    domain_mode == "data_generation"
+                    and task.status not in [TaskStatus.PAUSED, TaskStatus.RUNNING]
+                ):
+                    conversation_orchestrator = DataGenerationConversationOrchestrator(db)
+                    conversation_service = conversation_orchestrator.service
+                    session = conversation_service.get_or_create_session(
+                        task=task,
+                        user_id=int(user.id),
+                        goal=str(task.description or user_message),
+                    )
+
+                    probe_request = conversation_service.resolve_probe_request_from_message(
+                        task=task,
+                        user_id=int(user.id),
+                        user_message=user_message,
+                    )
+                    if probe_request is not None:
+                        probe_result = ProbeService(db).run_probe(
+                            session=session,
+                            probe_type=str(probe_request["probe_type"]),
+                            target_ref=str(probe_request["target_ref"]),
+                            payload=dict(probe_request.get("payload") or {}),
+                            mode=str(probe_request.get("mode") or "preview"),
+                        )
+                        task.status = TaskStatus.PENDING
+                        db.add(task)
+                        db.commit()
+                        persist_assistant_message(
+                            db,
+                            task_id=task_id,
+                            user_id=int(user.id),
+                            content=str(probe_result.get("message") or ""),
+                            message_type="chat_response",
+                            interactions=None,
+                        )
+                        await manager.broadcast_to_task(
+                            {
+                                **ConversationResponseBuilder.build_task_completed_payload(
+                                    task=task,
+                                    session=session,
+                                    success=bool(probe_result.get("success")),
+                                    result_text=str(probe_result.get("message") or ""),
+                                    execution_type="datamakepool_probe",
+                                    ui=probe_result.get("ui"),
+                                    extra_metadata={
+                                        "ui_type": "probe_result",
+                                        "probe_run_id": probe_result.get("probe_run_id"),
+                                        "execution_run_id": probe_result.get("execution_run_id"),
+                                    },
+                                ),
+                                "timestamp": datetime.now(timezone.utc).timestamp(),
+                            },
+                            task_id,
+                        )
+                        return
+
+                    if session.state == "created":
+                        entry_recall = await EntryRecallCoordinator(
+                            db=db,
+                            user=user,
+                        ).coordinate(str(task.description or user_message))
+                        gate_result = conversation_orchestrator.evaluate_gate(
+                            task=task,
+                            user_id=int(user.id),
+                            user_message=str(task.description or user_message),
+                            entry_recall=entry_recall,
+                            trigger_event_type="USER_FREE_TEXT",
+                        )
+                    else:
+                        gate_result = conversation_orchestrator.evaluate_gate(
+                            task=task,
+                            user_id=int(user.id),
+                            user_message=user_message,
+                            trigger_event_type="USER_FREE_TEXT",
+                        )
+
+                    if gate_result.should_pause and gate_result.response_payload:
+                        task.status = TaskStatus.PENDING
+                        db.add(task)
+                        db.commit()
+                        persist_assistant_message(
+                            db,
+                            task_id=task_id,
+                            user_id=int(user.id),
+                            content=str(
+                                gate_result.decision.chat_response.get("message") or ""
+                            ),
+                            message_type="chat_response",
+                            interactions=gate_result.decision.chat_response.get(
+                                "interactions"
+                            ),
+                        )
+                        await manager.broadcast_to_task(
+                            {
+                                **gate_result.response_payload,
+                                "timestamp": datetime.now(timezone.utc).timestamp(),
+                            },
+                            task_id,
+                        )
+                        return
+
+                    if gate_result.execution_context:
+                        context.update(gate_result.execution_context)
+                        user_message = str(
+                            gate_result.execution_context.get(
+                                "datamakepool_execution_goal", user_message
+                            )
+                        )
+                        session = gate_result.session
+
+                # Get agent service
+                agent_service = await get_agent_manager().get_agent_for_task(
+                    task_id, db, user=user
                 )
 
                 # Check if there's an old task running (PAUSED or RUNNING status)
@@ -1743,10 +1901,17 @@ async def handle_execute_task(
             from .chat import get_agent_manager
             from ...datamakepool.gateway import DatamakepoolTaskModeGateway
             from ...datamakepool.interceptors import ApprovalGate
+            from ...datamakepool.conversation import (
+                DataGenerationConversationOrchestrator,
+                ConversationRuntimeService,
+                ConversationResponseBuilder,
+                DataGenerationConversationService,
+            )
             from ...datamakepool.orchestration import (
                 EntryRecallCoordinator,
                 TemplateRunExecutor,
             )
+            from ..services.chat_history_service import persist_assistant_message
             from ..services.task_prompt_recommendation_refresh import (
                 schedule_user_task_prompt_refresh,
             )
@@ -1757,6 +1922,7 @@ async def handle_execute_task(
             with UserContext(user.id):
                 # Build context with vibe mode information if available
                 task_context = {}
+                runtime_service = ConversationRuntimeService(db)
                 if hasattr(task, "vibe_mode") and task.vibe_mode:
                     task_context["vibe_mode"] = task.vibe_mode
                 if hasattr(task, "process_description") and task.process_description:
@@ -1870,10 +2036,83 @@ async def handle_execute_task(
                             "system_short": match_result.matched_template.system_short,
                         }
 
+                    conversation_service = DataGenerationConversationService(db)
+                    session = conversation_service.get_or_create_session(
+                        task=task,
+                        user_id=int(user.id),
+                        goal=str(task.description),
+                    )
+                    if session.state in {"created", "awaiting_choice", "clarifying"}:
+                        conversation_orchestrator = DataGenerationConversationOrchestrator(db)
+                        gate_result = (
+                            conversation_orchestrator.evaluate_gate(
+                                task=task,
+                                user_id=int(user.id),
+                                user_message=str(task.description),
+                                entry_recall=entry_recall,
+                                trigger_event_type="EXECUTE_TASK",
+                            )
+                            if session.state == "created"
+                            else conversation_orchestrator.evaluate_gate(
+                                task=task,
+                                user_id=int(user.id),
+                                user_message="",
+                                trigger_event_type="EXECUTE_TASK",
+                            )
+                        )
+
+                        if gate_result.should_pause and gate_result.response_payload:
+                            task.status = TaskStatus.PENDING
+                            db.add(task)
+                            db.commit()
+                            persist_assistant_message(
+                                db,
+                                task_id=task_id,
+                                user_id=int(user.id),
+                                content=str(
+                                    gate_result.decision.chat_response.get("message")
+                                    or ""
+                                ),
+                                message_type="chat_response",
+                                interactions=gate_result.decision.chat_response.get(
+                                    "interactions"
+                                ),
+                            )
+                            await manager.broadcast_to_task(
+                                {
+                                    **gate_result.response_payload,
+                                    "timestamp": datetime.now(
+                                        timezone.utc
+                                    ).timestamp(),
+                                },
+                                task_id,
+                            )
+                            return
+
+                        if gate_result.execution_context:
+                            task_context.update(gate_result.execution_context)
+                            session = gate_result.session
+
+                    if (
+                        planning_decision.execution_path == "template_direct"
+                        and task_context.get("datamakepool_execution_choice")
+                        != "direct_execute"
+                    ):
+                        planning_decision.route_to_orchestrator = True
+                        task_context["system_prompt"] = (
+                            task_context.get("system_prompt", "")
+                            + "\n\n用户未选择模板直跑，本轮改为进入会话确认后的规划执行路径。"
+                        ).strip()
+
                     if (
                         planning_decision.execution_path == "template_direct"
                         and match_result.matched_template
+                        and task_context.get("datamakepool_execution_choice")
+                        == "direct_execute"
                     ):
+                        execution_run_id = task_context.get(
+                            "datamakepool_execution_run_id"
+                        )
                         class TemplateDirectRequest:
                             def __init__(self, user_id: int, is_admin: bool):
                                 self.user: Any = type(
@@ -1940,6 +2179,22 @@ async def handle_execute_task(
                                 )
                             db.add(task)
                             db.commit()
+                            if execution_run_id:
+                                runtime_service.finish_execution_run(
+                                    run_id=int(execution_run_id),
+                                    status=(
+                                        "paused"
+                                        if getattr(template_result, "paused", False)
+                                        else "completed"
+                                        if template_result.success
+                                        else "failed"
+                                    ),
+                                    summary=str(template_result.output or ""),
+                                    result_payload={
+                                        "success": bool(template_result.success),
+                                        "metadata": template_result.metadata or {},
+                                    },
+                                )
                             if template_result.success:
                                 schedule_user_task_prompt_refresh(
                                     int(user.id), force=True
@@ -1971,17 +2226,15 @@ async def handle_execute_task(
                             else:
                                 await manager.broadcast_to_task(
                                     {
-                                        "type": "task_completed",
-                                        "task": {
-                                            "id": task.id,
-                                            "title": task.title,
-                                            "status": task.status.value,
-                                            "description": task.description,
-                                        },
-                                        "success": template_result.success,
-                                        "result": template_result.output,
-                                        "output": template_result.output,
-                                        "metadata": template_result.metadata,
+                                        **ConversationResponseBuilder.build_task_completed_payload(
+                                            task=task,
+                                            session=session,
+                                            success=bool(template_result.success),
+                                            result_text=str(template_result.output or ""),
+                                            execution_type="datamakepool_direct_execute",
+                                            extra_metadata=template_result.metadata
+                                            or {},
+                                        ),
                                         "timestamp": datetime.now(
                                             timezone.utc
                                         ).timestamp(),
@@ -2074,6 +2327,18 @@ async def handle_execute_task(
                     task.status = TaskStatus.FAILED
 
                 db.commit()
+                execution_run_id = task_context.get("datamakepool_execution_run_id")
+                if execution_run_id:
+                    runtime_service.finish_execution_run(
+                        run_id=int(execution_run_id),
+                        status="completed" if result.get("success", False) else "failed",
+                        summary=str(result.get("output") or ""),
+                        result_payload={
+                            "success": bool(result.get("success", False)),
+                            "output": result.get("output"),
+                            "metadata": result.get("metadata", {}),
+                        },
+                    )
                 if task.status == TaskStatus.COMPLETED:
                     schedule_user_task_prompt_refresh(int(user.id), force=True)
                     # 执行成功后从多 agent 执行轨迹沉淀模板草稿（仅 data_generation + orchestrator 路径）
@@ -2134,6 +2399,7 @@ async def handle_execute_task(
                     "output": result.get("output", ""),
                     "chat_response": result.get("chat_response"),
                     "metadata": result.get("metadata", {}),
+                    "conversation": result.get("metadata", {}).get("conversation"),
                     "file_outputs": file_outputs,  # Add file output info
                     "timestamp": datetime.now(timezone.utc).timestamp(),
                 },
@@ -2483,8 +2749,12 @@ async def websocket_chat_endpoint(
 
             if message_data.get("type") == "chat":
                 await handle_chat_message(websocket, task_id, message_data)
+            elif message_data.get("type") == "conversation_update":
+                await handle_conversation_update(websocket, task_id, message_data)
             elif message_data.get("type") == "execute_task":
                 await handle_execute_task(websocket, task_id, message_data)
+            elif message_data.get("type") == "probe_request":
+                await handle_probe_request(websocket, task_id, message_data)
             elif message_data.get("type") == "execute_direct":
                 await handle_execute_direct(websocket, task_id, message_data)
             elif message_data.get("type") == "intervention":
@@ -2537,6 +2807,11 @@ async def handle_execute_direct(
     from ..services.task_prompt_recommendation_refresh import (
         schedule_user_task_prompt_refresh,
     )
+    from ...datamakepool.conversation import (
+        ConversationRuntimeService,
+        DataGenerationConversationService,
+    )
+    from ...datamakepool.gateway import DatamakepoolTaskModeGateway
 
     user = message_data.get("user")
     strategy = message_data.get("strategy", "")
@@ -2561,6 +2836,7 @@ async def handle_execute_direct(
     db: Session = next(db_gen)
 
     try:
+        runtime_service = ConversationRuntimeService(db)
         task = db.query(Task).filter(Task.id == task_id).first()
         if not task:
             await manager.send_personal_message(
@@ -2572,6 +2848,31 @@ async def handle_execute_direct(
         task.status = TaskStatus.RUNNING
         db.add(task)
         db.commit()
+
+        if DatamakepoolTaskModeGateway.resolve_domain_mode(task) == "data_generation":
+            conversation_service = DataGenerationConversationService(db)
+            session = conversation_service.get_or_create_session(
+                task=task,
+                user_id=int(user.id),
+                goal=str(task.description),
+            )
+            fact_snapshot = dict(session.fact_snapshot or {})
+            fact_snapshot["reuse_strategy"] = "direct_execute"
+            fact_snapshot["selected_candidate_id"] = candidate_id
+            session.fact_snapshot = fact_snapshot
+            session.state = "direct_executing"
+            db.add(session)
+            db.commit()
+            execution_run = runtime_service.create_execution_run(
+                session=session,
+                task_id=int(task.id),
+                run_type="direct_execute",
+                trigger_event_type="USER_CONFIRM_EXECUTION",
+                target_ref=candidate_id,
+                input_payload=dict(user_params or {}),
+            )
+        else:
+            execution_run = None
 
         # 通知前端任务开始执行
         await manager.broadcast_to_task(
@@ -2652,6 +2953,28 @@ async def handle_execute_direct(
         db.add(task)
         db.commit()
 
+        if DatamakepoolTaskModeGateway.resolve_domain_mode(task) == "data_generation":
+            conversation_service = DataGenerationConversationService(db)
+            session = conversation_service.get_or_create_session(
+                task=task,
+                user_id=int(user.id),
+                goal=str(task.description),
+            )
+            session.state = "completed" if success else "clarifying"
+            session.latest_summary = output
+            db.add(session)
+            db.commit()
+            if execution_run is not None:
+                runtime_service.finish_execution_run(
+                    run_id=int(execution_run.id),
+                    status="completed" if success else "failed",
+                    summary=output,
+                    result_payload={
+                        "success": bool(success),
+                        "metadata": metadata,
+                    },
+                )
+
         if success:
             schedule_user_task_prompt_refresh(int(user.id), force=True)
 
@@ -2668,7 +2991,30 @@ async def handle_execute_direct(
                 "success": success,
                 "result": output,
                 "output": output,
-                "metadata": metadata,
+                "metadata": {
+                    **metadata,
+                    "conversation_state": session.state
+                    if DatamakepoolTaskModeGateway.resolve_domain_mode(task)
+                    == "data_generation"
+                    else None,
+                    "execution_type": "datamakepool_direct_execute",
+                    "fact_snapshot": dict(session.fact_snapshot or {})
+                    if DatamakepoolTaskModeGateway.resolve_domain_mode(task)
+                    == "data_generation"
+                    else None,
+                    "latest_summary": session.latest_summary
+                    if DatamakepoolTaskModeGateway.resolve_domain_mode(task)
+                    == "data_generation"
+                    else None,
+                    "active_decision_frame_id": session.active_decision_frame_id
+                    if DatamakepoolTaskModeGateway.resolve_domain_mode(task)
+                    == "data_generation"
+                    else None,
+                    "active_execution_run_id": session.active_execution_run_id
+                    if DatamakepoolTaskModeGateway.resolve_domain_mode(task)
+                    == "data_generation"
+                    else None,
+                },
                 "timestamp": datetime.now(timezone.utc).timestamp(),
             },
             task_id,
@@ -2681,6 +3027,197 @@ async def handle_execute_direct(
                 "type": "agent_error",
                 "message": f"直跑执行失败: {exc}",
                 "timestamp": datetime.now(timezone.utc).isoformat(),
+            },
+            task_id,
+        )
+    finally:
+        db.close()
+
+
+async def handle_probe_request(
+    websocket: WebSocket, task_id: int, message_data: dict
+) -> None:
+    """处理用户发起的局部试跑请求。"""
+
+    from sqlalchemy.orm import Session
+
+    from ..models.database import get_db
+    from ..models.task import Task
+    from ..services.chat_history_service import persist_assistant_message
+    from ...datamakepool.conversation import (
+        ConversationResponseBuilder,
+        DataGenerationConversationService,
+        ProbeService,
+    )
+
+    user = message_data.get("user")
+    if not user:
+        await manager.send_personal_message(
+            {"type": "error", "message": "Authentication required"},
+            websocket,
+        )
+        return
+
+    probe_type = str(message_data.get("probe_type") or "").strip()
+    target_ref = str(message_data.get("target_ref") or "").strip()
+    payload = dict(message_data.get("payload") or {})
+    mode = str(message_data.get("mode") or "preview").strip()
+
+    if not probe_type or not target_ref:
+        await manager.send_personal_message(
+            {"type": "error", "message": "Missing probe_type or target_ref"},
+            websocket,
+        )
+        return
+
+    db_gen = get_db()
+    db: Session = next(db_gen)
+    try:
+        task = db.query(Task).filter(Task.id == task_id).first()
+        if not task:
+            await manager.send_personal_message(
+                {"type": "error", "message": f"Task {task_id} not found"},
+                websocket,
+            )
+            return
+
+        conversation_service = DataGenerationConversationService(db)
+        session = conversation_service.get_or_create_session(
+            task=task,
+            user_id=int(user.id),
+            goal=str(task.description or ""),
+        )
+        probe_result = ProbeService(db).run_probe(
+            session=session,
+            probe_type=probe_type,
+            target_ref=target_ref,
+            payload=payload,
+            mode=mode,
+        )
+
+        message_text = str(probe_result.get("message") or "")
+        persist_assistant_message(
+            db,
+            task_id=task_id,
+            user_id=int(user.id),
+            content=message_text,
+            message_type="chat_response",
+            interactions=None,
+        )
+        await manager.broadcast_to_task(
+            {
+                **ConversationResponseBuilder.build_task_completed_payload(
+                    task=task,
+                    session=session,
+                    success=bool(probe_result.get("success")),
+                    result_text=message_text,
+                    execution_type="datamakepool_probe",
+                    ui=probe_result.get("ui"),
+                    extra_metadata={
+                        "ui_type": "probe_result",
+                        "probe_run_id": probe_result.get("probe_run_id"),
+                        "execution_run_id": probe_result.get("execution_run_id"),
+                        "probe_type": probe_type,
+                        "target_ref": target_ref,
+                    },
+                ),
+                "timestamp": datetime.now(timezone.utc).timestamp(),
+            },
+            task_id,
+        )
+    finally:
+        db.close()
+
+
+async def handle_conversation_update(
+    websocket: WebSocket, task_id: int, message_data: dict
+) -> None:
+    """处理工作台里的结构化事实更新。"""
+
+    from sqlalchemy.orm import Session
+
+    from ..models.database import get_db
+    from ..models.task import Task, TaskStatus
+    from ..services.chat_history_service import persist_assistant_message
+    from ...datamakepool.conversation import (
+        ConversationResponseBuilder,
+        DataGenerationConversationService,
+    )
+
+    user = message_data.get("user")
+    updates = dict(message_data.get("updates") or {})
+    if not user:
+        await manager.send_personal_message(
+            {"type": "error", "message": "Authentication required"},
+            websocket,
+        )
+        return
+
+    db_gen = get_db()
+    db: Session = next(db_gen)
+    try:
+        task = db.query(Task).filter(Task.id == task_id).first()
+        if not task:
+            await manager.send_personal_message(
+                {"type": "error", "message": f"Task {task_id} not found"},
+                websocket,
+            )
+            return
+
+        conversation_service = DataGenerationConversationService(db)
+        decision = conversation_service.apply_fact_updates(
+            task=task,
+            user_id=int(user.id),
+            updates=updates,
+        )
+        session = conversation_service.get_or_create_session(
+            task=task,
+            user_id=int(user.id),
+            goal=str(task.description or ""),
+        )
+
+        if decision.should_pause_for_user and decision.chat_response:
+            task.status = TaskStatus.PENDING
+            db.add(task)
+            db.commit()
+            persist_assistant_message(
+                db,
+                task_id=task_id,
+                user_id=int(user.id),
+                content=str(decision.chat_response.get("message") or ""),
+                message_type="chat_response",
+                interactions=decision.chat_response.get("interactions"),
+            )
+            await manager.broadcast_to_task(
+                {
+                    **ConversationResponseBuilder.build_task_completed_payload(
+                        task=task,
+                        session=session,
+                        success=True,
+                        result_text=decision.chat_response.get("message", ""),
+                        execution_type="datamakepool_conversation_update",
+                        chat_response=decision.chat_response,
+                        ui=decision.ui,
+                    ),
+                    "timestamp": datetime.now(timezone.utc).timestamp(),
+                },
+                task_id,
+            )
+            return
+
+        task.status = TaskStatus.RUNNING
+        db.add(task)
+        db.commit()
+        await manager.broadcast_to_task(
+            {
+                **ConversationResponseBuilder.build_task_completed_payload(
+                    task=task,
+                    session=session,
+                    success=True,
+                    result_text="事实已更新，已进入可执行状态。",
+                    execution_type="datamakepool_conversation_update",
+                ),
+                "timestamp": datetime.now(timezone.utc).timestamp(),
             },
             task_id,
         )

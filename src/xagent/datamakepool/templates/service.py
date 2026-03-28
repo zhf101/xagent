@@ -118,6 +118,15 @@ class TemplateService:
         ).mappings()
         return [self._deserialize_row(row) for row in rows]
 
+    def get_template(self, template_id: int) -> dict[str, Any] | None:
+        """按模板 ID 获取单个模板详情。
+
+        该方法是运行态直跑和前端预览常用的轻量入口，
+        语义上等价于 `batch_get([id])` 的单条版本。
+        """
+        rows = self.batch_get([int(template_id)])
+        return rows[0] if rows else None
+
     def publish_template(
         self,
         template_id: int,

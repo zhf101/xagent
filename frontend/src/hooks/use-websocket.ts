@@ -409,6 +409,38 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
     }
   }, [])
 
+  const sendProbeRequest = useCallback((
+    probeType: string,
+    targetRef: string,
+    payload?: Record<string, unknown>,
+    mode: string = "preview",
+  ) => {
+    if (socketRef.current?.readyState === WebSocket.OPEN && taskIdRef.current) {
+      const messageData = {
+        type: "probe_request",
+        task_id: taskIdRef.current,
+        probe_type: probeType,
+        target_ref: targetRef,
+        payload: payload || {},
+        mode,
+      }
+      socketRef.current.send(JSON.stringify(messageData))
+    }
+  }, [])
+
+  const sendConversationUpdate = useCallback((
+    updates: Record<string, unknown>,
+  ) => {
+    if (socketRef.current?.readyState === WebSocket.OPEN && taskIdRef.current) {
+      const messageData = {
+        type: "conversation_update",
+        task_id: taskIdRef.current,
+        updates,
+      }
+      socketRef.current.send(JSON.stringify(messageData))
+    }
+  }, [])
+
   const sendChatMessage = useCallback((message: string, files?: File[], force: boolean = false) => {
     const timestamp = Date.now()
     console.log(`🚀 sendChatMessage called [${timestamp}]:`, { message, files: files?.map(f => f.name) })
@@ -611,6 +643,8 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
     sendMessage,
     sendChatMessage,
     sendExecuteDirect,
+    sendProbeRequest,
+    sendConversationUpdate,
     executeTask,
     pauseTask,
     resumeTask,

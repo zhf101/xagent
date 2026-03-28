@@ -1,10 +1,13 @@
 "use client";
 
 import { useState, useRef, useEffect, Suspense, useCallback, useMemo } from "react";
-import { GitMerge, Bot, ArrowLeft, Loader2, Sparkles, FolderOpen } from "lucide-react";
+import { GitMerge, Bot, ArrowLeft, Loader2, Sparkles, FolderOpen, Activity, Search } from "lucide-react";
 import { ChatMessage } from "@/components/chat/ChatMessage";
 import { ChatInput } from "@/components/chat/ChatInput";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { useApp } from "@/contexts/app-context-chat";
 import { useI18n } from "@/contexts/i18n-context";
 import { useParams, useRouter } from "next/navigation"
@@ -20,7 +23,7 @@ import { CenterPanel } from "@/components/layout/center-panel"
 import { FilePreviewActionButtons } from "@/components/file/file-preview-action-buttons"
 
 function TaskDetailContent() {
-  const { state, sendMessage, setTaskId, openFilePreview, closeFilePreview, requestStatus, dispatch, pauseTask, resumeTask } = useApp();
+  const { state, sendMessage, sendConversationUpdate, setTaskId, openFilePreview, closeFilePreview, requestStatus, dispatch, pauseTask, resumeTask } = useApp();
   const { t } = useI18n();
   const [files, setFiles] = useState<File[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -313,6 +316,62 @@ function TaskDetailContent() {
     combinedItems.length > 0 &&
     combinedItems[combinedItems.length - 1].role === "assistant";
 
+  const conversationFacts = useMemo(() => {
+    const snapshot = state.conversationInfo?.factSnapshot || {}
+    const labels: Array<{ key: string; label: string }> = [
+      { key: "target_system", label: "目标系统" },
+      { key: "target_entity", label: "目标实体" },
+      { key: "execution_method", label: "执行方式" },
+      { key: "target_environment", label: "目标环境" },
+      { key: "data_count", label: "数据量" },
+      { key: "reuse_strategy", label: "处理方式" },
+      { key: "selected_candidate_id", label: "当前候选" },
+    ]
+    return labels
+      .map(({ key, label }) => ({ key, label, value: (snapshot as any)?.[key] }))
+      .filter((item) => item.value !== undefined && item.value !== null && item.value !== "")
+  }, [state.conversationInfo]);
+  const editableFactKeys = useMemo(
+    () => [
+      { key: "target_system", label: "目标系统" },
+      { key: "target_entity", label: "目标实体" },
+      { key: "execution_method", label: "执行方式" },
+      { key: "target_environment", label: "目标环境" },
+      { key: "data_count", label: "数据量" },
+      { key: "field_constraints", label: "字段约束" },
+    ],
+    []
+  );
+  const [factDraft, setFactDraft] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    const snapshot = state.conversationInfo?.factSnapshot || {};
+    const nextDraft: Record<string, string> = {};
+    editableFactKeys.forEach(({ key }) => {
+      const value = (snapshot as any)?.[key];
+      nextDraft[key] = value == null ? "" : String(value);
+    });
+    setFactDraft(nextDraft);
+  }, [state.conversationInfo, editableFactKeys]);
+
+  const handleFactDraftChange = useCallback((key: string, value: string) => {
+    setFactDraft((prev) => ({ ...prev, [key]: value }));
+  }, []);
+
+  const handleFactSave = useCallback(() => {
+    const updates: Record<string, unknown> = {};
+    editableFactKeys.forEach(({ key }) => {
+      const raw = factDraft[key];
+      if (raw === undefined) return;
+      if (key === "data_count") {
+        updates[key] = raw.trim() ? Number(raw.trim()) : null;
+      } else {
+        updates[key] = raw.trim() || null;
+      }
+    });
+    sendConversationUpdate(updates);
+  }, [editableFactKeys, factDraft, sendConversationUpdate]);
+
   const isPlanning = dagNodes.length === 0 && state.dagExecution?.phase === "planning";
   const hasError = dagNodes.length === 0 && (state.dagExecution?.phase === "failed" || state.currentTask?.status === "failed");
 
@@ -352,6 +411,98 @@ function TaskDetailContent() {
         <div className="flex-1 overflow-y-auto">
           <main className={`container max-w-4xl mx-auto px-4 py-8 relative z-0 transition-all`}>
             <div className="space-y-6 pb-4">
+              {state.conversationInfo && (
+                <Card className="border border-border/60 bg-card/70 backdrop-blur-sm p-4 space-y-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="flex items-center gap-2 text-sm font-medium">
+                      <Activity className="w-4 h-4 text-primary" />
+                      <span>会话状态</span>
+                    </div>
+                    {state.conversationInfo.state ? (
+                      <Badge variant="secondary">{state.conversationInfo.state}</Badge>
+                    ) : null}
+                    {state.conversationInfo.executionType ? (
+                      <Badge variant="outline">{state.conversationInfo.executionType}</Badge>
+                    ) : null}
+                    {state.conversationInfo.uiType ? (
+                      <Badge variant="outline">{state.conversationInfo.uiType}</Badge>
+                    ) : null}
+                    {state.conversationInfo.latestProbeRunId ? (
+                      <Badge variant="outline" className="gap-1">
+                        <Search className="w-3 h-3" />
+                        Probe #{state.conversationInfo.latestProbeRunId}
+                      </Badge>
+                    ) : null}
+                    {state.conversationInfo.activeExecutionRunId ? (
+                      <Badge variant="outline">Run #{state.conversationInfo.activeExecutionRunId}</Badge>
+                    ) : null}
+                  </div>
+
+                  {state.conversationInfo.latestSummary ? (
+                    <div className="text-sm text-muted-foreground leading-6">
+                      {state.conversationInfo.latestSummary}
+                    </div>
+                  ) : null}
+
+                  {conversationFacts.length > 0 ? (
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      {conversationFacts.map((item) => (
+                        <div key={item.key} className="rounded-lg border border-border/50 bg-background/60 px-3 py-2">
+                          <div className="text-xs text-muted-foreground">{item.label}</div>
+                          <div className="text-sm font-medium break-all">{String(item.value)}</div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+
+                  <div className="pt-2 border-t border-border/50 space-y-3">
+                    <div className="text-sm font-medium">编辑关键事实</div>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      {editableFactKeys.map((item) => (
+                        <div key={item.key} className="space-y-1">
+                          <div className="text-xs text-muted-foreground">{item.label}</div>
+                          <Input
+                            value={factDraft[item.key] || ""}
+                            onChange={(e) => handleFactDraftChange(item.key, e.target.value)}
+                            placeholder={`请输入${item.label}`}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                    <div className="flex justify-end">
+                      <Button size="sm" onClick={handleFactSave}>
+                        保存并重新决策
+                      </Button>
+                    </div>
+                  </div>
+                </Card>
+              )}
+
+              {state.conversationHistory.length > 0 && (
+                <Card className="border border-border/60 bg-card/50 backdrop-blur-sm p-4 space-y-3">
+                  <div className="flex items-center gap-2 text-sm font-medium">
+                    <Sparkles className="w-4 h-4 text-primary" />
+                    <span>最近会话轮次</span>
+                  </div>
+                  <div className="space-y-2">
+                    {state.conversationHistory.slice().reverse().map((entry) => (
+                      <div key={entry.id} className="rounded-lg border border-border/50 bg-background/60 px-3 py-3 space-y-2">
+                        <div className="flex flex-wrap items-center gap-2">
+                          {entry.state ? <Badge variant="secondary">{entry.state}</Badge> : null}
+                          {entry.executionType ? <Badge variant="outline">{entry.executionType}</Badge> : null}
+                          {entry.uiType ? <Badge variant="outline">{entry.uiType}</Badge> : null}
+                          {entry.latestProbeRunId ? <Badge variant="outline">Probe #{entry.latestProbeRunId}</Badge> : null}
+                          {entry.activeExecutionRunId ? <Badge variant="outline">Run #{entry.activeExecutionRunId}</Badge> : null}
+                        </div>
+                        {entry.summary ? (
+                          <div className="text-sm text-muted-foreground leading-6">{entry.summary}</div>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                </Card>
+              )}
+
               {state.isHistoryLoading ? (
                 <div className="flex flex-col items-center justify-center min-h-[60vh] py-16 text-center">
                   <div className="relative mb-6">

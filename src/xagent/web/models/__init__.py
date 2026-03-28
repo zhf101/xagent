@@ -5,6 +5,16 @@ from .datamakepool_run import DataMakepoolRun, DataMakepoolRunStep
 from .datamakepool_sql_feedback import DataMakepoolSqlFeedback
 from .datamakepool_template import DataMakepoolTemplate, DataMakepoolTemplateVersion
 from .datamakepool_template_draft import DataMakepoolTemplateDraft
+from .datamakepool_conversation import (
+    DataMakepoolCandidateChoice,
+    DataMakepoolConversationSession,
+    DataMakepoolRecallSnapshot,
+)
+from .datamakepool_conversation_runtime import (
+    DataMakepoolConversationExecutionRun,
+    DataMakepoolDecisionFrame,
+)
+from .datamakepool_probe import DataMakepoolProbeRun
 from .agent import Agent
 from .chat_message import TaskChatMessage
 from .datamakepool_approval import DataMakepoolApproval
@@ -57,6 +67,12 @@ __all__ = [
     "TaskChatMessage",
     "DataMakepoolApproval",
     "DataMakepoolTemplateDraft",
+    "DataMakepoolConversationSession",
+    "DataMakepoolRecallSnapshot",
+    "DataMakepoolCandidateChoice",
+    "DataMakepoolDecisionFrame",
+    "DataMakepoolConversationExecutionRun",
+    "DataMakepoolProbeRun",
     "LegacyScenarioCatalog",
     "UploadedFile",
     "SandboxInfo",

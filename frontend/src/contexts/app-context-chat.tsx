@@ -184,6 +184,16 @@ const extractClarificationMessage = (raw: unknown): { interactions: Interaction[
     }
   }
 
+  const uiValue = asObject?.ui
+  if (uiValue && typeof uiValue === "object") {
+    const uiInteractions = normalizeInteractions((uiValue as any).interactions)
+    if (uiInteractions.length > 0) {
+      return {
+        interactions: uiInteractions,
+      }
+    }
+  }
+
   const chatResponse = asObject?.chat_response
   if (chatResponse && typeof chatResponse === "object") {
     const chatInteractions = normalizeInteractions((chatResponse as any).interactions)
@@ -217,6 +227,37 @@ const extractClarificationMessage = (raw: unknown): { interactions: Interaction[
   }
 
   return null
+}
+
+const extractStructuredUi = (
+  raw: unknown,
+): { type: string; message?: string; data?: any; interactions?: Interaction[] } | null => {
+  let asObject = raw && typeof raw === "object" ? (raw as any) : null
+
+  if (typeof raw === "string") {
+    try {
+      asObject = JSON.parse(raw)
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  const uiValue = asObject?.ui
+  if (!uiValue || typeof uiValue !== "object") {
+    return null
+  }
+
+  const type = typeof (uiValue as any).type === "string" ? (uiValue as any).type : ""
+  if (!type) {
+    return null
+  }
+
+  return {
+    type,
+    message: typeof (uiValue as any).message === "string" ? (uiValue as any).message : undefined,
+    data: (uiValue as any).data,
+    interactions: normalizeInteractions((uiValue as any).interactions),
+  }
 }
 
 
@@ -286,6 +327,30 @@ interface DAGExecution {
   updated_at: string | number
 }
 
+interface ConversationPanelInfo {
+  state: string | null
+  executionType: string | null
+  uiType: string | null
+  latestSummary: string | null
+  factSnapshot: Record<string, unknown> | null
+  activeDecisionFrameId: number | null
+  activeExecutionRunId: number | null
+  latestProbeRunId: number | null
+}
+
+interface ConversationHistoryEntry {
+  id: string
+  timestamp: string
+  state: string | null
+  executionType: string | null
+  uiType: string | null
+  summary: string | null
+  factSnapshot: Record<string, unknown> | null
+  activeDecisionFrameId: number | null
+  activeExecutionRunId: number | null
+  latestProbeRunId: number | null
+}
+
 interface AppState {
   messages: Message[]
   currentTask: Task | null
@@ -325,6 +390,8 @@ interface AppState {
       category?: string
     }>
   } | null
+  conversationInfo: ConversationPanelInfo | null
+  conversationHistory: ConversationHistoryEntry[]
   lastTaskUpdate?: number
   isHistoryLoading: boolean
 }
@@ -354,6 +421,8 @@ type AppAction =
   | { type: "START_REPLAY"; payload: { taskId: number; events: TraceEvent[] } }
   | { type: "STOP_REPLAY" }
   | { type: "SET_PLAN_MEMORY_INFO"; payload: AppState["planMemoryInfo"] }
+  | { type: "SET_CONVERSATION_INFO"; payload: AppState["conversationInfo"] }
+  | { type: "APPEND_CONVERSATION_HISTORY"; payload: ConversationHistoryEntry }
   | { type: "SET_REPLAY_TASK_ID"; payload: number | null }
   | { type: "SET_REPLAY_PLAYING"; payload: boolean }
   | { type: "SET_REPLAY_SPEED"; payload: number }
@@ -393,6 +462,8 @@ const initialState: AppState = {
   replayScheduler: null,
   replayEventCache: [],
   planMemoryInfo: null,
+  conversationInfo: null,
+  conversationHistory: [],
   lastTaskUpdate: Date.now(),
   isHistoryLoading: false,
 }
@@ -721,6 +792,18 @@ function appReducer(state: AppState, action: AppAction): AppState {
         planMemoryInfo: action.payload,
       }
 
+    case "SET_CONVERSATION_INFO":
+      return {
+        ...state,
+        conversationInfo: action.payload,
+      }
+
+    case "APPEND_CONVERSATION_HISTORY":
+      return {
+        ...state,
+        conversationHistory: [...state.conversationHistory, action.payload].slice(-20),
+      }
+
     default:
       return state
   }
@@ -731,6 +814,8 @@ interface AppContextType {
   dispatch: React.Dispatch<AppAction>
   sendMessage: (message: string, config?: any, files?: File[]) => void
   sendExecuteDirect: (strategy: string, candidateId: string, userParams?: Record<string, unknown>) => void
+  sendProbeRequest: (probeType: string, targetRef: string, payload?: Record<string, unknown>, mode?: string) => void
+  sendConversationUpdate: (updates: Record<string, unknown>) => void
   executeTask: (description: string) => void
   pauseTask: () => void
   resumeTask: () => void
@@ -826,6 +911,8 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
     connectionError,
     sendChatMessage,
     sendExecuteDirect: wsSendExecuteDirect,
+    sendProbeRequest: wsSendProbeRequest,
+    sendConversationUpdate: wsSendConversationUpdate,
     executeTask: wsExecuteTask,
     pauseTask: wsPauseTask,
     resumeTask: wsResumeTask,
@@ -3196,10 +3283,28 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
         break
 
       case "task_completed":
-        const taskData = message.data as { success?: boolean; result?: string | Record<string, unknown>; file_outputs?: string[] }
+        const taskData = message.data as {
+          success?: boolean
+          result?: string | Record<string, unknown>
+          file_outputs?: string[]
+          metadata?: Record<string, unknown>
+          task?: { status?: string }
+        }
+        const metadata = taskData.metadata || {}
+        const executionType = typeof taskData.metadata?.execution_type === "string"
+          ? taskData.metadata.execution_type
+          : ""
+        const taskStatusFromPayload = typeof taskData.task?.status === "string"
+          ? taskData.task.status
+          : null
+        const isConversationRound = executionType === "datamakepool_conversation_gate" || executionType === "datamakepool_probe"
+        const nextStatus = taskStatusFromPayload
+          ? taskStatusFromPayload as Task["status"]
+          : (taskData.success ? "completed" : "failed") as Task["status"]
+
         dispatch({
           type: "UPDATE_TASK_STATUS",
-          payload: { status: taskData.success ? "completed" : "failed" }
+          payload: { status: nextStatus }
         })
         dispatch({ type: "TRIGGER_TASK_UPDATE" })
         dispatch({ type: "SET_PROCESSING", payload: false })  // Stop processing on task completion
@@ -3208,11 +3313,17 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
         if (state.dagExecution) {
           const updatedDAGExecution = {
             ...state.dagExecution,
-            phase: (taskData.success ? "completed" : "failed") as "completed" | "failed",
+            phase: (
+              isConversationRound
+                ? "planning"
+                : taskData.success
+                  ? "completed"
+                  : "failed"
+            ) as DAGExecution["phase"],
             updated_at: new Date().toISOString()
           }
           dispatch({ type: "SET_DAG_EXECUTION", payload: updatedDAGExecution })
-        } else {
+        } else if (!isConversationRound) {
           const dagExecution: DAGExecution = {
             phase: (taskData.success ? "completed" : "failed") as "completed" | "failed",
             current_plan: {},
@@ -3223,8 +3334,137 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
         }
 
         // Mark that historical data should not be requested again for completed/failed tasks
-        if (state.taskId) {
+        if (state.taskId && !isConversationRound) {
           historicalDataRequestMap.set(state.taskId, true)
+        }
+
+        if (
+          typeof metadata.conversation_state === "string" ||
+          metadata.fact_snapshot ||
+          typeof metadata.execution_type === "string"
+        ) {
+          const historyEntry: ConversationHistoryEntry = {
+            id: generateMessageId("conversation-history"),
+            timestamp: String(message.timestamp),
+            state: typeof metadata.conversation_state === "string" ? metadata.conversation_state : null,
+            executionType: typeof metadata.execution_type === "string" ? metadata.execution_type : null,
+            uiType: typeof metadata.ui_type === "string" ? metadata.ui_type : null,
+            summary: typeof metadata.latest_summary === "string" ? metadata.latest_summary : null,
+            factSnapshot: metadata.fact_snapshot && typeof metadata.fact_snapshot === "object"
+              ? metadata.fact_snapshot as Record<string, unknown>
+              : null,
+            activeDecisionFrameId: typeof metadata.active_decision_frame_id === "number" ? metadata.active_decision_frame_id : null,
+            activeExecutionRunId: typeof metadata.active_execution_run_id === "number" ? metadata.active_execution_run_id : null,
+            latestProbeRunId: typeof metadata.probe_run_id === "number" ? metadata.probe_run_id : null,
+          }
+          dispatch({
+            type: "SET_CONVERSATION_INFO",
+            payload: {
+              state: typeof metadata.conversation_state === "string" ? metadata.conversation_state : null,
+              executionType: typeof metadata.execution_type === "string" ? metadata.execution_type : null,
+              uiType: typeof metadata.ui_type === "string" ? metadata.ui_type : null,
+              latestSummary: typeof metadata.latest_summary === "string" ? metadata.latest_summary : null,
+              factSnapshot: metadata.fact_snapshot && typeof metadata.fact_snapshot === "object"
+                ? metadata.fact_snapshot as Record<string, unknown>
+                : null,
+              activeDecisionFrameId: typeof metadata.active_decision_frame_id === "number" ? metadata.active_decision_frame_id : null,
+              activeExecutionRunId: typeof metadata.active_execution_run_id === "number" ? metadata.active_execution_run_id : null,
+              latestProbeRunId: typeof metadata.probe_run_id === "number" ? metadata.probe_run_id : null,
+            }
+          })
+          dispatch({ type: "APPEND_CONVERSATION_HISTORY", payload: historyEntry })
+        }
+
+        const structuredUi = extractStructuredUi(message.data)
+        if (structuredUi?.type === "candidate_choice_card") {
+          const clarification = extractClarificationMessage(message.data)
+          const candidateData = Array.isArray(structuredUi.data?.candidates)
+            ? structuredUi.data.candidates
+            : []
+          const msgId = generateMessageId("msg-candidate-choice")
+          const candidateContent = (
+            <div className="space-y-3">
+              <div className="text-sm leading-6">{structuredUi.message || "平台已检索到可复用候选"}</div>
+              {candidateData.length > 0 ? (
+                <div className="grid gap-2">
+                  {candidateData.map((candidate: any, index: number) => (
+                    <div key={`${candidate.candidate_id || index}`} className="rounded-lg border border-border/60 bg-card/60 px-3 py-3">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-sm font-medium">{candidate.display_name || "未命名候选"}</span>
+                        {candidate.source_type ? (
+                          <Badge variant="secondary">{candidate.source_type}</Badge>
+                        ) : null}
+                        {candidate.score != null ? (
+                          <Badge variant="outline">score {String(candidate.score)}</Badge>
+                        ) : null}
+                      </div>
+                      {candidate.summary ? (
+                        <div className="mt-2 text-xs text-muted-foreground leading-5">
+                          {candidate.summary}
+                        </div>
+                      ) : null}
+                      {Array.isArray(candidate.matched_signals) && candidate.matched_signals.length > 0 ? (
+                        <div className="mt-2 flex flex-wrap gap-1">
+                          {candidate.matched_signals.map((signal: string) => (
+                            <Badge key={signal} variant="outline" className="text-[10px]">
+                              {signal}
+                            </Badge>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+              {clarification ? (
+                <ClarificationForm
+                  interactions={clarification.interactions}
+                  messageId={msgId}
+                />
+              ) : null}
+            </div>
+          )
+          dispatch({
+            type: "ADD_MESSAGE",
+            payload: {
+              id: msgId,
+              role: "assistant",
+              content: candidateContent,
+              timestamp: message.timestamp,
+              status: "completed",
+              isResult: true,
+              interactions: clarification?.interactions,
+            }
+          })
+          break
+        }
+        if (structuredUi?.type === "probe_result") {
+          const probeContent = (
+            <div className="space-y-2">
+              <div className="flex items-center gap-2 text-sm text-blue-500">
+                <Search className="h-4 w-4" />
+                <span>{structuredUi.message || "试跑结果"}</span>
+              </div>
+              {structuredUi.data ? (
+                <div className="ml-6">
+                  <JsonRenderer data={structuredUi.data} onFileClick={openFilePreview} />
+                </div>
+              ) : null}
+            </div>
+          )
+
+          dispatch({
+            type: "ADD_MESSAGE",
+            payload: {
+              id: generateMessageId("msg-probe-result"),
+              role: "assistant",
+              content: probeContent,
+              timestamp: message.timestamp,
+              status: taskData.success ? "completed" : "failed",
+              isResult: true,
+            }
+          })
+          break
         }
 
         // Handle file outputs
@@ -3799,6 +4039,8 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
         dispatch,
         sendMessage,
         sendExecuteDirect: wsSendExecuteDirect,
+        sendProbeRequest: wsSendProbeRequest,
+        sendConversationUpdate: wsSendConversationUpdate,
         executeTask,
         pauseTask,
         resumeTask,
