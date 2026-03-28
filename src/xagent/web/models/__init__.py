@@ -2,6 +2,7 @@ from .biz_system import BizSystem
 from .datamakepool_asset import DataMakepoolAsset
 from .datamakepool_admin_binding import DataMakepoolAdminBinding
 from .datamakepool_run import DataMakepoolRun, DataMakepoolRunStep
+from .datamakepool_sql_feedback import DataMakepoolSqlFeedback
 from .datamakepool_template import DataMakepoolTemplate, DataMakepoolTemplateVersion
 from .datamakepool_template_draft import DataMakepoolTemplateDraft
 from .agent import Agent
@@ -29,6 +30,7 @@ __all__ = [
     "DataMakepoolAsset",
     "DataMakepoolRun",
     "DataMakepoolRunStep",
+    "DataMakepoolSqlFeedback",
     "DataMakepoolTemplate",
     "DataMakepoolTemplateVersion",
     "get_engine",

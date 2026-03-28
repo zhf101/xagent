@@ -25,10 +25,13 @@ from ....datamakepool.assets import (
 )
 from ....datamakepool.assets.sql_asset_indexer import SqlAssetIndexer
 from ....datamakepool.assets.sql_asset_retriever import SqlAssetRetriever
+from ....datamakepool.sql_brain import SQLBrainService
 from ....datamakepool.recall_funnel import load_default_embedding_adapter
+from ....providers.vector_store.lancedb import LanceDBConnectionManager
 from ...auth_dependencies import get_current_user
 from ...models.database import get_db
 from ...models.datamakepool_asset import DataMakepoolAsset
+from ...models.datamakepool_sql_feedback import DataMakepoolSqlFeedback
 from ...models.text2sql import Text2SQLDatabase
 from ...models.user import User
 from .security import ensure_system_governance_access
@@ -102,6 +105,28 @@ class DatasourceAssetOption(BaseModel):
     status: Optional[str] = None
 
 
+class AcceptedSqlFeedbackRequest(BaseModel):
+    system_short: str = Field(..., min_length=1, max_length=50)
+    question: str = Field(..., min_length=1)
+    accepted_sql: str = Field(..., min_length=1)
+    datasource_asset_id: Optional[int] = None
+    db_type: Optional[str] = None
+    accepted_reason: Optional[str] = None
+    allow_high_risk: bool = False
+
+
+class AcceptedSqlFeedbackResponse(BaseModel):
+    success: bool
+    feedback_id: Optional[int] = None
+    trained: bool
+    question_sql: int = 0
+    documentation: int = 0
+    requires_approval: bool = False
+    approval_reason: str = "ok"
+    system_short: Optional[str] = None
+    db_type: Optional[str] = None
+
+
 def _build_sql_asset_vector_components(db: Session, user_id: int):
     """按需构造 SQL 资产向量索引组件。"""
 
@@ -113,6 +138,23 @@ def _build_sql_asset_vector_components(db: Session, user_id: int):
         db_dir,
         embedding_model,
         SqlAssetRepository(db),
+    )
+
+
+def _build_persistent_sql_brain_service(db: Session, user_id: int) -> SQLBrainService:
+    """为受控训练入口构造可持久化的 SQL Brain。"""
+
+    embedding_model = load_default_embedding_adapter(db, user_id)
+    if embedding_model is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No embedding model configured for SQL Brain training",
+        )
+
+    return SQLBrainService(
+        user_id=user_id,
+        embedding_model=embedding_model,
+        db_dir=LanceDBConnectionManager.get_default_lancedb_dir(),
     )
 
 
@@ -454,3 +496,104 @@ async def resolve_sql_asset(
         stage_results=result.stage_results,
         score_breakdown=result.score_breakdown,
     )
+
+
+@sql_assets_router.post(
+    "/accepted-sql-feedback",
+    response_model=AcceptedSqlFeedbackResponse,
+)
+async def accept_sql_feedback(
+    payload: AcceptedSqlFeedbackRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> AcceptedSqlFeedbackResponse:
+    """把已确认接受的 SQL 显式回灌到 SQL Brain 训练集。"""
+
+    normalized_system = str(payload.system_short or "").strip().lower()
+    if not normalized_system:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="system_short is required for accepted SQL feedback",
+        )
+
+    ensure_system_governance_access(
+        db=db,
+        user=user,
+        system_short=normalized_system,
+        required_role="normal_admin",
+    )
+
+    repository = SqlAssetRepository(db)
+    resolved_db_type = str(payload.db_type or "").strip().lower() or None
+
+    if payload.datasource_asset_id is not None:
+        datasource = repository.get_datasource_asset(payload.datasource_asset_id)
+        if datasource is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="datasource_asset_id is invalid",
+            )
+        if str(datasource.system_short or "").strip().lower() != normalized_system:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="datasource_asset_id does not belong to the given system_short",
+            )
+        if resolved_db_type is None:
+            resolved_db_type = (
+                str((datasource.config or {}).get("db_type") or "").strip().lower()
+                or None
+            )
+
+    feedback_audit = DataMakepoolSqlFeedback(
+        system_short=normalized_system,
+        datasource_asset_id=payload.datasource_asset_id,
+        db_type=resolved_db_type,
+        question=payload.question,
+        accepted_sql=payload.accepted_sql,
+        accepted_reason=payload.accepted_reason,
+        allow_high_risk=bool(payload.allow_high_risk),
+        status="pending",
+        accepted_by=int(user.id),
+    )
+
+    try:
+        db.add(feedback_audit)
+        db.flush()
+        sql_brain = _build_persistent_sql_brain_service(db, int(user.id))
+        result = sql_brain.accept_question_sql_feedback(
+            question=payload.question,
+            sql=payload.accepted_sql,
+            system_short=normalized_system,
+            db_type=resolved_db_type,
+            allow_high_risk=bool(payload.allow_high_risk),
+            note=payload.accepted_reason,
+        )
+        feedback_audit.status = "trained"
+        feedback_audit.requires_approval = bool(result.get("requires_approval"))
+        feedback_audit.approval_reason = str(result.get("approval_reason") or "ok")
+        feedback_audit.train_result = result
+        db.commit()
+        db.refresh(feedback_audit)
+        return AcceptedSqlFeedbackResponse(
+            success=True,
+            feedback_id=int(feedback_audit.id),
+            **result,
+        )
+    except ValueError as exc:
+        feedback_audit.status = "rejected"
+        feedback_audit.error_message = str(exc)
+        db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    except HTTPException as exc:
+        feedback_audit.status = "failed"
+        feedback_audit.error_message = str(exc.detail)
+        db.commit()
+        raise
+    except Exception as exc:
+        feedback_audit.status = "failed"
+        feedback_audit.error_message = str(exc)
+        db.commit()
+        raise

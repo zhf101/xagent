@@ -53,7 +53,16 @@ class DatamakepoolAgentProfile:
     @staticmethod
     def get_orchestrator_tools(llm, memory=None, **kwargs: object) -> List[Tool]:
         """组装编排 agent 的工具集合（四个专业子 agent 包装为 AgentTool）。"""
-        sql_agent = SqlExecutorAgent(name="sql_executor", llm=llm, memory=memory)
+        sql_agent = SqlExecutorAgent(
+            name="sql_executor",
+            llm=llm,
+            memory=memory,
+            db=kwargs.get("db"),
+            user_id=kwargs.get("user_id"),
+            system_short=kwargs.get("system_short"),
+            db_type=kwargs.get("db_type"),
+            sql_brain_llm=llm,
+        )
         http_agent = HttpExecutorAgent(
             name="http_executor", llm=llm, memory=memory, db=kwargs.get("db")
         )

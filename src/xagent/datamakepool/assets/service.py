@@ -13,9 +13,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-import re
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urlparse
 
 from xagent.datamakepool.recall_funnel import RecallFunnelExecutor, RecallQuery
 from xagent.datamakepool.recall_funnel.adapters import (
@@ -106,6 +104,7 @@ class SqlAssetMatchResult:
     matched: bool
     asset_id: int | None = None
     asset_name: str | None = None
+    datasource_asset_id: int | None = None
     config: dict[str, Any] | None = None
     reason: str | None = None
     score: float = 0.0
@@ -161,6 +160,7 @@ class SqlAssetResolverService:
             matched=bool(payload.get("matched")),
             asset_id=payload.get("asset_id"),
             asset_name=payload.get("asset_name"),
+            datasource_asset_id=payload.get("datasource_asset_id"),
             config=payload.get("config"),
             reason=payload.get("reason"),
             score=float(payload.get("score") or 0.0),

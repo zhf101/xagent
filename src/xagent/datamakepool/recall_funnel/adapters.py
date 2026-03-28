@@ -271,6 +271,7 @@ class SqlAssetRecallAdapter:
             {
                 "asset_id": int(item.payload.id),
                 "asset_name": item.payload.name,
+                "datasource_asset_id": item.payload.datasource_asset_id,
                 "score": item.final_score,
                 "matched_signals": item.matched_signals,
                 "score_breakdown": item.score_breakdown,
@@ -283,6 +284,7 @@ class SqlAssetRecallAdapter:
                 "matched": True,
                 "asset_id": int(best.payload.id),
                 "asset_name": best.payload.name,
+                "datasource_asset_id": best.payload.datasource_asset_id,
                 "config": best.payload.config or {},
                 "reason": f"matched active SQL asset '{best.payload.name}' with score={best.final_score:.2f}",
                 "score": best.final_score,

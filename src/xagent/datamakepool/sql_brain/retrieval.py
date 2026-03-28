@@ -1,15 +1,22 @@
-"""Retrieval service for SQL Brain."""
+"""SQL Brain 检索服务。
+
+该层不再自己遍历内存列表，而是统一通过 store 协议读取三类知识。
+这样 retrieval 的职责被收敛为：
+- 接收查询上下文
+- 请求底层 store 召回
+- 组织成统一的 `SqlGenerationContext`
+"""
 
 from __future__ import annotations
 
-from .memory_store import InMemorySqlBrainStore
 from .models import SqlGenerationContext
+from .store_base import SqlBrainStore
 
 
 class SqlBrainRetrievalService:
-    """Retrieve related question-sql, DDL and documentation snippets."""
+    """检索相关 question-sql、DDL、documentation 片段。"""
 
-    def __init__(self, store: InMemorySqlBrainStore):
+    def __init__(self, store: SqlBrainStore):
         self._store = store
 
     def retrieve(
@@ -18,31 +25,29 @@ class SqlBrainRetrievalService:
         *,
         system_short: str | None = None,
         db_type: str | None = None,
+        top_k: int = 5,
     ) -> SqlGenerationContext:
-        question_sql_examples = [
-            item
-            for item in self._store.question_sql_examples
-            if (system_short is None or item.system_short == system_short)
-            and (db_type is None or item.db_type == db_type)
-        ]
-        ddl_snippets = [
-            item
-            for item in self._store.ddl_snippets
-            if (system_short is None or item.system_short == system_short)
-            and (db_type is None or item.db_type == db_type)
-        ]
-        documentation_chunks = [
-            item
-            for item in self._store.documentation_chunks
-            if (system_short is None or item.system_short == system_short)
-            and (db_type is None or item.db_type == db_type)
-        ]
-
         return SqlGenerationContext(
             question=question,
             system_short=system_short,
             db_type=db_type,
-            question_sql_examples=question_sql_examples,
-            ddl_snippets=ddl_snippets,
-            documentation_chunks=documentation_chunks,
+            question_sql_examples=self._store.search_question_sql(
+                question,
+                system_short=system_short,
+                db_type=db_type,
+                top_k=top_k,
+            ),
+            ddl_snippets=self._store.search_ddl(
+                question,
+                system_short=system_short,
+                db_type=db_type,
+                top_k=top_k,
+            ),
+            documentation_chunks=self._store.search_documentation(
+                question,
+                system_short=system_short,
+                db_type=db_type,
+                top_k=top_k,
+            ),
         )
+

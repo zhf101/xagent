@@ -53,6 +53,7 @@ def init_db(db_url: str | None = None) -> None:
         DataMakepoolApproval,
         DataMakepoolRun,
         DataMakepoolRunStep,
+        DataMakepoolSqlFeedback,
         DataMakepoolTemplate,
         DataMakepoolTemplateDraft,
         DataMakepoolTemplateVersion,

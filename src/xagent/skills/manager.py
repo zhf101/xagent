@@ -4,9 +4,11 @@ Skill Manager - Manage skill scanning and retrieval
 
 import asyncio
 import logging
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from ..integrations.openviking import get_openviking_service
 from .parser import SkillParser
 from .selector import SkillSelector
 
@@ -32,6 +34,60 @@ class SkillManager:
         self._skills_cache: Dict[str, Dict] = {}
         self._initialized = False
         self._init_task: Optional[Any] = None
+
+    def _get_current_user_id(self) -> Optional[int]:
+        """优先从 contextvar，其次从环境变量读取当前用户，用于 OpenViking 多租户检索。"""
+
+        try:
+            from ..web.user_isolated_memory import current_user_id
+
+            user_id = current_user_id.get()
+            if user_id is not None:
+                return int(user_id)
+        except Exception:
+            pass
+
+        env_user_id = os.environ.get("XAGENT_USER_ID")
+        if env_user_id and env_user_id.isdigit():
+            return int(env_user_id)
+        return None
+
+    def _filter_candidates_by_openviking_result(
+        self,
+        candidates: List[Dict],
+        result: Any,
+    ) -> List[Dict]:
+        """用 OpenViking 检索结果缩小 skill 候选集。
+
+        采用两层策略：
+        1. 先按显式 skill name / uri 名称精确匹配
+        2. 再按结果文本里是否出现 skill 名称做兜底匹配
+        """
+
+        explicit_names = {
+            name.lower()
+            for name in get_openviking_service().extract_skill_names(result)
+            if isinstance(name, str) and name.strip()
+        }
+
+        narrowed = [
+            skill for skill in candidates if skill["name"].lower() in explicit_names
+        ]
+        if narrowed:
+            return narrowed
+
+        serialized_chunks: List[str] = []
+        for item in get_openviking_service().extract_result_items(result):
+            if isinstance(item, dict):
+                serialized_chunks.append(str(item))
+            else:
+                serialized_chunks.append(str(getattr(item, "__dict__", item)))
+        serialized_text = "\n".join(serialized_chunks).lower()
+
+        fuzzy_matched = [
+            skill for skill in candidates if skill["name"].lower() in serialized_text
+        ]
+        return fuzzy_matched or candidates
 
     async def ensure_initialized(self) -> None:
         """Ensure initialization is complete (lazy loading mode)"""
@@ -139,6 +195,46 @@ class SkillManager:
             logger.debug("No skills available after filtering")
             return None
 
+        service = get_openviking_service()
+        user_id = self._get_current_user_id()
+        openviking_used = False
+        openviking_candidate_count_before = len(candidates)
+        openviking_candidate_count_after = len(candidates)
+        openviking_matched_skill_names: List[str] = []
+        if (
+            user_id is not None
+            and service.is_enabled()
+            and service.settings.skill_index_enabled
+        ):
+            try:
+                openviking_result = await service.search_skills(
+                    user_id=user_id,
+                    agent_id="xagent-skill-recall",
+                    query=task,
+                    limit=min(max(len(candidates), 1), 8),
+                )
+                openviking_used = True
+                openviking_matched_skill_names = service.extract_skill_names(
+                    openviking_result
+                )
+                narrowed_candidates = self._filter_candidates_by_openviking_result(
+                    candidates,
+                    openviking_result,
+                )
+                openviking_candidate_count_after = len(narrowed_candidates)
+                if narrowed_candidates and len(narrowed_candidates) < len(candidates):
+                    logger.info(
+                        "OpenViking narrowed skill candidates: %s -> %s",
+                        len(candidates),
+                        len(narrowed_candidates),
+                    )
+                    candidates = narrowed_candidates
+            except Exception as e:
+                logger.warning(
+                    "OpenViking skill recall failed, fallback to local skill selection: %s",
+                    e,
+                )
+
         logger.debug(f"Selecting skill for task: {task[:100]}...")
         logger.debug(f"Available skills: {len(candidates)}")
 
@@ -177,6 +273,12 @@ class SkillManager:
                         "skill_name": selected_skill.get("name")
                         if selected_skill
                         else None,
+                        "openviking_used": openviking_used,
+                        "openviking_candidate_count_before": openviking_candidate_count_before,
+                        "openviking_candidate_count_after": openviking_candidate_count_after,
+                        "openviking_matched_skill_names": openviking_matched_skill_names[
+                            :10
+                        ],
                     },
                 )
 

@@ -41,6 +41,10 @@ logger = logging.getLogger(__name__)
 # Create router
 chat_router = APIRouter(prefix="/api/chat", tags=["chat"])
 
+OPENVIKING_USER_RECALL_TARGET_URI = "viking://user/"
+OPENVIKING_RESOURCE_RECALL_TARGET_URI = "viking://resources/xagent/"
+OPENVIKING_RECALL_LIMIT = 4
+
 
 def _build_openviking_agent_id(task_id: str) -> str:
     """统一 OpenViking agent 标识，便于按任务隔离上下文。"""
@@ -94,6 +98,160 @@ def _persist_openviking_session_id(
     db_session.add(task)
     db_session.commit()
     db_session.refresh(task)
+
+
+def _get_openviking_result_items(result: Any) -> List[Any]:
+    """把不同形态的 OpenViking 搜索结果统一拍平成条目列表。"""
+
+    if isinstance(result, list):
+        return result
+    if isinstance(result, dict):
+        for key in ("resources", "hits", "results", "items"):
+            value = result.get(key)
+            if isinstance(value, list):
+                return value
+    return []
+
+
+def _get_openviking_item_field(item: Any, *field_names: str) -> Any:
+    """兼容 dict / 对象两种结果形态取字段。"""
+
+    for field_name in field_names:
+        if isinstance(item, dict) and field_name in item:
+            value = item.get(field_name)
+            if value not in (None, ""):
+                return value
+        if hasattr(item, field_name):
+            value = getattr(item, field_name)
+            if value not in (None, ""):
+                return value
+    return None
+
+
+def _normalize_openviking_snippet(value: Any, max_length: int = 280) -> str:
+    """把召回内容压缩成适合 system prompt 的单段摘要。"""
+
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    compact = " ".join(text.split())
+    if len(compact) > max_length:
+        return compact[:max_length] + "..."
+    return compact
+
+
+def _summarize_openviking_result(result: Any) -> Dict[str, Any]:
+    """提取 recall 监控所需的轻量摘要。"""
+
+    items = _get_openviking_result_items(result)
+    uris: List[str] = []
+    for item in items:
+        uri = _get_openviking_item_field(item, "uri")
+        if isinstance(uri, str) and uri.strip():
+            uris.append(uri.strip())
+    return {
+        "hit_count": len(items),
+        "uris": uris[:10],
+    }
+
+
+def _build_openviking_recall_section(
+    result: Any,
+    *,
+    title: str,
+    scope_hint: str,
+) -> Optional[str]:
+    """把单一路径的 OpenViking 检索结果转成可拼接的 prompt 段落。"""
+
+    items = _get_openviking_result_items(result)
+    if not items:
+        return None
+
+    lines = [
+        title,
+        "The following context was recalled from OpenViking before this task.",
+        f"Source scope: {scope_hint}",
+        "Treat it as high-priority background context when planning and answering.",
+    ]
+
+    appended = 0
+    for item in items:
+        uri = _get_openviking_item_field(item, "uri")
+        score = _get_openviking_item_field(item, "score")
+        snippet = _normalize_openviking_snippet(
+            _get_openviking_item_field(
+                item,
+                "content",
+                "text",
+                "overview",
+                "abstract",
+                "summary",
+            )
+        )
+        if not snippet:
+            continue
+
+        label = f"- {uri or 'unknown-uri'}"
+        if score is not None:
+            try:
+                label += f" (score={float(score):.4f})"
+            except (TypeError, ValueError):
+                label += f" (score={score})"
+        lines.append(label)
+        lines.append(f"  {snippet}")
+        appended += 1
+
+    if appended == 0:
+        return None
+    return "\n".join(lines)
+
+
+def _build_openviking_recall_system_prompt(
+    *,
+    user_result: Any = None,
+    resource_result: Any = None,
+) -> Optional[str]:
+    """把双路 OpenViking 检索结果组合成统一追加 prompt。"""
+
+    sections = []
+
+    user_section = _build_openviking_recall_section(
+        user_result,
+        title="[OpenViking User Recall]",
+        scope_hint=OPENVIKING_USER_RECALL_TARGET_URI,
+    )
+    if user_section:
+        sections.append(user_section)
+
+    resource_section = _build_openviking_recall_section(
+        resource_result,
+        title="[OpenViking Resource Recall]",
+        scope_hint=OPENVIKING_RESOURCE_RECALL_TARGET_URI,
+    )
+    if resource_section:
+        sections.append(resource_section)
+
+    if not sections:
+        return None
+    return "\n\n".join(sections)
+
+
+def _merge_context_system_prompt(
+    context: Optional[Dict[str, Any]],
+    prompt_fragment: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    """把额外 prompt 片段并入执行上下文，而不是覆盖原有上下文。"""
+
+    if not prompt_fragment:
+        return context
+
+    merged = dict(context) if context else {}
+    existing_prompt = merged.get("system_prompt")
+    if existing_prompt:
+        merged["system_prompt"] = f"{existing_prompt}\n\n{prompt_fragment}"
+    else:
+        merged["system_prompt"] = prompt_fragment
+    return merged
 
 
 async def attach_legacy_scenario_meta_tools(
@@ -1025,6 +1183,7 @@ class AgentServiceManager:
         # Initialize tracker if db_session and task_id are provided
         tracker = None
         tracker_task_id = tracking_task_id or task_id
+        effective_context = dict(context) if context else None
         openviking_session_id: Optional[str] = None
         openviking_user_id: Optional[int] = None
         openviking_agent_id: Optional[str] = None
@@ -1046,7 +1205,7 @@ class AgentServiceManager:
                 tracker = None
 
         try:
-            if db_session and tracker_task_id and openviking_service.memory_is_enabled():
+            if db_session and tracker_task_id and openviking_service.is_enabled():
                 try:
                     task_record = (
                         db_session.query(Task)
@@ -1058,39 +1217,132 @@ class AgentServiceManager:
                         openviking_agent_id = _build_openviking_agent_id(
                             str(tracker_task_id)
                         )
-                        openviking_session_id = self._openviking_sessions.get(
-                            int(tracker_task_id)
-                        ) or _get_persisted_openviking_session_id(task_record)
-                        if not openviking_session_id:
-                            session_info = await openviking_service.create_session(
-                                user_id=openviking_user_id,
-                                agent_id=openviking_agent_id,
-                            )
-                            openviking_session_id = session_info.get("session_id")
+                        if openviking_service.memory_is_enabled():
+                            openviking_session_id = self._openviking_sessions.get(
+                                int(tracker_task_id)
+                            ) or _get_persisted_openviking_session_id(task_record)
                             if openviking_session_id:
                                 self._openviking_sessions[int(tracker_task_id)] = (
                                     openviking_session_id
                                 )
-                                _persist_openviking_session_id(
-                                    task_record,
-                                    db_session,
-                                    openviking_session_id,
+                            else:
+                                session_info = await openviking_service.create_session(
+                                    user_id=openviking_user_id,
+                                    agent_id=openviking_agent_id,
                                 )
-                        else:
-                            self._openviking_sessions[int(tracker_task_id)] = (
-                                openviking_session_id
+                                openviking_session_id = session_info.get("session_id")
+                                if openviking_session_id:
+                                    self._openviking_sessions[int(tracker_task_id)] = (
+                                        openviking_session_id
+                                    )
+                                    _persist_openviking_session_id(
+                                        task_record,
+                                        db_session,
+                                        openviking_session_id,
+                                    )
+
+                            if openviking_session_id:
+                                await openviking_service.add_message(
+                                    user_id=openviking_user_id,
+                                    agent_id=openviking_agent_id,
+                                    session_id=openviking_session_id,
+                                    role="user",
+                                    content=task,
+                                )
+
+                        if openviking_service.search_is_enabled():
+                            async def _run_openviking_recall(
+                                target_uri: str,
+                            ) -> Any:
+                                if openviking_session_id:
+                                    return await openviking_service.search(
+                                        user_id=openviking_user_id,
+                                        agent_id=openviking_agent_id,
+                                        session_id=openviking_session_id,
+                                        query=task,
+                                        target_uri=target_uri,
+                                        limit=OPENVIKING_RECALL_LIMIT,
+                                    )
+                                return await openviking_service.find(
+                                    user_id=openviking_user_id,
+                                    agent_id=openviking_agent_id,
+                                    query=task,
+                                    target_uri=target_uri,
+                                    limit=OPENVIKING_RECALL_LIMIT,
+                                )
+
+                            user_recall_result, resource_recall_result = (
+                                await asyncio.gather(
+                                    _run_openviking_recall(
+                                        OPENVIKING_USER_RECALL_TARGET_URI
+                                    ),
+                                    _run_openviking_recall(
+                                        OPENVIKING_RESOURCE_RECALL_TARGET_URI
+                                    ),
+                                    return_exceptions=True,
+                                )
                             )
-                        if openviking_session_id:
-                            await openviking_service.add_message(
-                                user_id=openviking_user_id,
-                                agent_id=openviking_agent_id,
-                                session_id=openviking_session_id,
-                                role="user",
-                                content=task,
+
+                            if isinstance(user_recall_result, Exception):
+                                logger.warning(
+                                    "OpenViking user recall failed for task %s: %s",
+                                    tracker_task_id,
+                                    user_recall_result,
+                                )
+                                user_recall_result = None
+
+                            if isinstance(resource_recall_result, Exception):
+                                logger.warning(
+                                    "OpenViking resource recall failed for task %s: %s",
+                                    tracker_task_id,
+                                    resource_recall_result,
+                                )
+                                resource_recall_result = None
+
+                            recall_prompt = _build_openviking_recall_system_prompt(
+                                user_result=user_recall_result,
+                                resource_result=resource_recall_result,
                             )
+                            effective_context = _merge_context_system_prompt(
+                                effective_context,
+                                recall_prompt,
+                            )
+                            if recall_prompt:
+                                logger.info(
+                                    "Injected OpenViking recall context for task %s",
+                                    tracker_task_id,
+                                )
+
+                            tracer = getattr(agent_service, "tracer", None)
+                            if tracer is not None:
+                                from ...core.agent.trace import (
+                                    trace_memory_retrieve_end,
+                                )
+
+                                user_summary = _summarize_openviking_result(
+                                    user_recall_result
+                                )
+                                resource_summary = _summarize_openviking_result(
+                                    resource_recall_result
+                                )
+                                await trace_memory_retrieve_end(
+                                    tracer,
+                                    str(tracker_task_id),
+                                    data={
+                                        "provider": "openviking",
+                                        "source": "pre_execution_recall",
+                                        "user_hit_count": user_summary["hit_count"],
+                                        "resource_hit_count": resource_summary[
+                                            "hit_count"
+                                        ],
+                                        "hit_uris": user_summary["uris"]
+                                        + resource_summary["uris"],
+                                        "recall_injected": bool(recall_prompt),
+                                    },
+                                )
                 except Exception as exc:
                     logger.warning(
-                        "OpenViking pre-execution session sync failed for task %s: %s",
+                        "OpenViking pre-execution sync/recall failed for task %s: %s",
                         tracker_task_id,
                         exc,
                     )
@@ -1101,7 +1353,7 @@ class AgentServiceManager:
 
             # Execute the task
             result = await agent_service.execute_task(
-                task=task, context=context, task_id=task_id
+                task=task, context=effective_context, task_id=task_id
             )
 
             logger.info("=== Task executed successfully, updating title if needed ===")

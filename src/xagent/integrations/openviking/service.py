@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from pathlib import PurePosixPath
 from typing import Any, Dict, Optional
 
 from .client import OpenVikingHTTPClient
@@ -118,6 +119,80 @@ class OpenVikingService:
             user_id=user_id,
             agent_id=agent_id,
             params=params,
+        )
+
+    async def tree(
+        self,
+        *,
+        user_id: int | str,
+        uri: str = "viking://",
+        output: str = "original",
+        abs_limit: int = 128,
+        show_all_hidden: bool = False,
+        node_limit: int = 1000,
+        agent_id: Optional[str] = None,
+    ) -> Any:
+        """读取 OpenViking 资源树。"""
+
+        params: Dict[str, Any] = {
+            "uri": uri,
+            "output": output,
+            "abs_limit": abs_limit,
+            "show_all_hidden": show_all_hidden,
+            "node_limit": node_limit,
+        }
+        return await self._client.request(
+            "GET",
+            "/api/v1/fs/tree",
+            user_id=user_id,
+            agent_id=agent_id,
+            params=params,
+        )
+
+    async def grep(
+        self,
+        *,
+        user_id: int | str,
+        uri: str,
+        pattern: str,
+        case_insensitive: bool = False,
+        node_limit: Optional[int] = None,
+        agent_id: Optional[str] = None,
+    ) -> Any:
+        """在 OpenViking 上做内容级 grep。"""
+
+        payload: Dict[str, Any] = {
+            "uri": uri,
+            "pattern": pattern,
+            "case_insensitive": case_insensitive,
+        }
+        if node_limit is not None:
+            payload["node_limit"] = node_limit
+
+        return await self._client.request(
+            "POST",
+            "/api/v1/search/grep",
+            user_id=user_id,
+            agent_id=agent_id,
+            json=payload,
+        )
+
+    async def glob(
+        self,
+        *,
+        user_id: int | str,
+        pattern: str,
+        uri: str = "viking://",
+        agent_id: Optional[str] = None,
+    ) -> Any:
+        """在 OpenViking 上做路径模式匹配。"""
+
+        return await self._client.request(
+            "POST",
+            "/api/v1/search/glob",
+            user_id=user_id,
+            agent_id=agent_id,
+            json={"pattern": pattern, "uri": uri},
         )
 
     async def create_session(
@@ -238,6 +313,88 @@ class OpenVikingService:
             user_id=user_id,
             agent_id=agent_id,
         )
+
+    async def search_skills(
+        self,
+        *,
+        user_id: int | str,
+        query: str,
+        limit: int = 8,
+        agent_id: Optional[str] = None,
+    ) -> Any:
+        """在 OpenViking 的 skills 空间中检索 skill 候选。"""
+
+        return await self.find(
+            user_id=user_id,
+            agent_id=agent_id,
+            query=query,
+            target_uri="viking://skills/",
+            limit=limit,
+        )
+
+    @staticmethod
+    def extract_result_items(result: Any) -> list[Any]:
+        """把 OpenViking 搜索结果统一拍平成条目列表。"""
+
+        if isinstance(result, list):
+            return result
+        if isinstance(result, dict):
+            for key in ("resources", "hits", "results", "items"):
+                value = result.get(key)
+                if isinstance(value, list):
+                    return value
+        return []
+
+    @staticmethod
+    def extract_skill_names(result: Any) -> list[str]:
+        """从 OpenViking skill 搜索结果里尽量提取 skill 名称。"""
+
+        names: list[str] = []
+
+        for item in OpenVikingService.extract_result_items(result):
+            candidates = []
+            if isinstance(item, dict):
+                candidates.extend(
+                    [
+                        item.get("name"),
+                        item.get("skill_name"),
+                        (item.get("metadata") or {}).get("name")
+                        if isinstance(item.get("metadata"), dict)
+                        else None,
+                    ]
+                )
+                uri = item.get("uri")
+            else:
+                candidates.extend(
+                    [
+                        getattr(item, "name", None),
+                        getattr(item, "skill_name", None),
+                    ]
+                )
+                metadata = getattr(item, "metadata", None)
+                if isinstance(metadata, dict):
+                    candidates.append(metadata.get("name"))
+                uri = getattr(item, "uri", None)
+
+            if isinstance(uri, str) and uri.strip():
+                try:
+                    candidates.append(PurePosixPath(uri.rstrip("/")).name)
+                except Exception:
+                    pass
+
+            for value in candidates:
+                if isinstance(value, str) and value.strip():
+                    names.append(value.strip())
+
+        deduped: list[str] = []
+        seen = set()
+        for name in names:
+            lowered = name.lower()
+            if lowered in seen:
+                continue
+            seen.add(lowered)
+            deduped.append(name)
+        return deduped
 
 
 @lru_cache(maxsize=1)

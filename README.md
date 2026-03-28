@@ -195,6 +195,32 @@ Built for real production use:
 
 ---
 
+### 🧠 OpenViking Context Integration
+
+Xagent can use [OpenViking](https://github.com/volcengine/OpenViking) as an
+optional external context service over HTTP.
+
+Current integration capabilities:
+
+- Session sync and `commit_session` for long-term memory extraction
+- Dual recall before execution:
+  - user memory from `viking://user/`
+  - synced Xagent resources from `viking://resources/xagent/`
+- Skill indexing and skill-candidate narrowing before local skill selection
+- OpenViking-backed tools:
+  - `openviking_search`
+  - `openviking_read_context`
+  - `openviking_list_tree`
+  - `openviking_grep`
+  - `openviking_glob`
+- Monitoring endpoint at `/api/monitor/openviking` for health, observer status,
+  and recent OpenViking activity summaries
+
+Configure it through the `OpenViking Integration` section in
+[`example.env`](./example.env).
+
+---
+
 ## 🎬 Xagent in Action
 
 Watch Xagent plan, execute, and deliver results in real-time.

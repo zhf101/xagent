@@ -654,7 +654,16 @@ class AgentService:
         # Apply context if provided
         if context:
             for key, value in context.items():
-                runner.context.state[key] = value
+                if (
+                    key == "system_prompt"
+                    and value
+                    and runner.context.state.get("system_prompt")
+                ):
+                    runner.context.state[key] = (
+                        f"{runner.context.state['system_prompt']}\n\n{value}"
+                    )
+                else:
+                    runner.context.state[key] = value
 
         # Store task_id for potential continuation
         if task_id:

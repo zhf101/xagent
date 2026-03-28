@@ -10,7 +10,6 @@ from xagent.core.agent.vertical_agent import VerticalAgent
 from xagent.core.model.chat.basic.base import BaseLLM
 from xagent.core.tools.adapters.vibe import Tool
 
-from ..sql_brain import SQLBrainService
 from ..tools import create_sql_tools
 
 
@@ -27,9 +26,11 @@ class SqlExecutorAgent(VerticalAgent):
 
     def _get_domain_tools(self, **kwargs: Any) -> Sequence[Tool]:
         return create_sql_tools(
-            sql_brain=SQLBrainService(),
             db=kwargs.get("db"),
             system_short=kwargs.get("system_short"),
+            db_type=kwargs.get("db_type"),
+            user_id=kwargs.get("user_id"),
+            llm=kwargs.get("sql_brain_llm"),
         )
 
     def _get_domain_patterns(

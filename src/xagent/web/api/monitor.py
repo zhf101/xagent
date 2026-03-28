@@ -22,8 +22,68 @@ logger = logging.getLogger(__name__)
 monitor_router = APIRouter(prefix="/api/monitor", tags=["monitor"])
 
 
+def _summarize_openviking_trace_activity(
+    tasks: List[Task],
+    trace_events: List[Any],
+) -> List[Dict[str, Any]]:
+    """把近期任务的 OpenViking 相关 trace 汇总成轻量监控摘要。"""
+
+    summaries: Dict[int, Dict[str, Any]] = {}
+    for task in tasks:
+        summaries[int(task.id)] = {
+            "task_id": int(task.id),
+            "title": task.title,
+            "status": task.status.value if getattr(task, "status", None) else None,
+            "updated_at": safe_timestamp_to_unix(task.updated_at)
+            if getattr(task, "updated_at", None)
+            else None,
+            "recall": None,
+            "skill_recall": None,
+        }
+
+    for event in trace_events:
+        task_summary = summaries.get(int(event.task_id))
+        if not task_summary or not isinstance(event.data, dict):
+            continue
+
+        data = event.data
+        if (
+            event.event_type == "task_end_memory_retrieve"
+            and data.get("provider") == "openviking"
+            and task_summary["recall"] is None
+        ):
+            task_summary["recall"] = {
+                "source": data.get("source"),
+                "user_hit_count": data.get("user_hit_count", 0),
+                "resource_hit_count": data.get("resource_hit_count", 0),
+                "recall_injected": bool(data.get("recall_injected", False)),
+                "hit_uris": data.get("hit_uris", []),
+            }
+
+        if (
+            event.event_type == "skill_select_end"
+            and task_summary["skill_recall"] is None
+            and "openviking_used" in data
+        ):
+            task_summary["skill_recall"] = {
+                "openviking_used": bool(data.get("openviking_used", False)),
+                "candidate_count_before": data.get(
+                    "openviking_candidate_count_before"
+                ),
+                "candidate_count_after": data.get(
+                    "openviking_candidate_count_after"
+                ),
+                "matched_skill_names": data.get("openviking_matched_skill_names", []),
+                "selected": bool(data.get("selected", False)),
+                "skill_name": data.get("skill_name"),
+            }
+
+    return list(summaries.values())
+
+
 @monitor_router.get("/openviking")
 async def get_openviking_status(
+    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> Dict[str, Any]:
     """查看 OpenViking 集成状态。"""
@@ -52,6 +112,36 @@ async def get_openviking_status(
     except Exception as exc:
         logger.warning("Failed to get OpenViking observer status: %s", exc)
 
+    recent_activity: List[Dict[str, Any]] = []
+    try:
+        task_query = db.query(Task)
+        if not is_admin_user(current_user):
+            task_query = task_query.filter(Task.user_id == current_user.id)
+
+        recent_tasks = task_query.order_by(Task.updated_at.desc()).limit(10).all()
+        task_ids = [int(task.id) for task in recent_tasks]
+
+        if task_ids:
+            from ..models.task import TraceEvent
+
+            trace_events = (
+                db.query(TraceEvent)
+                .filter(
+                    TraceEvent.task_id.in_(task_ids),
+                    TraceEvent.build_id.is_(None),
+                    TraceEvent.event_type.in_(
+                        ["task_end_memory_retrieve", "skill_select_end"]
+                    ),
+                )
+                .order_by(TraceEvent.timestamp.desc(), TraceEvent.id.desc())
+                .all()
+            )
+            recent_activity = _summarize_openviking_trace_activity(
+                recent_tasks, trace_events
+            )
+    except Exception as exc:
+        logger.warning("Failed to build OpenViking activity summary: %s", exc)
+
     return {
         "enabled": True,
         "base_url": settings.base_url,
@@ -59,6 +149,7 @@ async def get_openviking_status(
         "memory_enabled": settings.memory_enabled,
         "health": health,
         "observer": observer,
+        "recent_activity": recent_activity,
     }
 
 
