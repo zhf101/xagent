@@ -58,9 +58,9 @@ const en = {
       resources: "RESOURCES",
     },
     groups: {
-      core: "Core",
-      workspace: "Workspace",
+      task: "Task",
       resources: "Resources",
+      personalization: "Personalization",
       system: "System",
     },
   },

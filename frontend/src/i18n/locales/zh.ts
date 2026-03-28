@@ -58,9 +58,9 @@ const zh = {
       resources: "资源",
     },
     groups: {
-      core: "核心功能",
-      workspace: "工作区",
+      task: "任务",
       resources: "资源管理",
+      personalization: "个性化",
       system: "系统管理",
     },
   },

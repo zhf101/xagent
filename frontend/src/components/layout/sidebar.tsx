@@ -120,145 +120,127 @@ interface NavigationGroup {
   defaultExpanded?: boolean
 }
 
-// 导航菜单分组
+// 顶级菜单项（不需要分组包裹）
+const topLevelItems: NavigationItem[] = [
+  {
+    name: "Task",
+    nameKey: "nav.task",
+    href: "/task",
+    icon: MessageSquare
+  }
+]
+
+// 导航菜单分组（仅管理员可见）
 const getNavigationGroups = (isAdmin: boolean): NavigationGroup[] => {
-  const groups: NavigationGroup[] = [
-    // 核心功能 - 所有用户可见
+  if (!isAdmin) return []
+  
+  return [
     {
-      key: "core",
-      title: "核心功能",
-      titleKey: "nav.groups.core",
-      icon: LayoutDashboard,
+      key: "resources",
+      title: "资源管理",
+      titleKey: "nav.groups.resources",
+      icon: Database,
       items: [
         {
-          name: "Task",
-          nameKey: "nav.task",
-          href: "/task",
-          icon: MessageSquare
+          name: "SQL",
+          nameKey: "nav.sqlAssets",
+          href: "/sql-assets",
+          icon: Layers
         },
+        {
+          name: "HTTP",
+          nameKey: "nav.httpAssets",
+          href: "/http-assets",
+          icon: Server
+        },
+        {
+          name: "Data Sources",
+          nameKey: "nav.dataSources",
+          href: "/data-sources",
+          icon: Database
+        },
+        {
+          name: "Templates",
+          nameKey: "nav.templates",
+          href: "/templates",
+          icon: LayoutTemplate
+        }
+      ],
+      defaultExpanded: false
+    },
+    {
+      key: "personalization",
+      title: "个性化",
+      titleKey: "nav.groups.personalization",
+      icon: Brain,
+      items: [
+        {
+          name: "Knowledge Base",
+          nameKey: "nav.knowledgeBase",
+          href: "/kb",
+          icon: BookOpen
+        },
+        {
+          name: "Memory",
+          nameKey: "nav.memory",
+          href: "/memory",
+          icon: Brain
+        },
+        {
+          name: "Settings",
+          nameKey: "nav.settings",
+          href: "/settings",
+          icon: Settings
+        }
+      ],
+      defaultExpanded: false
+    },
+    {
+      key: "system",
+      title: "系统管理",
+      titleKey: "nav.groups.system",
+      icon: Settings,
+      items: [
         {
           name: "Agents",
           nameKey: "nav.build",
           href: "/build",
           icon: Bot
+        },
+        {
+          name: "Models",
+          nameKey: "nav.models",
+          href: "/models",
+          icon: Box
+        },
+        {
+          name: "Tools",
+          nameKey: "nav.tools",
+          href: "/tools",
+          icon: Wrench
+        },
+        {
+          name: "Files",
+          nameKey: "nav.files",
+          href: "/files",
+          icon: FileText
+        },
+        {
+          name: "Monitoring",
+          nameKey: "nav.monitoring",
+          href: "/monitoring",
+          icon: Activity
+        },
+        {
+          name: "User Management",
+          nameKey: "nav.userManagement",
+          href: "/users/",
+          icon: Users
         }
       ],
-      defaultExpanded: true
+      defaultExpanded: false
     }
   ]
-
-  // 管理员可见的分组
-  if (isAdmin) {
-    groups.push(
-      {
-        key: "workspace",
-        title: "工作区",
-        titleKey: "nav.groups.workspace",
-        icon: LayoutDashboard,
-        items: [
-          {
-            name: "Workspace",
-            nameKey: "nav.workspace",
-            href: "/agent/vibe",
-            icon: LayoutDashboard
-          },
-          {
-            name: "Templates",
-            nameKey: "nav.templates",
-            href: "/templates",
-            icon: LayoutTemplate
-          }
-        ],
-        defaultExpanded: true
-      },
-      {
-        key: "resources",
-        title: "资源管理",
-        titleKey: "nav.groups.resources",
-        icon: Database,
-        items: [
-          {
-            name: "Knowledge Base",
-            nameKey: "nav.knowledgeBase",
-            href: "/kb",
-            icon: BookOpen
-          },
-          {
-            name: "Models",
-            nameKey: "nav.models",
-            href: "/models",
-            icon: Box
-          },
-          {
-            name: "Data Sources",
-            nameKey: "nav.dataSources",
-            href: "/data-sources",
-            icon: Database
-          },
-          {
-            name: "SQL Assets",
-            nameKey: "nav.sqlAssets",
-            href: "/sql-assets",
-            icon: Layers
-          },
-          {
-            name: "HTTP Assets",
-            nameKey: "nav.httpAssets",
-            href: "/http-assets",
-            icon: Server
-          },
-          {
-            name: "Memory",
-            nameKey: "nav.memory",
-            href: "/memory",
-            icon: Brain
-          }
-        ],
-        defaultExpanded: false
-      },
-      {
-        key: "system",
-        title: "系统管理",
-        titleKey: "nav.groups.system",
-        icon: Settings,
-        items: [
-          {
-            name: "Tools",
-            nameKey: "nav.tools",
-            href: "/tools",
-            icon: Wrench
-          },
-          {
-            name: "Files",
-            nameKey: "nav.files",
-            href: "/files",
-            icon: FileText
-          },
-          {
-            name: "Monitoring",
-            nameKey: "nav.monitoring",
-            href: "/monitoring",
-            icon: Activity
-          },
-          {
-            name: "Settings",
-            nameKey: "nav.settings",
-            href: "/settings",
-            icon: Settings
-          },
-          {
-            name: "User Management",
-            nameKey: "nav.userManagement",
-            href: "/users/",
-            icon: Users
-          }
-        ],
-        defaultExpanded: false
-      }
-    )
-  }
-
-  return groups
 }
 
 const SIDEBAR_COMPACT_STORAGE_KEY = "xagent.sidebar.compact"
@@ -317,8 +299,8 @@ export function Sidebar({ className }: SidebarProps) {
   const [isExpanded, setIsExpanded] = useState(false)
   const [compactPreference, setCompactPreference] = useState(false)
   const [compactReasons, setCompactReasons] = useState<SidebarCompactReason[]>([])
-  // 分组折叠状态
-  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set(["core", "workspace"]))
+  // 分组折叠状态 - 默认展开任务分组
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set(["task"]))
   const [showUserMenu, setShowUserMenu] = useState(false)
   const [isAboutOpen, setIsAboutOpen] = useState(false)
   const sidebarRef = useRef<HTMLDivElement | null>(null)
@@ -607,12 +589,11 @@ export function Sidebar({ className }: SidebarProps) {
     }
   }
 
-  // Sidebar is hidden by default on Agent pages, but kept visible on Vibe and Build pages, and shown on other pages
+  // Sidebar is hidden by default on Agent pages
   // For agent pages, sidebar is only shown when isExpanded is true
-  // Build page no longer automatically hides
   // /agent/[id] page does not auto-collapse (for agent chat)
   const isAgentChatPage = pathname.match(/^\/agent\/\d+$/)
-  const isAgentPage = (pathname.startsWith('/agent') && !pathname.startsWith('/agent/vibe') && !isAgentChatPage)
+  const isAgentPage = pathname.startsWith('/agent') && !isAgentChatPage
   const shouldShowSidebar = !isAgentPage || isExpanded
   const supportsCompactMode = true
   const isCompactMode =
@@ -783,6 +764,41 @@ export function Sidebar({ className }: SidebarProps) {
         onScroll={handleScroll}
       >
         <div className={cn("py-2", isCompactMode ? "px-1" : "px-2")}>
+          {/* 顶级菜单项 - 不需要分组包裹 */}
+          {topLevelItems.map((item) => {
+            const isActive = pathname === item.href || (item.href !== "/" && pathname.startsWith(item.href))
+            
+            return (
+              <Link
+                key={item.name}
+                href={item.href}
+                title={isCompactMode ? (item.nameKey ? t(item.nameKey) : item.name) : undefined}
+                className={cn(
+                  "group flex items-center rounded transition-all duration-150 mb-1",
+                  isCompactMode 
+                    ? "h-10 w-10 mx-auto justify-center" 
+                    : "h-9 px-3 justify-start",
+                  isActive 
+                    ? "bg-primary/10 text-primary font-medium" 
+                    : "text-muted-foreground hover:bg-primary/5 hover:text-foreground"
+                )}
+              >
+                <item.icon
+                  className={cn(
+                    isCompactMode ? "h-5 w-5" : "h-4 w-4 mr-2",
+                    isActive ? "text-primary" : "text-muted-foreground/70 group-hover:text-foreground"
+                  )}
+                />
+                {!isCompactMode && (
+                  <span className="text-[13px] truncate">
+                    {item.nameKey ? t(item.nameKey) : item.name}
+                  </span>
+                )}
+              </Link>
+            )
+          })}
+          
+          {/* 分组菜单 - 仅管理员可见 */}
           {navigationGroups.map((group) => {
             const isGroupExpanded = expandedGroups.has(group.key)
             const hasActiveItem = group.items.some(

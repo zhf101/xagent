@@ -27,6 +27,7 @@ from xagent.core.observability.local_logging import (
     log_dataflow,
     reset_log_context,
 )
+from xagent.core.workspace import TaskWorkspace
 
 from ..auth_dependencies import get_user_from_websocket_token
 from ..config import UPLOADS_DIR
@@ -1744,7 +1745,6 @@ async def handle_execute_task(
             from ...datamakepool.interceptors import ApprovalGate
             from ...datamakepool.orchestration import (
                 EntryRecallCoordinator,
-                DatamakepoolExecutionPlanner,
                 TemplateRunExecutor,
             )
             from ..services.task_prompt_recommendation_refresh import (
@@ -1796,18 +1796,34 @@ async def handle_execute_task(
                             if entry_recall.selected_candidate is not None
                             else None
                         ),
-                        "template_candidates": [candidate.payload for candidate in entry_recall.template_candidates],
-                        "sql_asset_candidates": [candidate.payload for candidate in entry_recall.sql_asset_candidates],
-                        "http_asset_candidates": [candidate.payload for candidate in entry_recall.http_asset_candidates],
-                        "legacy_candidates": [candidate.payload for candidate in entry_recall.legacy_candidates],
+                        "template_candidates": [
+                            candidate.payload
+                            for candidate in entry_recall.template_candidates
+                        ],
+                        "sql_asset_candidates": [
+                            candidate.payload
+                            for candidate in entry_recall.sql_asset_candidates
+                        ],
+                        "http_asset_candidates": [
+                            candidate.payload
+                            for candidate in entry_recall.http_asset_candidates
+                        ],
+                        "legacy_candidates": [
+                            candidate.payload
+                            for candidate in entry_recall.legacy_candidates
+                        ],
                         "missing_params": entry_recall.missing_params,
                         "debug": entry_recall.debug,
                     }
-                    if entry_recall.selected_candidate is not None and entry_recall.selected_strategy in {
-                        "sql_asset_direct",
-                        "http_asset_direct",
-                        "legacy_direct",
-                    }:
+                    if (
+                        entry_recall.selected_candidate is not None
+                        and entry_recall.selected_strategy
+                        in {
+                            "sql_asset_direct",
+                            "http_asset_direct",
+                            "legacy_direct",
+                        }
+                    ):
                         candidate = entry_recall.selected_candidate
                         missing_param_labels = [
                             item.get("label") or item.get("field")
@@ -1822,9 +1838,13 @@ async def handle_execute_task(
                         if missing_param_labels:
                             guidance += (
                                 "\n- 你接下来若需要向用户补参，只能优先围绕这些字段提问："
-                                + "、".join(str(item) for item in missing_param_labels if item)
+                                + "、".join(
+                                    str(item) for item in missing_param_labels if item
+                                )
                             )
-                        task_context["system_prompt"] = task_context.get("system_prompt", "") + guidance
+                        task_context["system_prompt"] = (
+                            task_context.get("system_prompt", "") + guidance
+                        )
                     task_context["datamakepool_match_type"] = match_result.match_type
                     task_context["datamakepool_execution_plan"] = (
                         planning_decision.execution_plan
@@ -1841,42 +1861,99 @@ async def handle_execute_task(
                         "stage_results": match_result.stage_results,
                     }
                     if match_result.matched_template:
-                        task_context["datamakepool_template_match"]["matched_template"] = {
+                        task_context["datamakepool_template_match"][
+                            "matched_template"
+                        ] = {
                             "template_id": match_result.matched_template.template_id,
                             "template_name": match_result.matched_template.template_name,
                             "version": match_result.matched_template.version,
                             "system_short": match_result.matched_template.system_short,
                         }
 
-                    if planning_decision.execution_path == "template_direct" and match_result.matched_template:
-                        template_result = TemplateRunExecutor(db).execute_match(
-                            task_id=int(task_id),
-                            created_by=int(user.id),
-                            matched=match_result.matched_template,
-                            params=params,
+                    if (
+                        planning_decision.execution_path == "template_direct"
+                        and match_result.matched_template
+                    ):
+                        workspace = TaskWorkspace(
+                            id=f"web_task_{task_id}",
+                            base_dir=str(UPLOADS_DIR / f"user_{user.id}"),
                         )
-                        task.status = TaskStatus.COMPLETED
-                        db.commit()
-                        schedule_user_task_prompt_refresh(int(user.id), force=True)
+                        template_executor = TemplateRunExecutor(
+                            db,
+                            workspace=workspace,
+                        )
+                        direct_support = template_executor.analyze_match(
+                            match_result.matched_template,
+                            params,
+                        )
+                        task_context["datamakepool_template_direct_support"] = (
+                            direct_support.to_dict()
+                        )
+                        task_context["datamakepool_template_match"][
+                            "direct_execution_supported"
+                        ] = direct_support.executable
+                        task_context["datamakepool_template_match"][
+                            "direct_execution_reason"
+                        ] = direct_support.reason
 
-                        await manager.broadcast_to_task(
-                            {
-                                "type": "task_completed",
-                                "task": {
-                                    "id": task.id,
-                                    "title": task.title,
-                                    "status": task.status.value,
-                                    "description": task.description,
+                        if direct_support.executable:
+                            template_result = await template_executor.execute_match(
+                                task_id=int(task_id),
+                                created_by=int(user.id),
+                                matched=match_result.matched_template,
+                                params=params,
+                            )
+                            task.status = (
+                                TaskStatus.COMPLETED
+                                if template_result.success
+                                else TaskStatus.FAILED
+                            )
+                            db.add(task)
+                            db.commit()
+                            if template_result.success:
+                                schedule_user_task_prompt_refresh(
+                                    int(user.id), force=True
+                                )
+
+                            await manager.broadcast_to_task(
+                                {
+                                    "type": "task_completed",
+                                    "task": {
+                                        "id": task.id,
+                                        "title": task.title,
+                                        "status": task.status.value,
+                                        "description": task.description,
+                                    },
+                                    "success": template_result.success,
+                                    "result": template_result.output,
+                                    "output": template_result.output,
+                                    "metadata": template_result.metadata,
+                                    "timestamp": datetime.now(timezone.utc).timestamp(),
                                 },
-                                "success": template_result.success,
-                                "result": template_result.output,
-                                "output": template_result.output,
-                                "metadata": template_result.metadata,
-                                "timestamp": datetime.now(timezone.utc).timestamp(),
-                            },
-                            task_id,
+                                task_id,
+                            )
+                            return
+
+                        planning_decision.route_to_orchestrator = True
+                        fallback_summary = (
+                            "模板命中但当前不能安全直跑，已自动回退 orchestrator。"
+                            f"原因：{direct_support.reason}"
                         )
-                        return
+                        if isinstance(
+                            task_context.get("datamakepool_execution_plan"),
+                            dict,
+                        ):
+                            task_context["datamakepool_execution_plan"][
+                                "template_direct_fallback"
+                            ] = direct_support.to_dict()
+                        task_context["datamakepool_template_direct_fallback"] = (
+                            direct_support.to_dict()
+                        )
+                        task_context["system_prompt"] = (
+                            task_context.get("system_prompt", "")
+                            + "\n\n"
+                            + fallback_summary
+                        ).strip()
 
                     if planning_decision.route_to_orchestrator:
                         task.agent_type_enum = AgentType.DATAMAKEPOOL_ORCHESTRATOR
@@ -1949,7 +2026,10 @@ async def handle_execute_task(
                         and task.agent_type_enum == AgentType.DATAMAKEPOOL_ORCHESTRATOR
                     ):
                         try:
-                            from xagent.datamakepool.extractors import TemplateDraftExtractor
+                            from xagent.datamakepool.extractors import (
+                                TemplateDraftExtractor,
+                            )
+
                             TemplateDraftExtractor(db).extract_and_save(
                                 task_description=str(task.description),
                                 result=result,
