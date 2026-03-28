@@ -730,6 +730,7 @@ interface AppContextType {
   state: AppState
   dispatch: React.Dispatch<AppAction>
   sendMessage: (message: string, config?: any, files?: File[]) => void
+  sendExecuteDirect: (strategy: string, candidateId: string, userParams?: Record<string, unknown>) => void
   executeTask: (description: string) => void
   pauseTask: () => void
   resumeTask: () => void
@@ -824,6 +825,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
     isConnected,
     connectionError,
     sendChatMessage,
+    sendExecuteDirect: wsSendExecuteDirect,
     executeTask: wsExecuteTask,
     pauseTask: wsPauseTask,
     resumeTask: wsResumeTask,
@@ -3796,6 +3798,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
         state,
         dispatch,
         sendMessage,
+        sendExecuteDirect: wsSendExecuteDirect,
         executeTask,
         pauseTask,
         resumeTask,

@@ -20,7 +20,7 @@ interface ClarificationFormProps {
 }
 
 export function ClarificationForm({ interactions, messageId }: ClarificationFormProps) {
-  const { state, sendMessage } = useApp()
+  const { state, sendMessage, sendExecuteDirect } = useApp()
   const { t } = useI18n()
   const [formState, setFormState] = useState<Record<string, any>>({})
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -32,7 +32,51 @@ export function ClarificationForm({ interactions, messageId }: ClarificationForm
     setFormState((prev) => ({ ...prev, [field]: value }))
   }
 
+  /**
+   * 检测用户是否选择了"直接执行"选项。
+   * 约定：reuse_strategy 字段的 option value 格式为 "execute:<strategy>:<candidate_id>"
+   * 例如 "execute:template_direct:template:42"
+   */
+  const parseExecuteDirectValue = (value: string): { strategy: string; candidateId: string } | null => {
+    if (!value || !value.startsWith("execute:")) return null
+    // execute:template_direct:template:42
+    const parts = value.substring("execute:".length)
+    const firstColon = parts.indexOf(":")
+    if (firstColon === -1) return null
+    return {
+      strategy: parts.substring(0, firstColon),
+      candidateId: parts.substring(firstColon + 1),
+    }
+  }
+
   const handleSubmit = async () => {
+    // 检查是否选择了直接执行
+    const reuseValue = formState["reuse_strategy"]
+    const executeInfo = reuseValue ? parseExecuteDirectValue(reuseValue) : null
+
+    if (executeInfo) {
+      // 收集其他字段作为 user_params
+      const userParams: Record<string, unknown> = {}
+      for (const interaction of interactions) {
+        if (interaction.field === "reuse_strategy") continue
+        const val = formState[interaction.field]
+        if (val !== undefined && val !== null && val !== "") {
+          userParams[interaction.field] = val
+        }
+      }
+
+      try {
+        setIsSubmitting(true)
+        sendExecuteDirect(executeInfo.strategy, executeInfo.candidateId, userParams)
+        setIsOpen(false)
+      } catch (error) {
+        console.error("Failed to send execute_direct", error)
+        toast.error(t("chatPage.clarification.sendError"))
+      } finally {
+        setIsSubmitting(false)
+      }
+      return
+    }
     // Construct the message
     const lines = interactions.map(interaction => {
       const value = formState[interaction.field]

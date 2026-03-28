@@ -58,8 +58,12 @@ from ..base import AgentPattern
 
 # Import the extracted modules
 from .models import (
+    ChatResponse,
     ExecutionPhase,
     ExecutionPlan,
+    Interaction,
+    InteractionType,
+    PlanGeneratorResult,
     PlanStep,
     StepInjection,
     StepStatus,
@@ -487,6 +491,91 @@ class DAGPlanExecutePattern(AgentPattern):
                         tracer=self.tracer,
                         context=self._context,
                     )
+
+                    # ── data_generation 硬保护 ──
+                    # 造数模式首轮对话必须先澄清，不允许直接进入规划。
+                    # 即使 LLM 返回了 type="plan"，也强制覆盖为 chat 并生成默认澄清卡片。
+                    if (
+                        result.type == "plan"
+                        and self._context
+                        and hasattr(self._context, "state")
+                        and self._context.state.get("domain_mode") == "data_generation"
+                        and iteration == 1
+                    ):
+                        # 检查对话历史中是否已有用户的澄清回复（至少 2 条消息：首次提问 + 回复）
+                        user_messages_in_history = [
+                            msg for msg in self._conversation_history
+                            if msg.get("role") == "user"
+                        ]
+                        if len(user_messages_in_history) <= 1:
+                            logger.warning(
+                                "data_generation 硬保护触发：LLM 返回 plan 但首轮对话"
+                                "必须先澄清，强制覆盖为 chat"
+                            )
+                            # 从 context 中提取召回结果，构造默认澄清消息
+                            recall_result = self._context.state.get(
+                                "entry_recall_result", {}
+                            )
+                            has_candidates = any(
+                                recall_result.get(k)
+                                for k in [
+                                    "template_candidates",
+                                    "sql_asset_candidates",
+                                    "http_asset_candidates",
+                                    "legacy_candidates",
+                                ]
+                            )
+                            if has_candidates:
+                                msg = (
+                                    "收到你的造数需求。平台已检索到一些可复用的资产，"
+                                    "请确认以下信息后再开始执行："
+                                )
+                            else:
+                                msg = (
+                                    "收到你的造数需求。平台未找到可直接复用的历史资产，"
+                                    "需要从零规划。为了生成准确的测试数据，"
+                                    "请先提供以下业务信息："
+                                )
+
+                            default_interactions = [
+                                Interaction(
+                                    type=InteractionType.TEXT_INPUT,
+                                    field="target_system",
+                                    label="目标系统",
+                                    placeholder="如：订单系统、CRM、支付系统",
+                                ),
+                                Interaction(
+                                    type=InteractionType.TEXT_INPUT,
+                                    field="target_entity",
+                                    label="目标表名或接口",
+                                    placeholder="如：t_order、/api/order/create",
+                                ),
+                                Interaction(
+                                    type=InteractionType.SELECT_ONE,
+                                    field="execution_method",
+                                    label="执行方式",
+                                    options=[
+                                        {"value": "sql", "label": "SQL 直接写入"},
+                                        {"value": "http", "label": "HTTP 接口调用"},
+                                        {"value": "dubbo", "label": "Dubbo 服务调用"},
+                                        {"value": "auto", "label": "自动选择（推荐）"},
+                                    ],
+                                ),
+                                Interaction(
+                                    type=InteractionType.TEXT_INPUT,
+                                    field="target_environment",
+                                    label="目标环境",
+                                    placeholder="如：dev / test / staging",
+                                ),
+                            ]
+
+                            result = PlanGeneratorResult(
+                                type="chat",
+                                chat_response=ChatResponse(
+                                    message=msg,
+                                    interactions=default_interactions,
+                                ),
+                            )
 
                     # Check if LLM decided to return a chat response instead of generating a plan
                     if result.type == "chat" and result.chat_response:

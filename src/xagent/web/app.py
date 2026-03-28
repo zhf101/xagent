@@ -18,6 +18,7 @@ from .api.cloud_storage import cloud_router
 from .api.datamakepool.http_assets import http_assets_router
 from .api.datamakepool.dubbo_assets import dubbo_assets_router
 from .api.datamakepool.legacy_scenarios import legacy_scenarios_router
+from .api.datamakepool.approvals import approvals_router
 from .api.datamakepool.sql_assets import sql_assets_router
 from .api.files import file_router
 from .api.kb import kb_router
@@ -194,6 +195,7 @@ app.include_router(cloud_router)
 app.include_router(http_assets_router)
 app.include_router(dubbo_assets_router)
 app.include_router(legacy_scenarios_router)
+app.include_router(approvals_router)
 app.include_router(sql_assets_router)
 app.include_router(file_router)
 app.include_router(kb_router)

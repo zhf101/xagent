@@ -1874,13 +1874,40 @@ async def handle_execute_task(
                         planning_decision.execution_path == "template_direct"
                         and match_result.matched_template
                     ):
+                        class TemplateDirectRequest:
+                            def __init__(self, user_id: int, is_admin: bool):
+                                self.user: Any = type(
+                                    "obj",
+                                    (),
+                                    {"id": user_id, "is_admin": is_admin},
+                                )()
+                                self.credentials: Any = None
+
                         workspace = TaskWorkspace(
                             id=f"web_task_{task_id}",
                             base_dir=str(UPLOADS_DIR / f"user_{user.id}"),
                         )
+                        direct_tool_config = WebToolConfig(
+                            db=db,
+                            request=TemplateDirectRequest(
+                                int(user.id),
+                                bool(user.is_admin),
+                            ),
+                            user_id=int(user.id),
+                            is_admin=bool(user.is_admin),
+                            include_mcp_tools=False,
+                            task_id=str(task_id),
+                            browser_tools_enabled=False,
+                        )
                         template_executor = TemplateRunExecutor(
                             db,
                             workspace=workspace,
+                            mcp_configs=direct_tool_config.get_mcp_server_configs(),
+                            user_id=int(user.id),
+                            event_callback=lambda message: manager.broadcast_to_task(
+                                message,
+                                task_id,
+                            ),
                         )
                         direct_support = template_executor.analyze_match(
                             match_result.matched_template,
@@ -1903,11 +1930,14 @@ async def handle_execute_task(
                                 matched=match_result.matched_template,
                                 params=params,
                             )
-                            task.status = (
-                                TaskStatus.COMPLETED
-                                if template_result.success
-                                else TaskStatus.FAILED
-                            )
+                            if getattr(template_result, "paused", False):
+                                task.status = TaskStatus.PAUSED
+                            else:
+                                task.status = (
+                                    TaskStatus.COMPLETED
+                                    if template_result.success
+                                    else TaskStatus.FAILED
+                                )
                             db.add(task)
                             db.commit()
                             if template_result.success:
@@ -1915,23 +1945,49 @@ async def handle_execute_task(
                                     int(user.id), force=True
                                 )
 
-                            await manager.broadcast_to_task(
-                                {
-                                    "type": "task_completed",
-                                    "task": {
-                                        "id": task.id,
-                                        "title": task.title,
-                                        "status": task.status.value,
-                                        "description": task.description,
+                            if getattr(template_result, "paused", False):
+                                await manager.broadcast_to_task(
+                                    {
+                                        "type": "task_paused",
+                                        "task": {
+                                            "id": task.id,
+                                            "title": task.title,
+                                            "status": task.status.value,
+                                            "description": task.description,
+                                        },
+                                        "success": False,
+                                        "message": template_result.output,
+                                        "output": template_result.output,
+                                        "metadata": template_result.metadata,
+                                        "approval": template_result.metadata.get(
+                                            "approval"
+                                        ),
+                                        "timestamp": datetime.now(
+                                            timezone.utc
+                                        ).timestamp(),
                                     },
-                                    "success": template_result.success,
-                                    "result": template_result.output,
-                                    "output": template_result.output,
-                                    "metadata": template_result.metadata,
-                                    "timestamp": datetime.now(timezone.utc).timestamp(),
-                                },
-                                task_id,
-                            )
+                                    task_id,
+                                )
+                            else:
+                                await manager.broadcast_to_task(
+                                    {
+                                        "type": "task_completed",
+                                        "task": {
+                                            "id": task.id,
+                                            "title": task.title,
+                                            "status": task.status.value,
+                                            "description": task.description,
+                                        },
+                                        "success": template_result.success,
+                                        "result": template_result.output,
+                                        "output": template_result.output,
+                                        "metadata": template_result.metadata,
+                                        "timestamp": datetime.now(
+                                            timezone.utc
+                                        ).timestamp(),
+                                    },
+                                    task_id,
+                                )
                             return
 
                         planning_decision.route_to_orchestrator = True
@@ -2429,6 +2485,8 @@ async def websocket_chat_endpoint(
                 await handle_chat_message(websocket, task_id, message_data)
             elif message_data.get("type") == "execute_task":
                 await handle_execute_task(websocket, task_id, message_data)
+            elif message_data.get("type") == "execute_direct":
+                await handle_execute_direct(websocket, task_id, message_data)
             elif message_data.get("type") == "intervention":
                 await handle_intervention(websocket, task_id, message_data)
             elif message_data.get("type") == "status_request":
@@ -2454,6 +2512,180 @@ async def websocket_chat_endpoint(
         logger.error(f"Unexpected error in WebSocket: {e}")
         manager.disconnect(websocket, task_id)
         raise
+
+
+async def handle_execute_direct(
+    websocket: WebSocket, task_id: int, message_data: dict
+) -> None:
+    """处理用户在澄清卡片中点击"直接执行"的请求。
+
+    当用户确认复用某个模板或存量场景时，前端发送 execute_direct 消息，
+    后端跳过 DAG 规划，直接调用对应的 executor。
+
+    消息格式:
+    {
+        "type": "execute_direct",
+        "strategy": "template_direct" | "legacy_direct",
+        "candidate_id": "template:42" | "legacy:scenario_xxx",
+        "user_params": { "data_count": 100, ... }
+    }
+    """
+    from sqlalchemy.orm import Session
+
+    from ..models.database import get_db
+    from ..models.task import Task, TaskStatus
+    from ..services.task_prompt_recommendation_refresh import (
+        schedule_user_task_prompt_refresh,
+    )
+
+    user = message_data.get("user")
+    strategy = message_data.get("strategy", "")
+    candidate_id = message_data.get("candidate_id", "")
+    user_params = message_data.get("user_params", {})
+
+    if not user:
+        await manager.send_personal_message(
+            {"type": "error", "message": "Authentication required"},
+            websocket,
+        )
+        return
+
+    if not strategy or not candidate_id:
+        await manager.send_personal_message(
+            {"type": "error", "message": "Missing strategy or candidate_id"},
+            websocket,
+        )
+        return
+
+    db_gen = get_db()
+    db: Session = next(db_gen)
+
+    try:
+        task = db.query(Task).filter(Task.id == task_id).first()
+        if not task:
+            await manager.send_personal_message(
+                {"type": "error", "message": f"Task {task_id} not found"},
+                websocket,
+            )
+            return
+
+        task.status = TaskStatus.RUNNING
+        db.add(task)
+        db.commit()
+
+        # 通知前端任务开始执行
+        await manager.broadcast_to_task(
+            {
+                "type": "task_info",
+                "data": {
+                    "id": task.id,
+                    "title": task.title,
+                    "status": "running",
+                    "description": task.description,
+                },
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            },
+            task_id,
+        )
+
+        success = False
+        output = ""
+        metadata: dict = {}
+
+        if strategy == "template_direct" and candidate_id.startswith("template:"):
+            # 模板直跑
+            template_id = int(candidate_id.split(":")[1])
+            try:
+                from ...datamakepool.orchestration import TemplateRunExecutor
+                from ...datamakepool.templates import TemplateService
+
+                template_service = TemplateService(db)
+                # 构造 MatchedTemplate 对象
+                tpl = template_service.get_template(template_id)
+                if not tpl:
+                    output = f"模板 {template_id} 不存在"
+                else:
+                    from ...datamakepool.interpreter.template_match_result import (
+                        MatchedTemplate,
+                    )
+
+                    matched = MatchedTemplate(
+                        template_id=template_id,
+                        template_name=str(tpl.get("name", f"template_{template_id}")),
+                        confidence=1.0,
+                        version=int(tpl.get("current_version", 1)),
+                        system_short=tpl.get("system_short"),
+                    )
+                    workspace = TaskWorkspace(
+                        id=f"web_task_{task_id}",
+                        base_dir=str(UPLOADS_DIR / f"user_{user.id}"),
+                    )
+                    executor = TemplateRunExecutor(db, workspace=workspace)
+                    result = await executor.execute_match(
+                        task_id=int(task_id),
+                        created_by=int(user.id),
+                        matched=matched,
+                        params=user_params,
+                    )
+                    success = result.success
+                    output = result.output or ""
+                    metadata = result.metadata or {}
+            except Exception as exc:
+                logger.error(f"Template direct execution failed: {exc}", exc_info=True)
+                output = f"模板直跑失败: {exc}"
+
+        elif strategy == "legacy_direct" and candidate_id.startswith("legacy:"):
+            # 存量场景直跑 — 当前阶段先返回提示，后续接入 http2mcp executor
+            output = (
+                f"存量场景 {candidate_id} 已确认。"
+                "当前版本暂不支持存量场景直跑，已记录你的选择，"
+                "后续将通过 http2mcp_executor 执行。"
+            )
+            success = True
+            metadata = {"strategy": strategy, "candidate_id": candidate_id}
+
+        else:
+            output = f"不支持的直跑策略: strategy={strategy}, candidate_id={candidate_id}"
+
+        # 更新任务状态
+        task.status = TaskStatus.COMPLETED if success else TaskStatus.FAILED
+        db.add(task)
+        db.commit()
+
+        if success:
+            schedule_user_task_prompt_refresh(int(user.id), force=True)
+
+        # 通知前端任务完成
+        await manager.broadcast_to_task(
+            {
+                "type": "task_completed",
+                "task": {
+                    "id": task.id,
+                    "title": task.title,
+                    "status": task.status.value,
+                    "description": task.description,
+                },
+                "success": success,
+                "result": output,
+                "output": output,
+                "metadata": metadata,
+                "timestamp": datetime.now(timezone.utc).timestamp(),
+            },
+            task_id,
+        )
+
+    except Exception as exc:
+        logger.error(f"execute_direct failed for task {task_id}: {exc}", exc_info=True)
+        await manager.broadcast_to_task(
+            {
+                "type": "agent_error",
+                "message": f"直跑执行失败: {exc}",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            },
+            task_id,
+        )
+    finally:
+        db.close()
 
 
 async def handle_intervention(
@@ -2615,6 +2847,93 @@ async def handle_resume_task(
         db_gen = get_db()
         db = next(db_gen)
 
+        from ..models.task import Task, TaskStatus
+        from ...datamakepool.orchestration import TemplateRunExecutor
+
+        # 优先尝试恢复模板直跑运行。若当前任务没有可恢复的 template run，
+        # 再回退到 agent 的 resume 机制。
+        direct_tool_config = WebToolConfig(
+            db=db,
+            request=type(
+                "TemplateDirectRequest",
+                (),
+                {
+                    "user": type(
+                        "obj",
+                        (),
+                        {"id": int(user.id), "is_admin": bool(user.is_admin)},
+                    )(),
+                    "credentials": None,
+                },
+            )(),
+            user_id=int(user.id),
+            is_admin=bool(user.is_admin),
+            include_mcp_tools=False,
+            task_id=str(task_id),
+            browser_tools_enabled=False,
+        )
+        direct_workspace = TaskWorkspace(
+            id=f"web_task_{task_id}",
+            base_dir=str(UPLOADS_DIR / f"user_{user.id}"),
+        )
+        template_executor = TemplateRunExecutor(
+            db,
+            workspace=direct_workspace,
+            mcp_configs=direct_tool_config.get_mcp_server_configs(),
+            user_id=int(user.id),
+            event_callback=lambda message: manager.broadcast_to_task(message, task_id),
+        )
+        template_resume_result = await template_executor.resume_latest_run(
+            task_id=int(task_id),
+            resumed_by=int(user.id),
+        )
+        if template_resume_result.run_id is not None:
+            if user.is_admin:
+                task = db.query(Task).filter(Task.id == task_id).first()
+            else:
+                task = (
+                    db.query(Task)
+                    .filter(Task.id == task_id, Task.user_id == user.id)
+                    .first()
+                )
+            if task:
+                if template_resume_result.paused:
+                    task.status = TaskStatus.PAUSED
+                else:
+                    task.status = (
+                        TaskStatus.COMPLETED
+                        if template_resume_result.success
+                        else TaskStatus.FAILED
+                    )
+                db.commit()
+
+            if template_resume_result.paused:
+                await manager.broadcast_to_task(
+                    {
+                        "type": "task_paused",
+                        "task_id": task_id,
+                        "message": template_resume_result.output,
+                        "metadata": template_resume_result.metadata,
+                        "approval": template_resume_result.metadata.get("approval"),
+                        "timestamp": datetime.now(timezone.utc).timestamp(),
+                    },
+                    task_id,
+                )
+            else:
+                await manager.broadcast_to_task(
+                    {
+                        "type": "task_completed",
+                        "task_id": task_id,
+                        "success": template_resume_result.success,
+                        "result": template_resume_result.output,
+                        "output": template_resume_result.output,
+                        "metadata": template_resume_result.metadata,
+                        "timestamp": datetime.now(timezone.utc).timestamp(),
+                    },
+                    task_id,
+                )
+            return
+
         # Get agent service
         from .chat import get_agent_manager
 
@@ -2627,8 +2946,6 @@ async def handle_resume_task(
             await agent_service.resume_execution()
 
             # Update task status in database
-            from ..models.task import Task, TaskStatus
-
             db_gen = get_db()
             db_update = next(db_gen)
             try:

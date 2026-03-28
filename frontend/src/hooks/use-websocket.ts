@@ -396,6 +396,19 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
     }
   }, [])
 
+  const sendExecuteDirect = useCallback((strategy: string, candidateId: string, userParams?: Record<string, unknown>) => {
+    if (socketRef.current?.readyState === WebSocket.OPEN && taskIdRef.current) {
+      const messageData = {
+        type: "execute_direct",
+        task_id: taskIdRef.current,
+        strategy,
+        candidate_id: candidateId,
+        user_params: userParams || {},
+      }
+      socketRef.current.send(JSON.stringify(messageData))
+    }
+  }, [])
+
   const sendChatMessage = useCallback((message: string, files?: File[], force: boolean = false) => {
     const timestamp = Date.now()
     console.log(`🚀 sendChatMessage called [${timestamp}]:`, { message, files: files?.map(f => f.name) })
@@ -597,6 +610,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
     disconnect,
     sendMessage,
     sendChatMessage,
+    sendExecuteDirect,
     executeTask,
     pauseTask,
     resumeTask,

@@ -699,6 +699,89 @@ class PlanGenerator:
 
         return "".join(context_parts)
 
+    @staticmethod
+    def _build_recall_context(context: "AgentContext") -> str:
+        """从 context.state 中提取入口召回结果，格式化为 LLM 可消费的摘要。
+
+        这段摘要会被注入到 classification prompt 的 user message 中，
+        让 LLM 在决定"澄清还是规划"时能看到平台已经找到了哪些可复用资产。
+        """
+        if not context or not hasattr(context, "state"):
+            return ""
+
+        state = context.state
+        entry_recall = state.get("entry_recall_result")
+        if not entry_recall or not isinstance(entry_recall, dict):
+            return ""
+
+        lines: list[str] = ["\n\n## 平台入口召回结果（已自动完成，请据此生成 interactions）\n"]
+
+        # 选中策略
+        strategy = entry_recall.get("selected_strategy", "")
+        if strategy:
+            lines.append(f"- 推荐策略: {strategy}")
+
+        selected = entry_recall.get("selected_candidate")
+        if selected and isinstance(selected, dict):
+            lines.append(
+                f"- 推荐候选: {selected.get('display_name', '未知')}"
+                f"（类型={selected.get('source_type', '?')}, "
+                f"分数={selected.get('score', 0):.2f}, "
+                f"信号={selected.get('matched_signals', [])}）"
+            )
+
+        # 各类候选摘要
+        for label, key in [
+            ("模板", "template_candidates"),
+            ("SQL 资产", "sql_asset_candidates"),
+            ("HTTP 资产", "http_asset_candidates"),
+            ("存量场景", "legacy_candidates"),
+        ]:
+            candidates = entry_recall.get(key) or []
+            if candidates:
+                names = []
+                for c in candidates[:3]:
+                    name = (
+                        c.get("template_name")
+                        or c.get("asset_name")
+                        or c.get("scenario_name")
+                        or c.get("name")
+                        or str(c.get("id", "?"))
+                    )
+                    names.append(name)
+                lines.append(f"- {label}候选({len(candidates)}个): {', '.join(names)}")
+
+        # 缺失参数
+        missing = entry_recall.get("missing_params") or []
+        if missing:
+            labels = [
+                str(p.get("label") or p.get("field", "?"))
+                for p in missing[:5]
+            ]
+            lines.append(f"- 缺失参数: {', '.join(labels)}")
+
+        # 模板匹配详情
+        tmatch = state.get("datamakepool_template_match")
+        if tmatch and isinstance(tmatch, dict):
+            lines.append(
+                f"- 模板匹配: type={tmatch.get('match_type', '?')}, "
+                f"覆盖度={tmatch.get('coverage_score', 0):.2f}, "
+                f"置信度={tmatch.get('confidence', 0):.2f}"
+            )
+            matched_tpl = tmatch.get("matched_template")
+            if matched_tpl:
+                lines.append(
+                    f"- 命中模板: {matched_tpl.get('template_name', '?')}"
+                    f"（id={matched_tpl.get('template_id')}, "
+                    f"v{matched_tpl.get('version', '?')}）"
+                )
+
+        if len(lines) <= 1:
+            # 只有标题行，说明没有任何有意义的召回结果
+            return "\n\n## 平台入口召回结果\n- 未找到任何可复用的模板、SQL 资产、HTTP 资产或存量场景。\n"
+
+        return "\n".join(lines) + "\n"
+
     def _build_classification_prompt(
         self,
         goal: str,
@@ -712,23 +795,38 @@ class PlanGenerator:
             f"[_build_classification_prompt] Building prompt with {len(history)} history items, {len(tools)} tools"
         )
 
-        # Check if custom system prompt is provided in context (e.g., file information)
+        # ── 领域模式检测 ──
+        domain_mode = ""
+        if context and hasattr(context, "state"):
+            domain_mode = context.state.get("domain_mode", "")
+
+        # ── classification 阶段的 custom_prompt 策略 ──
+        # data_generation 模式下，不把完整的 ORCHESTRATOR_PROMPT（"你是编排代理"）
+        # 注入到 classification prompt，否则会干扰 LLM 的澄清判断。
+        # 改为注入轻量的 CLASSIFICATION_ROLE_HINT。
         custom_prompt = ""
-        if (
+        if domain_mode == "data_generation":
+            # 尝试从 profile 加载轻量提示
+            try:
+                from xagent.datamakepool.agents.profile import DatamakepoolAgentProfile
+                custom_prompt = DatamakepoolAgentProfile.CLASSIFICATION_ROLE_HINT + "\n"
+            except ImportError:
+                custom_prompt = ""
+            logger.info(
+                "[_build_classification_prompt] data_generation mode: "
+                "using CLASSIFICATION_ROLE_HINT instead of full ORCHESTRATOR_PROMPT"
+            )
+        elif (
             context
             and hasattr(context, "state")
             and "system_prompt" in context.state
             and context.state["system_prompt"]
         ):
+            # 非造数模式保持原有行为
             custom_prompt = context.state["system_prompt"]
             logger.info(
                 f"[_build_classification_prompt] Using custom system prompt from context: {custom_prompt[:100]}..."
             )
-
-        # 检测领域模式，用于注入领域专属 prompt
-        domain_mode = ""
-        if context and hasattr(context, "state"):
-            domain_mode = context.state.get("domain_mode", "")
 
         # Build tools context with new format
         tools_context = ""
@@ -741,15 +839,30 @@ class PlanGenerator:
         base_prompt = load_prompt("classification_base")
         system_prompt = custom_prompt + base_prompt
 
-        # ── 领域专属 prompt 注入 ──
-        # 按 domain_mode 加载对应的补充 prompt 文件（如 classification_data_generation.md）
+        # 工具列表放在领域规则之前，避免工具列表稀释领域规则的强制性
+        if tools_context:
+            system_prompt += f"\n{tools_context}\n"
+
+        # ── 领域专属 prompt 注入（放在最后，确保最高优先级） ──
         if domain_mode:
             domain_supplement = load_prompt(f"classification_{domain_mode}")
             if domain_supplement:
                 system_prompt += "\n" + domain_supplement
 
-        if tools_context:
-            system_prompt += f"\n{tools_context}\n"
+        # ── data_generation 模式下追加不可忽略的强制指令 ──
+        if domain_mode == "data_generation":
+            system_prompt += (
+                "\n\n"
+                "=== FINAL OVERRIDE (THIS SUPERSEDES EVERYTHING ABOVE) ===\n"
+                "You are in data_generation mode. "
+                "You MUST return type=\"chat\" with interactions. "
+                "You MUST NOT return type=\"plan\". "
+                "The tools listed above are for FUTURE execution, "
+                "not for you to plan right now. "
+                "Your ONLY job right now is to ask the user "
+                "clarifying questions via interactions.\n"
+                "=== END OVERRIDE ===\n"
+            )
 
         # Build messages list with history
         messages = [{"role": "system", "content": system_prompt}]
@@ -758,11 +871,15 @@ class PlanGenerator:
         if history:
             messages.extend(history)
 
-        # Add current goal as the final user message
+        # ── 构造 user message，注入召回结果摘要 ──
+        recall_context = ""
+        if domain_mode == "data_generation" and context is not None:
+            recall_context = self._build_recall_context(context)
+
         messages.append(
             {
                 "role": "user",
-                "content": f"User input: {goal}\n\nAnalyze and respond with appropriate JSON.",
+                "content": f"User input: {goal}{recall_context}\n\nAnalyze and respond with appropriate JSON.",
             }
         )
 
@@ -1072,6 +1189,29 @@ class PlanGenerator:
             "IMPORTANT: Not every step needs to use a tool. Some steps can be pure analysis or organization tasks.\n"
             "- Use tools for: web searches, calculations, code execution, data processing\n"
             "- For pure analysis tasks (summarizing, organizing, explaining, formatting results): set tool_name to null or empty string\n\n"
+        )
+
+        # ── data_generation 模式下注入造数禁令 ──
+        datamakepool_domain_mode = ""
+        if context and hasattr(context, "state"):
+            datamakepool_domain_mode = context.state.get("domain_mode", "")
+        if datamakepool_domain_mode == "data_generation":
+            system_prompt += (
+                "🚫 CRITICAL DATA GENERATION CONSTRAINT (HIGHEST PRIORITY):\n"
+                "You are in the data generation platform. The following rules OVERRIDE all other instructions:\n"
+                "- NEVER use execute_python_code, python_executor, or any code execution tool to generate test data\n"
+                "- NEVER use Faker, random, uuid, or any library to fabricate data in code\n"
+                "- NEVER create data in memory and write it to files or databases via code\n"
+                "- ALL data generation MUST go through one of these specialized executors:\n"
+                "  * sql_executor — SQL statements on real databases\n"
+                "  * http_executor — HTTP API calls to real business systems\n"
+                "  * dubbo_executor — Dubbo service calls to real business systems\n"
+                "  * http2mcp_executor — Legacy scenario execution via http2mcp gateway\n"
+                "- If business context is insufficient (no table schema, no API endpoint, no field constraints),\n"
+                "  add an 'information gathering' step instead of fabricating data with code.\n\n"
+            )
+
+        system_prompt += (
             "CONDITIONAL BRANCHING:\n"
             "- Some steps can be CONDITIONAL NODES that branch execution based on runtime conditions\n"
             "- Use 'conditional_branches' field to define a step as a conditional node\n"

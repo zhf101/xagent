@@ -199,7 +199,11 @@ class TemplateService:
                     )
         return count
 
-    def get_template_execution_spec(self, template_id: int) -> dict[str, Any] | None:
+    def get_template_execution_spec(
+        self,
+        template_id: int,
+        version: int | None = None,
+    ) -> dict[str, Any] | None:
         inspector = inspect(self._db.bind)
         tables = set(inspector.get_table_names())
         if (
@@ -208,6 +212,7 @@ class TemplateService:
         ):
             return None
 
+        version_to_use = int(version) if version is not None else None
         row = self._db.execute(
             text(
                 """
@@ -215,11 +220,15 @@ class TemplateService:
                        v.step_spec_snapshot
                 FROM datamakepool_templates t
                 LEFT JOIN datamakepool_template_versions v
-                  ON v.template_id = t.id AND v.version = t.current_version
+                  ON v.template_id = t.id
+                 AND v.version = COALESCE(:version, t.current_version)
                 WHERE t.id = :template_id
                 """
             ),
-            {"template_id": template_id},
+            {
+                "template_id": template_id,
+                "version": version_to_use,
+            },
         ).mappings().first()
 
         if not row:
@@ -236,6 +245,6 @@ class TemplateService:
             "id": row["id"],
             "name": row["name"],
             "system_short": row.get("system_short"),
-            "version": row.get("current_version") or 1,
+            "version": version_to_use or row.get("current_version") or 1,
             "step_spec": step_spec or [],
         }
