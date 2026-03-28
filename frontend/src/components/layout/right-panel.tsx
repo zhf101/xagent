@@ -158,7 +158,7 @@ function StepDetail({ step }: { step: StepExecution }) {
         <Collapsible open={expandedSections.stepData} onOpenChange={() => toggleSection('stepData')}>
           <Card className="border-border">
             <CollapsibleTrigger asChild>
-              <div className="flex items-center justify-between p-3 cursor-pointer hover:bg-muted/50 transition-colors">
+              <div className="flex items-center justify-between p-3 cursor-pointer hover:bg-primary/5 transition-colors">
                 <div className="flex items-center gap-2">
                   <Activity className="h-4 w-4 text-muted-foreground" />
                   <span className="text-base font-medium">{t("agent.layout.right.labels.stepData")}</span>
@@ -184,7 +184,7 @@ function StepDetail({ step }: { step: StepExecution }) {
         <Collapsible open={expandedSections.fileOutputs} onOpenChange={() => toggleSection('fileOutputs')}>
           <Card className="border-border">
             <CollapsibleTrigger asChild>
-              <div className="flex items-center justify-between p-3 cursor-pointer hover:bg-muted/50 transition-colors">
+              <div className="flex items-center justify-between p-3 cursor-pointer hover:bg-primary/5 transition-colors">
                 <div className="flex items-center gap-2">
                   <FileText className="h-4 w-4 text-muted-foreground" />
                   <span className="text-base font-medium">{t("agent.layout.right.labels.fileOutputs")} ({step.file_outputs.length})</span>

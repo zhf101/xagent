@@ -146,7 +146,7 @@ export default function AgentChatPage() {
         <div className="max-w-md w-full text-center space-y-6">
           {/* Icon */}
           <div className="flex justify-center">
-            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
+            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-primary/10">
               <Bot className="h-6 w-6 text-muted-foreground" />
             </div>
           </div>

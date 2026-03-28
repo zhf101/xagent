@@ -607,8 +607,7 @@ export function ChatInput({
               </div>
             )}
             {mentions.mentionPhase === "items" && mentions.activeCategory && (
-              <div className="px-3 py-1.5 text-xs text-muted-foreground border-b bg-muted/30 flex items-center gap-1.5">
-                {mentions.activeCategory.key === "environment" && <Cloud className="h-3 w-3" />}
+                              <div className="px-3 py-1.5 text-xs text-muted-foreground border-b bg-white flex items-center gap-1.5">                {mentions.activeCategory.key === "environment" && <Cloud className="h-3 w-3" />}
                 {mentions.activeCategory.key === "system" && <Server className="h-3 w-3" />}
                 {mentions.activeCategory.key === "database" && <Database className="h-3 w-3" />}
                 {mentions.activeCategory.key === "template" && <FileText className="h-3 w-3" />}

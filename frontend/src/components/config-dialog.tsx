@@ -154,7 +154,7 @@ export function ConfigDialog({ onConfigChange, currentConfig, trigger }: ConfigD
           <Button
             variant="ghost"
             size="sm"
-            className="h-7 w-7 p-0 text-muted-foreground hover:text-foreground hover:bg-muted rounded-md"
+            className="h-7 w-7 p-0 text-muted-foreground hover:text-foreground hover:bg-primary/5 rounded-md"
             title={t('agent.input.actions.config')}
           >
             <Settings className="h-3.5 w-3.5" />

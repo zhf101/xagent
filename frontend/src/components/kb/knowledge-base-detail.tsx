@@ -673,7 +673,7 @@ export function KnowledgeBaseDetailContent({ collectionName }: { collectionName:
                 <ScrollArea className="h-96">
                   <div className="space-y-3">
                     {collectionInfo.document_names.map((fileName, index) => (
-                      <div key={index} className="flex items-center justify-between p-3 border rounded-lg hover:bg-muted/50 transition-colors">
+                      <div key={index} className="flex items-center justify-between p-3 border rounded-lg hover:bg-primary/5 transition-colors">
                         <div className="flex items-center gap-3">
                           <FileIcon className="h-5 w-5 text-blue-500" />
                           <div className="flex-1">
@@ -850,7 +850,7 @@ export function KnowledgeBaseDetailContent({ collectionName }: { collectionName:
                           <div className="mt-2 text-xs text-muted-foreground">
                             <details>
                               <summary className="cursor-pointer">{t("kb.detail.search.metadata")}</summary>
-                              <pre className="mt-1 p-2 bg-muted rounded text-xs overflow-x-auto">
+                              <pre className="mt-1 p-2 bg-primary/5 rounded text-xs overflow-x-auto">
                                 {JSON.stringify(result.metadata, null, 2)}
                               </pre>
                             </details>
@@ -1066,7 +1066,7 @@ export function KnowledgeBaseDetailContent({ collectionName }: { collectionName:
                 <div className="grid grid-cols-2 gap-4 py-4">
                   <Button
                     variant="outline"
-                    className={`h-32 flex flex-col gap-3 hover:bg-muted/50 hover:border-primary transition-all ${
+                    className={`h-32 flex flex-col gap-3 hover:bg-primary/5 hover:border-primary transition-all ${
                       isDragging ? "border-primary bg-primary/10" : ""
                     }`}
                     onClick={() => {
@@ -1083,7 +1083,7 @@ export function KnowledgeBaseDetailContent({ collectionName }: { collectionName:
                   </Button>
                   <Button
                     variant="outline"
-                    className="h-32 flex flex-col gap-3 hover:bg-muted/50 hover:border-primary transition-all"
+                    className="h-32 flex flex-col gap-3 hover:bg-primary/5 hover:border-primary transition-all"
                     onClick={() => setActiveAddSourceMode("web")}
                   >
                     <div className="p-3 bg-purple-100 dark:bg-purple-900/30 rounded-full">
@@ -1104,7 +1104,7 @@ export function KnowledgeBaseDetailContent({ collectionName }: { collectionName:
 
                  {selectedFiles.length === 0 ? (
                     <div
-                      className={`border-2 border-dashed rounded-lg p-8 text-center cursor-pointer hover:bg-muted/50 transition-colors ${
+                      className={`border-2 border-dashed rounded-lg p-8 text-center cursor-pointer hover:bg-primary/5 transition-colors ${
                         isDragging ? "border-primary bg-primary/10" : ""
                       }`}
                       onClick={() => fileInputRef.current?.click()}
@@ -1129,7 +1129,7 @@ export function KnowledgeBaseDetailContent({ collectionName }: { collectionName:
                       <ScrollArea className="h-48 border rounded-md p-2">
                         <div className="space-y-2">
                           {selectedFiles.map((file, index) => (
-                            <div key={index} className="flex items-center justify-between p-2 bg-muted/30 rounded text-sm">
+                            <div key={index} className="flex items-center justify-between p-2 bg-white rounded text-sm">
                               <span className="truncate max-w-[200px]" title={file.name}>{file.name}</span>
                               <div className="flex items-center gap-2">
                                 <span className="text-xs text-muted-foreground">{(file.size / 1024).toFixed(1)} KB</span>

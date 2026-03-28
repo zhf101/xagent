@@ -148,7 +148,7 @@ export function AgentInput({
     }
 
     const customStyles = {
-      pending: "bg-muted/50 text-muted-foreground border-border",
+      pending: "bg-white text-muted-foreground border-border",
       running: "bg-primary/10 text-primary border-primary/20",
       completed: "bg-green-500/10 text-green-500 border-green-500/20",
       failed: "bg-destructive/10 text-destructive border-destructive/20",
@@ -245,7 +245,7 @@ export function AgentInput({
       {files.length > 0 && (
         <div className="flex flex-wrap gap-2">
           {files.map((file, index) => (
-            <div key={index} className="flex items-center gap-1 px-2 py-1 bg-muted/50 rounded-md border border-border">
+            <div key={index} className="flex items-center gap-1 px-2 py-1 bg-white rounded-md border border-border">
               <Paperclip className="h-3 w-3 text-muted-foreground" />
               <span className="text-xs truncate max-w-[120px]">{file.name}</span>
               <span className="text-xs text-muted-foreground">{formatFileSize(file.size)}</span>
@@ -308,7 +308,7 @@ export function AgentInput({
                     <Button
                       variant="ghost"
                       size="sm"
-                      className="h-7 w-7 p-0 text-muted-foreground hover:text-foreground hover:bg-muted rounded-md"
+                      className="h-7 w-7 p-0 text-muted-foreground hover:text-foreground hover:bg-primary/5 rounded-md"
                       title={t('agent.input.actions.config')}
                     >
                       <Settings className="h-3.5 w-3.5" />
@@ -335,8 +335,7 @@ export function AgentInput({
               size="sm"
               onClick={() => fileInputRef.current?.click()}
               disabled={disabled || isProcessing}
-              className="h-7 w-7 p-0 text-muted-foreground hover:text-foreground hover:bg-muted rounded-md"
-              title={t('agent.input.actions.uploadFile')}
+                              className="h-7 w-7 p-0 text-muted-foreground hover:text-foreground hover:bg-primary/5 rounded-md"              title={t('agent.input.actions.uploadFile')}
             >
               <Upload className="h-3.5 w-3.5" />
             </Button>

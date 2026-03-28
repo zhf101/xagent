@@ -63,8 +63,7 @@ export function FileViewer({
   }
 
   return (
-    <div className="flex-1 overflow-auto bg-muted/30 rounded border h-full">
-      {fileName.toLowerCase().endsWith('.pptx') || fileName.toLowerCase().endsWith('.ppt') ? (
+            <div className="flex-1 overflow-auto bg-white rounded border h-full">      {fileName.toLowerCase().endsWith('.pptx') || fileName.toLowerCase().endsWith('.ppt') ? (
         <iframe
           srcDoc={content || ''}
           className="w-full h-full border-0"

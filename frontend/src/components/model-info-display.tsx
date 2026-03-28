@@ -124,8 +124,7 @@ export function ModelInfoDisplay({ currentTask, onConfigChange, className }: Mod
         size="sm"
         onClick={onConfigChange}
         className={cn(
-          "h-7 w-7 p-0 text-muted-foreground hover:text-foreground hover:bg-muted rounded-md",
-          className
+                      "h-7 w-7 p-0 text-muted-foreground hover:text-foreground hover:bg-primary/5 rounded-md",          className
         )}
         title={t('agent.input.actions.config')}
         aria-label={t('agent.input.actions.config')}
@@ -183,8 +182,7 @@ export function ModelInfoDisplay({ currentTask, onConfigChange, className }: Mod
           variant="ghost"
           size="sm"
           onClick={onConfigChange}
-          className="h-7 w-7 p-0 text-muted-foreground hover:text-foreground hover:bg-muted rounded-md"
-          title={t('agent.config.title')}
+                        className="h-7 w-7 p-0 text-muted-foreground hover:text-foreground hover:bg-primary/5 rounded-md"          title={t('agent.config.title')}
           aria-label={t('agent.config.title')}
         >
           <Settings className="h-3.5 w-3.5" />

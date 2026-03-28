@@ -330,8 +330,7 @@ export function CloudConnectDialog({
               </div>
 
               {/* Breadcrumbs */}
-              <div className="flex items-center gap-1 text-sm text-muted-foreground p-2 border-b bg-muted/20">
-                <span
+                                <div className="flex items-center gap-1 text-sm text-muted-foreground p-2 border-b bg-white">                <span
                   className="hover:underline cursor-pointer hover:text-foreground transition-colors"
                   onClick={() => setCurrentPath([])}
                 >
@@ -378,7 +377,7 @@ export function CloudConnectDialog({
                                   {folders.map(folder => (
                                     <div
                                       key={folder.id}
-                                      className="flex items-center gap-2 p-2 hover:bg-muted/50 rounded-md cursor-pointer group"
+                                      className="flex items-center gap-2 p-2 hover:bg-primary/5 rounded-md cursor-pointer group"
                                       onClick={() => setCurrentPath(prev => [...prev, { id: folder.id, name: folder.name }])}
                                     >
                                       <Folder className="h-5 w-5 text-blue-500 fill-blue-500/20" />
@@ -405,7 +404,7 @@ export function CloudConnectDialog({
                                         className={`flex items-center gap-2 p-2 rounded-md cursor-pointer transition-colors ${
                                           selected
                                             ? "bg-primary/10 text-primary hover:bg-primary/15"
-                                            : "hover:bg-muted/50"
+                                            : "hover:bg-primary/5"
                                         }`}
                                         onClick={() => toggleSelection(file)}
                                       >
@@ -436,8 +435,7 @@ export function CloudConnectDialog({
 
             {/* Right Column: Selected Files */}
             <div className="flex flex-col border rounded-md overflow-hidden">
-              <div className="p-3 border-b bg-muted/20 font-medium text-sm flex items-center justify-between">
-                {t("kb.dialog.cloudConnect.selectedFiles.title")}
+                                <div className="p-3 border-b bg-white font-medium text-sm flex items-center justify-between">                {t("kb.dialog.cloudConnect.selectedFiles.title")}
                 <Button
                   variant="ghost"
                   size="sm"
@@ -451,7 +449,7 @@ export function CloudConnectDialog({
               <ScrollArea className="flex-1 overflow-auto">
                 <div className="p-2 space-y-1">
                   {selectedFiles.map(file => (
-                    <div key={file.id} className="flex items-center gap-2 p-2 rounded-md hover:bg-muted/50 group text-sm cursor-pointer" onClick={() => toggleSelection(file)}>
+                    <div key={file.id} className="flex items-center gap-2 p-2 rounded-md hover:bg-primary/5 group text-sm cursor-pointer" onClick={() => toggleSelection(file)}>
                       <div className="w-4 h-4 bg-primary text-primary-foreground rounded flex items-center justify-center">
                         <Check className="h-3 w-3" />
                       </div>

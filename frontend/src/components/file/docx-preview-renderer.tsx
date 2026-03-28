@@ -45,5 +45,4 @@ export function DocxPreviewRenderer({ base64Content }: DocxPreviewRendererProps)
     return <div className="p-4 text-sm text-muted-foreground">{error}</div>
   }
 
-  return <div ref={containerRef} className="h-full overflow-auto bg-muted/30" />
-}
+      return <div ref={containerRef} className="h-full overflow-auto bg-white" />}

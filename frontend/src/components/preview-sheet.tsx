@@ -36,7 +36,7 @@ export function PreviewSheet({ open, onOpenChange, title, actions, children }: P
         </div>
       </div>
       <div className="flex-1 overflow-hidden flex flex-col min-h-0">
-        <div className="flex-1 overflow-hidden bg-muted/30">
+        <div className="flex-1 overflow-hidden bg-white">
           {children}
         </div>
       </div>

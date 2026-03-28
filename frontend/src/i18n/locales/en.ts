@@ -57,6 +57,12 @@ const en = {
       main: "MAIN",
       resources: "RESOURCES",
     },
+    groups: {
+      core: "Core",
+      workspace: "Workspace",
+      resources: "Resources",
+      system: "System",
+    },
   },
   chatPage: {
     page: {

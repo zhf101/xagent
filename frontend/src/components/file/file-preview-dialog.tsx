@@ -259,8 +259,7 @@ export function FilePreviewDialog({ open, onOpenChange }: FilePreviewDialogProps
         </DialogHeader>
 
         {/* Main content area with scroll */}
-        <div className="flex-1 overflow-auto bg-muted/30 p-4">
-          <div className="max-w-4xl mx-auto h-full bg-background rounded shadow-sm border overflow-hidden min-h-[600px]">
+                    <div className="flex-1 overflow-auto bg-white p-4">          <div className="max-w-4xl mx-auto h-full bg-background rounded shadow-sm border overflow-hidden min-h-[600px]">
             <FileViewer
               fileName={filePreview.fileName}
               fileId={filePreview.fileId}

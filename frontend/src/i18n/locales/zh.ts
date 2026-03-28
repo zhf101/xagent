@@ -57,6 +57,12 @@ const zh = {
       main: "主要功能",
       resources: "资源",
     },
+    groups: {
+      core: "核心功能",
+      workspace: "工作区",
+      resources: "资源管理",
+      system: "系统管理",
+    },
   },
   chatPage: {
     page: {

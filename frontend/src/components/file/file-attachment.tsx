@@ -277,7 +277,7 @@ export function FileAttachment({ files, className, showPreview = true, variant =
                   className="max-w-full max-h-full mx-auto"
                 />
               ) : (
-                <pre className="whitespace-pre-wrap text-sm bg-muted p-4 rounded overflow-auto max-h-full">
+                <pre className="whitespace-pre-wrap text-sm bg-primary/5 p-4 rounded overflow-auto max-h-full">
                   {previewContent}
                 </pre>
               )}

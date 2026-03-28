@@ -110,116 +110,155 @@ const getUserMenuItemsForUser = (user: any): NavigationItem[] => {
   return []
 }
 
-// 导航菜单项定义
-// 普通用户仅可见：Task、Agents
-// 管理员可见：所有菜单
-const allNavigationItems: NavigationItem[] = [
-  // === 核心功能 ===
-  {
-    name: "Workspace",
-    nameKey: "nav.workspace",
-    href: "/agent/vibe",
-    icon: LayoutDashboard,
-    adminOnly: true
-  },
-  {
-    name: "Task",
-    nameKey: "nav.task",
-    href: "/task",
-    icon: MessageSquare,
-    adminOnly: false
-  },
-  {
-    name: "Agents",
-    nameKey: "nav.build",
-    href: "/build",
-    icon: Bot,
-    adminOnly: false
-  },
-  {
-    name: "Templates",
-    nameKey: "nav.templates",
-    href: "/templates",
-    icon: LayoutTemplate,
-    adminOnly: true
-  },
-  // === 资源管理（仅管理员） ===
-  {
-    name: "Knowledge Base",
-    nameKey: "nav.knowledgeBase",
-    href: "/kb",
-    icon: BookOpen,
-    adminOnly: true
-  },
-  {
-    name: "Models",
-    nameKey: "nav.models",
-    href: "/models",
-    icon: Box,
-    adminOnly: true
-  },
-  {
-    name: "Data Sources",
-    nameKey: "nav.dataSources",
-    href: "/data-sources",
-    icon: Database,
-    adminOnly: true
-  },
-  {
-    name: "SQL Assets",
-    nameKey: "nav.sqlAssets",
-    href: "/sql-assets",
-    icon: Layers,
-    adminOnly: true
-  },
-  {
-    name: "HTTP Assets",
-    nameKey: "nav.httpAssets",
-    href: "/http-assets",
-    icon: Server,
-    adminOnly: true
-  },
-  {
-    name: "Memory",
-    nameKey: "nav.memory",
-    href: "/memory",
-    icon: Brain,
-    adminOnly: true
-  },
-  // === 系统管理（仅管理员） ===
-  {
-    name: "Tools",
-    nameKey: "nav.tools",
-    href: "/tools",
-    icon: Wrench,
-    adminOnly: true
-  },
-  {
-    name: "Files",
-    nameKey: "nav.files",
-    href: "/files",
-    icon: FileText,
-    adminOnly: true
-  },
-  {
-    name: "Monitoring",
-    nameKey: "nav.monitoring",
-    href: "/monitoring",
-    icon: Activity,
-    adminOnly: true
-  },
-  {
-    name: "Settings",
-    nameKey: "nav.settings",
-    href: "/settings",
-    icon: Settings,
-    adminOnly: true
-  }
-]
+// 导航菜单分组定义 - 支持父子菜单折叠
+interface NavigationGroup {
+  key: string
+  title: string
+  titleKey: string
+  icon: any
+  items: NavigationItem[]
+  defaultExpanded?: boolean
+}
 
-// 根据用户权限过滤导航项
-const getNavigationItems = (isAdmin: boolean): NavigationItem[] => {
-  return allNavigationItems.filter(item => !item.adminOnly || isAdmin)
+// 导航菜单分组
+const getNavigationGroups = (isAdmin: boolean): NavigationGroup[] => {
+  const groups: NavigationGroup[] = [
+    // 核心功能 - 所有用户可见
+    {
+      key: "core",
+      title: "核心功能",
+      titleKey: "nav.groups.core",
+      icon: LayoutDashboard,
+      items: [
+        {
+          name: "Task",
+          nameKey: "nav.task",
+          href: "/task",
+          icon: MessageSquare
+        },
+        {
+          name: "Agents",
+          nameKey: "nav.build",
+          href: "/build",
+          icon: Bot
+        }
+      ],
+      defaultExpanded: true
+    }
+  ]
+
+  // 管理员可见的分组
+  if (isAdmin) {
+    groups.push(
+      {
+        key: "workspace",
+        title: "工作区",
+        titleKey: "nav.groups.workspace",
+        icon: LayoutDashboard,
+        items: [
+          {
+            name: "Workspace",
+            nameKey: "nav.workspace",
+            href: "/agent/vibe",
+            icon: LayoutDashboard
+          },
+          {
+            name: "Templates",
+            nameKey: "nav.templates",
+            href: "/templates",
+            icon: LayoutTemplate
+          }
+        ],
+        defaultExpanded: true
+      },
+      {
+        key: "resources",
+        title: "资源管理",
+        titleKey: "nav.groups.resources",
+        icon: Database,
+        items: [
+          {
+            name: "Knowledge Base",
+            nameKey: "nav.knowledgeBase",
+            href: "/kb",
+            icon: BookOpen
+          },
+          {
+            name: "Models",
+            nameKey: "nav.models",
+            href: "/models",
+            icon: Box
+          },
+          {
+            name: "Data Sources",
+            nameKey: "nav.dataSources",
+            href: "/data-sources",
+            icon: Database
+          },
+          {
+            name: "SQL Assets",
+            nameKey: "nav.sqlAssets",
+            href: "/sql-assets",
+            icon: Layers
+          },
+          {
+            name: "HTTP Assets",
+            nameKey: "nav.httpAssets",
+            href: "/http-assets",
+            icon: Server
+          },
+          {
+            name: "Memory",
+            nameKey: "nav.memory",
+            href: "/memory",
+            icon: Brain
+          }
+        ],
+        defaultExpanded: false
+      },
+      {
+        key: "system",
+        title: "系统管理",
+        titleKey: "nav.groups.system",
+        icon: Settings,
+        items: [
+          {
+            name: "Tools",
+            nameKey: "nav.tools",
+            href: "/tools",
+            icon: Wrench
+          },
+          {
+            name: "Files",
+            nameKey: "nav.files",
+            href: "/files",
+            icon: FileText
+          },
+          {
+            name: "Monitoring",
+            nameKey: "nav.monitoring",
+            href: "/monitoring",
+            icon: Activity
+          },
+          {
+            name: "Settings",
+            nameKey: "nav.settings",
+            href: "/settings",
+            icon: Settings
+          },
+          {
+            name: "User Management",
+            nameKey: "nav.userManagement",
+            href: "/users/",
+            icon: Users
+          }
+        ],
+        defaultExpanded: false
+      }
+    )
+  }
+
+  return groups
 }
 
 const SIDEBAR_COMPACT_STORAGE_KEY = "xagent.sidebar.compact"
@@ -278,10 +317,8 @@ export function Sidebar({ className }: SidebarProps) {
   const [isExpanded, setIsExpanded] = useState(false)
   const [compactPreference, setCompactPreference] = useState(false)
   const [compactReasons, setCompactReasons] = useState<SidebarCompactReason[]>([])
-  // 简化：去掉分组折叠功能，所有菜单始终展开
-  // const [expandedMenus, setExpandedMenus] = useState<string[]>(
-  //   [...navigationGroups.map((group) => group.key), "/workspace", "/resources"]
-  // )
+  // 分组折叠状态
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set(["core", "workspace"]))
   const [showUserMenu, setShowUserMenu] = useState(false)
   const [isAboutOpen, setIsAboutOpen] = useState(false)
   const sidebarRef = useRef<HTMLDivElement | null>(null)
@@ -661,8 +698,21 @@ export function Sidebar({ className }: SidebarProps) {
     }
   }, [isAgentPage, shouldShowSidebar, isExpanded])
 
-  // 获取当前用户可见的导航项
-  const navigationItems = getNavigationItems(user?.is_admin || false)
+  // 获取当前用户可见的导航分组
+  const navigationGroups = getNavigationGroups(user?.is_admin || false)
+
+  // 切换分组展开/折叠
+  const toggleGroup = (groupKey: string) => {
+    setExpandedGroups(prev => {
+      const next = new Set(prev)
+      if (next.has(groupKey)) {
+        next.delete(groupKey)
+      } else {
+        next.add(groupKey)
+      }
+      return next
+    })
+  }
 
   const historyHeaderClass =
     "flex items-center justify-between px-3 py-1.5 text-[10px] font-semibold text-muted-foreground/50 tracking-wider uppercase transition-colors hover:text-foreground/80"
@@ -694,31 +744,7 @@ export function Sidebar({ className }: SidebarProps) {
         : "w-0",
       className
     )}>
-      {/* 浮动收缩按钮 - http2mcp 风格 */}
-      {shouldShowSidebar && !isCompactModeControlled && (
-        <button
-          onClick={() => setCompactPreference((current) => !current)}
-          className={cn(
-            "absolute top-1/2 z-20 flex items-center justify-center transition-all duration-200",
-            "w-[18px] h-10 rounded-md",
-            "bg-card border border-border",
-            "text-muted-foreground",
-            "hover:text-primary hover:border-primary/30",
-            "shadow-[0_2px_6px_rgba(0,0,0,0.08)]",
-            isCompactMode ? "-right-1" : "-right-2"
-          )}
-          style={{ transform: 'translateY(-50%)' }}
-          title={isCompactMode ? "展开侧边栏" : "收起侧边栏"}
-        >
-          {isCompactMode ? (
-            <ChevronRight className="h-3 w-3" />
-          ) : (
-            <ChevronLeft className="h-3 w-3" />
-          )}
-        </button>
-      )}
-      
-      {/* Logo - http2mcp 风格：简洁居中 */}
+      {/* Logo */}
       <div
         className={cn(
           "flex items-center h-12",
@@ -750,56 +776,96 @@ export function Sidebar({ className }: SidebarProps) {
         )}
       </div>
 
-      {/* 紧凑模式下的展开提示 */}
-      {isCompactMode && !isCompactModeControlled && (
-        <div className="flex justify-center py-1">
-           <button
-              onClick={() => setCompactPreference(false)}
-              className="rounded p-1.5 text-muted-foreground transition-colors hover:bg-primary/5 hover:text-foreground"
-              title="展开侧边栏"
-            >
-              <PanelLeftOpen className="h-4 w-4" />
-            </button>
-        </div>
-      )}
-
-      {/* Navigation - http2mcp 风格扁平菜单 */}
+      {/* Navigation - 分组折叠菜单 */}
       <nav
         ref={navRef}
         className="flex-1 min-h-0 overflow-y-auto scrollbar-hide"
         onScroll={handleScroll}
       >
         <div className={cn("py-2", isCompactMode ? "px-1" : "px-2")}>
-          {navigationItems.map((item) => {
-            const isActive = pathname === item.href || (item.href !== "/" && pathname.startsWith(item.href))
+          {navigationGroups.map((group) => {
+            const isGroupExpanded = expandedGroups.has(group.key)
+            const hasActiveItem = group.items.some(
+              item => pathname === item.href || (item.href !== "/" && pathname.startsWith(item.href))
+            )
             
             return (
-              <Link
-                key={item.name}
-                href={item.href}
-                title={isCompactMode ? (item.nameKey ? t(item.nameKey) : item.name) : undefined}
-                className={cn(
-                  "group flex items-center rounded transition-all duration-150",
-                  isCompactMode 
-                    ? "h-10 w-10 mx-auto justify-center mb-1" 
-                    : "h-9 px-3 mb-0.5 justify-start",
-                  isActive 
-                    ? "bg-primary/10 text-primary font-medium" 
-                    : "text-muted-foreground hover:bg-muted/50 hover:text-foreground"
-                )}
-              >
-                <item.icon
-                  className={cn(
-                    isCompactMode ? "h-5 w-5" : "h-4 w-4 mr-2.5",
-                    isActive ? "text-primary" : "text-muted-foreground/70 group-hover:text-foreground"
-                  )}
-                />
+              <div key={group.key} className="mb-1">
+                {/* 分组标题 - 可点击折叠 */}
                 {!isCompactMode && (
-                  <span className="text-[13px] truncate">
-                    {item.nameKey ? t(item.nameKey) : item.name}
-                  </span>
+                  <button
+                    onClick={() => toggleGroup(group.key)}
+                    className={cn(
+                      "w-full flex items-center gap-2 px-3 py-2 text-xs font-medium rounded transition-colors",
+                      hasActiveItem 
+                        ? "text-primary bg-primary/5" 
+                        : "text-muted-foreground hover:text-foreground hover:bg-primary/5"
+                    )}
+                  >
+                    <group.icon className="h-4 w-4" />
+                    <span className="flex-1 text-left">{t(group.titleKey)}</span>
+                    {isGroupExpanded ? (
+                      <ChevronDown className="h-3 w-3" />
+                    ) : (
+                      <ChevronRight className="h-3 w-3" />
+                    )}
+                  </button>
                 )}
-              </Link>
+                
+                {/* 紧凑模式下只显示分组图标 */}
+                {isCompactMode && (
+                  <button
+                    onClick={() => toggleGroup(group.key)}
+                    className={cn(
+                      "w-10 h-10 mx-auto flex items-center justify-center rounded transition-colors mb-0.5",
+                      hasActiveItem 
+                        ? "text-primary bg-primary/10" 
+                        : "text-muted-foreground hover:text-foreground hover:bg-primary/5"
+                    )}
+                    title={t(group.titleKey)}
+                  >
+                    <group.icon className="h-5 w-5" />
+                  </button>
+                )}
+                
+                {/* 子菜单项 */}
+                {isGroupExpanded && (
+                  <div className={cn("space-y-0.5", isCompactMode ? "hidden" : "mt-0.5")}>
+                    {group.items.map((item) => {
+                      const isActive = pathname === item.href || (item.href !== "/" && pathname.startsWith(item.href))
+                      
+                      return (
+                        <Link
+                          key={item.name}
+                          href={item.href}
+                          title={isCompactMode ? (item.nameKey ? t(item.nameKey) : item.name) : undefined}
+                          className={cn(
+                            "group flex items-center rounded transition-all duration-150",
+                            isCompactMode 
+                              ? "h-10 w-10 mx-auto justify-center mb-0.5" 
+                              : "h-8 px-3 pl-9 mb-0.5 justify-start",
+                            isActive 
+                              ? "bg-primary/10 text-primary font-medium" 
+                              : "text-muted-foreground hover:bg-primary/5 hover:text-foreground"
+                          )}
+                        >
+                          <item.icon
+                            className={cn(
+                              isCompactMode ? "h-5 w-5" : "h-4 w-4 mr-2",
+                              isActive ? "text-primary" : "text-muted-foreground/70 group-hover:text-foreground"
+                            )}
+                          />
+                          {!isCompactMode && (
+                            <span className="text-[13px] truncate">
+                              {item.nameKey ? t(item.nameKey) : item.name}
+                            </span>
+                          )}
+                        </Link>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
             )
           })}
         </div>
@@ -828,7 +894,7 @@ export function Sidebar({ className }: SidebarProps) {
                 <span className="flex-1 truncate">{t('nav.history')}</span>
               )}
               <div
-                className="cursor-pointer p-0.5 -mr-0.5 hover:bg-muted rounded transition-colors"
+                className="cursor-pointer p-0.5 -mr-0.5 hover:bg-primary/10 rounded transition-colors"
                 onClick={() => setIsHistoryExpanded(!isHistoryExpanded)}
               >
                 {isHistoryExpanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
@@ -884,7 +950,7 @@ export function Sidebar({ className }: SidebarProps) {
                           )}
                           <button
                             onClick={(e) => deleteTask(task.task_id, e)}
-                            className="absolute right-1 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity p-1 text-muted-foreground hover:text-red-500 rounded hover:bg-muted"
+                            className="absolute right-1 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity p-1 text-muted-foreground hover:text-red-500 rounded hover:bg-primary/5"
                             title={t('common.delete')}
                           >
                             <Trash2 className="h-3 w-3" />
@@ -915,7 +981,7 @@ export function Sidebar({ className }: SidebarProps) {
                 }
                 setIsHistoryExpanded(true)
               }}
-              className="mx-2 flex h-9 w-[calc(100%-1rem)] items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+              className="mx-2 flex h-9 w-[calc(100%-1rem)] items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-primary/5 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
               title={isCompactModeControlled ? "当前由画布聚焦控制，无法展开任务列表" : t('nav.history')}
               disabled={isCompactModeControlled}
             >
@@ -935,7 +1001,7 @@ export function Sidebar({ className }: SidebarProps) {
                   <Link
                     key={item.href}
                     href={item.href}
-                    className="flex items-center px-3 py-1.5 text-[13px] text-foreground hover:bg-muted transition-colors"
+                    className="flex items-center px-3 py-1.5 text-[13px] text-foreground hover:bg-primary/5 transition-colors"
                     onClick={() => setShowUserMenu(false)}
                   >
                     <item.icon className="h-4 w-4 mr-2 text-muted-foreground" />
@@ -947,7 +1013,7 @@ export function Sidebar({ className }: SidebarProps) {
                     setShowUserMenu(false)
                     setIsAboutOpen(true)
                   }}
-                  className="flex w-full items-center px-3 py-1.5 text-[13px] text-foreground hover:bg-muted transition-colors text-left"
+                  className="flex w-full items-center px-3 py-1.5 text-[13px] text-foreground hover:bg-primary/5 transition-colors text-left"
                 >
                   <Info className="h-4 w-4 mr-2 text-muted-foreground" />
                   {t("sidebar.about.menu")}
@@ -969,7 +1035,7 @@ export function Sidebar({ className }: SidebarProps) {
         <button
           onClick={() => setShowUserMenu(!showUserMenu)}
           className={cn(
-            "flex w-full items-center gap-2 rounded-md p-1.5 text-left transition-colors hover:bg-muted/50",
+            "flex w-full items-center gap-2 rounded-md p-1.5 text-left transition-colors hover:bg-primary/5",
             isCompactMode ? "justify-center" : ""
           )}
         >

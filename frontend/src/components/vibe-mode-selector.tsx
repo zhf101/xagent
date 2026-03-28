@@ -169,7 +169,7 @@ export function VibeModeSelector({ config, onChange, disabled, selectedFiles: ex
 
       {/* Mode Description */}
       {config.mode === "task" && (
-        <Card className="p-4 bg-muted/30 border-border">
+        <Card className="p-4 bg-white border-border">
           <div className="text-sm space-y-2">
             <div className="font-semibold text-foreground">{t('agent.vibeMode.descriptions.task.title')}</div>
             <div className="text-muted-foreground">
@@ -184,8 +184,7 @@ export function VibeModeSelector({ config, onChange, disabled, selectedFiles: ex
 
       {config.mode === "process" && (
         <div className="space-y-4">
-          <Card className="p-4 bg-muted/30 border-border">
-            <div className="text-sm space-y-2">
+                      <Card className="p-4 bg-white border-border">            <div className="text-sm space-y-2">
               <div className="font-semibold text-foreground">{t('agent.vibeMode.descriptions.process.title')}</div>
               <div className="text-muted-foreground">
                 {t('agent.vibeMode.descriptions.process.text')}
@@ -228,7 +227,7 @@ export function VibeModeSelector({ config, onChange, disabled, selectedFiles: ex
             {files.length > 0 && (
               <div className="flex flex-wrap gap-2">
                 {files.map((file, index) => (
-                  <div key={index} className="flex items-center gap-1 px-2 py-1 bg-muted/50 rounded-md border border-border">
+                  <div key={index} className="flex items-center gap-1 px-2 py-1 bg-primary/5 rounded-md border border-border">
                     <Paperclip className="h-3 w-3 text-muted-foreground" />
                     <span className="text-xs truncate max-w-[120px]">{file.name}</span>
                     <span className="text-xs text-muted-foreground">{formatFileSize(file.size)}</span>

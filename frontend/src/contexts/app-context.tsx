@@ -1820,7 +1820,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                       }
 
                       return (
-                        <div key={index} className="flex items-center justify-between bg-muted/30 rounded p-2">
+                        <div key={index} className="flex items-center justify-between bg-white rounded p-2">
                           <span className="text-sm font-mono">{fileName}</span>
                           <button
                             onClick={() => {
@@ -2389,7 +2389,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                           title={t('agent.logs.event.common.fullData')}
                           badge={t('agent.logs.event.messages.memoryBadge')}
                         >
-                          <div className="text-xs bg-muted/80 p-2 rounded font-mono text-foreground">
+                          <div className="text-xs bg-primary/5 p-2 rounded font-mono text-foreground">
                             {JSON.stringify(eventData, null, 2)}
                           </div>
                         </CollapsibleSection>
@@ -2462,11 +2462,11 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                           badge={t('agent.logs.event.messages.memoryBadge')}
                         >
                           <div className="grid grid-cols-2 gap-2 text-xs">
-                            <div className="flex items-center gap-1 p-2 bg-muted/30 rounded">
+                            <div className="flex items-center gap-1 p-2 bg-white rounded">
                               <Search className="h-3 w-3" />
                               <span>{t('agent.logs.event.memory.found')}: {memoriesFound} {t('agent.logs.event.common.itemsSuffix')}</span>
                             </div>
-                            <div className="flex items-center gap-1 p-2 bg-muted/30 rounded">
+                            <div className="flex items-center gap-1 p-2 bg-white rounded">
                               <Target className="h-3 w-3" />
                               <span>{t('agent.logs.event.memory.used')}: {memoriesUsed} {t('agent.logs.event.common.itemsSuffix')}</span>
                             </div>
@@ -2486,7 +2486,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                                 {memories.map((memory: any, index: number) => (
                                   <div
                                     key={index}
-                                    className="text-xs p-2 bg-muted/20 rounded border border-border/50"
+                                    className="text-xs p-2 bg-primary/5 rounded border border-border/50"
                                   >
                                     <div className="flex items-start gap-1">
                                       <Info className="h-3 w-3 mt-0.5 text-blue-400 flex-shrink-0" />
@@ -2747,7 +2747,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                   }
 
                   return (
-                    <div key={index} className="flex items-center justify-between bg-muted/30 rounded p-2">
+                    <div key={index} className="flex items-center justify-between bg-white rounded p-2">
                       <span className="text-sm font-mono">{fileName}</span>
                       <button
                         onClick={() => {

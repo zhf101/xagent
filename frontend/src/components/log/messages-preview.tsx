@@ -59,8 +59,7 @@ function MessageItem({ message, index }: { message: Message; index: number }) {
             {t('agent.logs.messagesPreview.labels.messageIndex', { index: index + 1 })}
           </span>
         </div>
-        <div className="text-sm leading-relaxed whitespace-pre-wrap font-mono text-xs bg-muted/30 p-2 rounded">
-          {message.content}
+                  <div className="text-sm leading-relaxed whitespace-pre-wrap font-mono text-xs bg-primary/5 p-2 rounded">          {message.content}
         </div>
       </div>
     </Card>
@@ -158,7 +157,7 @@ export function MessagesPreview({ contextPreview }: MessagesPreviewProps) {
               {t('agent.logs.messagesPreview.parse.errorPrefix')} {parseError instanceof Error ? parseError.message : String(parseError)}
             </div>
           )}
-          <div className="bg-muted/30 p-2 rounded text-xs font-mono max-h-32 overflow-y-auto">
+          <div className="bg-primary/5 p-2 rounded text-xs font-mono max-h-32 overflow-y-auto">
             {typeof contextPreview === 'string'
               ? contextPreview
               : JSON.stringify(contextPreview, null, 2)

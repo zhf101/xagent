@@ -265,8 +265,7 @@ export function DefaultModelsSettings() {
           })}
         </div>
 
-        <div className="bg-muted/50 p-4 rounded-lg">
-          <div className="flex items-start gap-2">
+                        <div className="bg-primary/5 p-4 rounded-lg">          <div className="flex items-start gap-2">
             <AlertCircle className="h-4 w-4 text-muted-foreground mt-0.5" />
             <div className="space-y-1">
               <p className="text-sm font-medium">{t('settings.defaultModels.guide.title')}</p>

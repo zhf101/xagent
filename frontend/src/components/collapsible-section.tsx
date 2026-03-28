@@ -53,8 +53,7 @@ export function CollapsibleSection({
       <Button
         variant="ghost"
         size="sm"
-        className="w-full justify-between p-0.5 h-5 hover:bg-muted/20 rounded"
-        onClick={() => setIsExpanded(!isExpanded)}
+                  className="w-full justify-between p-0.5 h-5 hover:bg-primary/5 rounded"        onClick={() => setIsExpanded(!isExpanded)}
       >
         <div className="flex items-center gap-0.5">
           {isExpanded ? (
@@ -117,11 +116,11 @@ export function PlanMemoryDetails({
             {/* Memory Retrieval Stats */}
             {(memoriesFound > 0 || memoriesUsed > 0) && (
               <div className="grid grid-cols-2 gap-2 text-xs">
-                <div className="flex items-center gap-1 p-2 bg-muted/30 rounded">
+                <div className="flex items-center gap-1 p-2 bg-white rounded">
                   <Search className="h-3 w-3" />
                   <span>{t('agent.planDetails.memory.stats.found', { count: memoriesFound })}</span>
                 </div>
-                <div className="flex items-center gap-1 p-2 bg-muted/30 rounded">
+                <div className="flex items-center gap-1 p-2 bg-white rounded">
                   <Target className="h-3 w-3" />
                   <span>{t('agent.planDetails.memory.stats.used', { count: memoriesUsed })}</span>
                 </div>
@@ -146,7 +145,7 @@ export function PlanMemoryDetails({
                   {planData.memories.map((memory, index) => (
                     <div
                       key={index}
-                      className="text-xs p-2 bg-muted/20 rounded border border-border/50"
+                      className="text-xs p-2 bg-primary/5 rounded border border-border/50"
                     >
                       <div className="flex items-start gap-1">
                         <Info className="h-3 w-3 mt-0.5 text-blue-400 flex-shrink-0" />
@@ -190,7 +189,7 @@ export function PlanMemoryDetails({
                   {planData.steps?.map((step, index) => (
                     <div
                       key={step.id}
-                      className="text-xs p-2 bg-muted/20 rounded border border-border/50"
+                      className="text-xs p-2 bg-primary/5 rounded border border-border/50"
                     >
                       <div className="flex items-center justify-between">
                         <span className="font-medium">

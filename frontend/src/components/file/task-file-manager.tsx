@@ -109,8 +109,7 @@ export function TaskFileManager({ taskId, children, onPreview }: TaskFileManager
             }}
           >
             <div className="flex items-center gap-3 min-w-0 flex-1">
-              <div className="p-1.5 rounded-md bg-muted group-hover:bg-background transition-colors">
-                <FileIcon className="h-3.5 w-3.5 text-muted-foreground" />
+                              <div className="p-1.5 rounded-md bg-primary/10 group-hover:bg-white transition-colors">                <FileIcon className="h-3.5 w-3.5 text-muted-foreground" />
               </div>
               <div className="min-w-0 flex-1">
                 <p className="text-sm font-medium truncate" title={file.filename}>
@@ -142,8 +141,7 @@ export function TaskFileManager({ taskId, children, onPreview }: TaskFileManager
         className="w-[400px] p-0"
         align="start"
       >
-        <div className="flex items-center justify-between p-3 border-b bg-muted/20">
-          <h3 className="font-medium text-sm flex items-center gap-2">
+                      <div className="flex items-center justify-between p-3 border-b bg-white">          <h3 className="font-medium text-sm flex items-center gap-2">
             {t('files.header.title')}
           </h3>
           <Button
@@ -167,7 +165,7 @@ export function TaskFileManager({ taskId, children, onPreview }: TaskFileManager
               <div className="flex items-center gap-2">
                 <Upload className="h-3.5 w-3.5" />
                 <span>{t('files.tabs.input')}</span>
-                <span className="text-xs bg-muted px-1.5 py-0.5 rounded-full">{getInputFiles().length}</span>
+                <span className="text-xs bg-primary/10 px-1.5 py-0.5 rounded-full">{getInputFiles().length}</span>
               </div>
             </TabsTrigger>
             <TabsTrigger
@@ -177,7 +175,7 @@ export function TaskFileManager({ taskId, children, onPreview }: TaskFileManager
               <div className="flex items-center gap-2">
                 <FolderOutput className="h-3.5 w-3.5" />
                 <span>{t('files.tabs.output')}</span>
-                <span className="text-xs bg-muted px-1.5 py-0.5 rounded-full">{getOutputFiles().length}</span>
+                <span className="text-xs bg-primary/10 px-1.5 py-0.5 rounded-full">{getOutputFiles().length}</span>
               </div>
             </TabsTrigger>
           </TabsList>

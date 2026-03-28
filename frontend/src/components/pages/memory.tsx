@@ -631,7 +631,7 @@ export function MemoryPage() {
                 {Object.keys(viewingMemory.metadata).length > 0 && (
                   <div>
                     <Label className="text-xs font-medium text-muted-foreground uppercase mb-2 block">{t("memory.viewDialog.labels.metadata")}</Label>
-                    <div className="p-3 bg-muted/50 rounded-md">
+                    <div className="p-3 bg-white rounded-md">
                       <pre className="whitespace-pre-wrap text-xs font-mono">{JSON.stringify(viewingMemory.metadata, null, 2)}</pre>
                     </div>
                   </div>

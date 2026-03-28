@@ -336,7 +336,7 @@ function MemoryQueryDetails({ data }: { data: Record<string, any> }) {
             </h4>
             <div className="space-y-2">
               {data.rawData.memories.map((memory: any, index: number) => (
-                <div key={index} className="text-xs p-2 bg-muted/20 rounded border border-border/50">
+                <div key={index} className="text-xs p-2 bg-primary/5 rounded border border-border/50">
                   <div className="whitespace-pre-wrap">{memory.content || memory}</div>
                   {memory.category && (
                     <Badge variant="outline" className="text-xs mt-1">
@@ -483,7 +483,7 @@ export function LogEvent({ event }: LogEventProps) {
     <Card className="bg-card/50 border-border hover:shadow-md transition-shadow">
       <Collapsible open={isExpanded} onOpenChange={setIsExpanded}>
         <CollapsibleTrigger asChild>
-          <div className="p-3 cursor-pointer hover:bg-muted/50 transition-colors">
+          <div className="p-3 cursor-pointer hover:bg-primary/5 transition-colors">
             <div className="flex items-center justify-between">
               <LogSummary event={event} />
               {isExpanded ? (

@@ -542,7 +542,7 @@ export function KnowledgeBaseCreationDialog({ open, onOpenChange, onSuccess }: K
                   </div>
                   {/* File Selection Area */}
                   <div
-                    className={`w-full border-2 border-dashed rounded-lg p-8 text-center cursor-pointer hover:bg-muted/50 transition-colors ${
+                    className={`w-full border-2 border-dashed rounded-lg p-8 text-center cursor-pointer hover:bg-primary/5 transition-colors ${
                       isDragging ? "border-primary bg-primary/10" : "border-border"
                     }`}
                     onClick={() => fileInputRef.current?.click()}
@@ -573,7 +573,7 @@ export function KnowledgeBaseCreationDialog({ open, onOpenChange, onSuccess }: K
                       <ScrollArea className="h-32 border rounded-md p-2">
                         <div className="space-y-2">
                           {selectedFiles.map((file, index) => (
-                            <div key={index} className="flex items-center justify-between p-2 bg-muted rounded">
+                            <div key={index} className="flex items-center justify-between p-2 bg-white rounded">
                               <div className="flex items-center gap-2">
                                 <FileText className="h-4 w-4" />
                                 <span className="text-sm">{file.name}</span>
@@ -613,7 +613,7 @@ export function KnowledgeBaseCreationDialog({ open, onOpenChange, onSuccess }: K
                       <ScrollArea className="h-32 border rounded-md p-2">
                         <div className="space-y-2">
                           {ingestionResults.map((result, index) => (
-                            <div key={index} className="flex flex-col gap-1 p-2 bg-muted rounded">
+                            <div key={index} className="flex flex-col gap-1 p-2 bg-white rounded">
                               <div className="flex items-center gap-2">
                                 {getStatusIcon(result.status)}
                                 <span className="text-sm">{result.collection}</span>
@@ -893,7 +893,7 @@ export function KnowledgeBaseCreationDialog({ open, onOpenChange, onSuccess }: K
                               return files.map(file => ({ ...file, providerId, provider }))
                             })
                             .map((file) => (
-                              <div key={`${file.providerId}-${file.id}`} className="flex items-center justify-between p-2 bg-muted rounded">
+                              <div key={`${file.providerId}-${file.id}`} className="flex items-center justify-between p-2 bg-white rounded">
                                 <div className="flex items-center gap-2">
                                   {file.provider ? (
                                     <img src={file.provider.logo} alt={file.provider.name} className="h-4 w-4" />

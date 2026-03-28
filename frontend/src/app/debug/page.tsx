@@ -742,7 +742,7 @@ function AgentContent() {
                             <Button
                               variant="ghost"
                               size="sm"
-                              className="h-7 px-2 text-muted-foreground hover:text-foreground hover:bg-muted rounded-md"
+                              className="h-7 px-2 text-muted-foreground hover:text-foreground hover:bg-primary/5 rounded-md"
                               title={t('agent.config.title')}
                             >
                               <Settings className="h-3.5 w-3.5" />

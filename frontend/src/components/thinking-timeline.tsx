@@ -187,8 +187,7 @@ export function ThinkingTimeline({ steps, isComplete, onAutoCollapse }: Thinking
     if (!expandedSteps.has(step.id)) return null
 
     return (
-      <div className="mt-3 p-3 bg-muted/30 rounded-md space-y-2">
-        {step.description && (
+                <div className="mt-3 p-3 bg-primary/5 rounded-md space-y-2">        {step.description && (
           <p className="text-sm text-muted-foreground">{step.description}</p>
         )}
 

@@ -355,7 +355,7 @@ function TaskDetailContent() {
               {state.isHistoryLoading ? (
                 <div className="flex flex-col items-center justify-center min-h-[60vh] py-16 text-center">
                   <div className="relative mb-6">
-                    <div className="w-16 h-16 rounded-2xl bg-muted/30 flex items-center justify-center animate-pulse">
+                    <div className="w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center animate-pulse">
                       <Loader2 className="w-8 h-8 text-primary animate-spin" />
                     </div>
                   </div>
@@ -400,7 +400,7 @@ function TaskDetailContent() {
             <div className="mb-4 flex items-center">
               {state.currentTask?.isDag !== false && (
                 <div
-                  className="inline-flex items-center gap-1 rounded-xl border bg-card/80 backdrop-blur p-2 cursor-pointer hover:bg-muted/30 transition-colors text-sm"
+                  className="inline-flex items-center gap-1 rounded-xl border bg-card/80 backdrop-blur p-2 cursor-pointer hover:bg-primary/5 transition-colors text-sm"
                   onClick={() => {
                     closeFilePreview();
                     setDagPreviewOpen(true);
@@ -417,7 +417,7 @@ function TaskDetailContent() {
                 onPreview={(fileId, fileName) => openFilePreview(fileId, fileName)}
               >
                 <div
-                  className="ml-2 inline-flex items-center gap-1 rounded-xl border bg-card/80 backdrop-blur p-2 cursor-pointer hover:bg-muted/30 transition-colors text-sm"
+                  className="ml-2 inline-flex items-center gap-1 rounded-xl border bg-card/80 backdrop-blur p-2 cursor-pointer hover:bg-primary/5 transition-colors text-sm"
                   title={t("files.header.title")}
                 >
                   <FolderOpen className="w-3.5 h-3.5" />
