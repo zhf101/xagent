@@ -18,8 +18,9 @@ import { Select, type SelectOption } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
-import { getApiUrl } from "@/lib/utils"
+import { cn, getApiUrl } from "@/lib/utils"
 import { apiRequest } from "@/lib/api-wrapper"
+import { ChevronDown, ChevronRight } from "lucide-react"
 
 type ConnectionMode = "form" | "url"
 
@@ -200,6 +201,7 @@ export function DataSourceConfigDialog({
   const [previewLoading, setPreviewLoading] = useState(false)
   const [testingConnection, setTestingConnection] = useState(false)
   const [testResult, setTestResult] = useState<ConnectionTestResult | null>(null)
+  const [currentStep, setCurrentStep] = useState(1)
   const initializedKeyRef = useRef<string>("")
 
   const selectedProfile = useMemo(
@@ -238,6 +240,7 @@ export function DataSourceConfigDialog({
     }
     setForm(buildInitialState(editingRecord, systems, profiles))
     setShowAdvanced(false)
+    setCurrentStep(1)
     setPreviewUrl("")
     setPreviewMaskedUrl("")
     setTestResult(null)
@@ -527,215 +530,245 @@ export function DataSourceConfigDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[90vh] max-w-4xl overflow-hidden p-0">
+      <DialogContent className="max-h-[90vh] max-w-2xl overflow-hidden p-0">
         <div className="flex max-h-[90vh] flex-col">
-        <div className="border-b border-border/70 px-6 py-5">
-        <DialogHeader>
-          <DialogTitle>{editingRecord ? "编辑数据源" : "新增数据源"}</DialogTitle>
-          <DialogDescription>
-            默认使用普通模式配置连接信息；遇到特殊驱动或 query 参数时，可切换到高级模式直接编辑完整 URL。
-          </DialogDescription>
-        </DialogHeader>
-        </div>
-
-        <div className="flex-1 overflow-y-auto px-6 py-5">
-        <div className="grid gap-6">
-          <div className="grid gap-4 md:grid-cols-2">
-            <div className="space-y-2">
-              <Label htmlFor="database-name">数据源名称</Label>
-              <Input
-                id="database-name"
-                value={form.name}
-                onChange={(event) => setForm((prev) => ({ ...prev, name: event.target.value }))}
-                placeholder="例如：CRM 主库"
-              />
-            </div>
-            <div className="space-y-2">
-              <div className="flex items-center justify-between gap-2">
-                <Label>所属系统</Label>
-                <Button variant="ghost" className="h-auto px-0 text-xs" onClick={onCreateSystem}>
-                  新增系统
-                </Button>
-              </div>
-              <Select
-                value={form.system_id}
-                onValueChange={(value) => setForm((prev) => ({ ...prev, system_id: value }))}
-                options={systemOptions}
-                placeholder="请选择所属业务系统"
-              />
-            </div>
-            <div className="space-y-2">
-              <Label>数据库类型</Label>
-              <Select
-                value={form.type}
-                onValueChange={(value) =>
-                  setForm((prev) => ({
-                    ...prev,
-                    type: value,
-                    connection_mode: prev.connection_mode === "url" ? "url" : "form",
-                    url: prev.connection_mode === "url" ? prev.url : "",
-                    connection_form: {},
-                  }))
-                }
-                options={typeOptions}
-                placeholder="请选择数据库类型"
-              />
-              {selectedProfile ? (
-                <div className="text-xs text-muted-foreground">
-                  {selectedProfile.display_name} · {selectedProfile.protocol} · {selectedProfile.support_level}
-                </div>
-              ) : null}
-            </div>
-            <div className="flex items-center justify-between rounded-xl border border-border bg-muted/40 px-4 py-3">
-              <div>
-                <div className="text-sm font-medium">只读模式</div>
-                <div className="text-xs text-muted-foreground">默认推荐开启；需要写操作时再关闭。</div>
-              </div>
-              <Switch
-                checked={form.read_only}
-                onCheckedChange={(checked) => setForm((prev) => ({ ...prev, read_only: checked }))}
-              />
-            </div>
-          </div>
-
-          <Tabs
-            value={form.connection_mode}
-            onValueChange={(value) => setForm((prev) => ({ ...prev, connection_mode: value as ConnectionMode }))}
-            className="w-full"
-          >
-            <TabsList className="grid w-full grid-cols-2">
-              <TabsTrigger value="form">普通模式</TabsTrigger>
-              <TabsTrigger value="url">高级模式</TabsTrigger>
-            </TabsList>
-
-            <TabsContent value="form" className="space-y-4 pt-4">
-              {schemaLoading ? (
-                <div className="rounded-xl border border-border bg-muted/30 p-6 text-sm text-muted-foreground">
-                  正在加载连接表单...
-                </div>
-              ) : (
-                <>
-                  <div className="grid gap-4 md:grid-cols-2">
-                    {visibleBaseFields.map((field) => renderField(field))}
-                  </div>
-                  {visibleAdvancedFields.length > 0 ? (
-                    <div className="space-y-3 rounded-xl border border-border bg-muted/20 p-4">
-                      <div className="flex items-center justify-between gap-3">
-                        <div>
-                          <div className="text-sm font-medium">高级连接参数</div>
-                          <div className="text-xs text-muted-foreground">
-                            用于 ODBC、认证库、SSL、驱动参数等特殊场景。
-                          </div>
-                        </div>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => setShowAdvanced((prev) => !prev)}
-                        >
-                          {showAdvanced ? "收起" : "展开"}
-                        </Button>
-                      </div>
-                      {showAdvanced ? (
-                        <div className="grid gap-4 md:grid-cols-2">
-                          {visibleAdvancedFields.map((field) => renderField(field))}
-                        </div>
-                      ) : null}
-                    </div>
-                  ) : null}
-                </>
-              )}
-            </TabsContent>
-
-            <TabsContent value="url" className="space-y-4 pt-4">
-              <div className="space-y-2">
-                <Label htmlFor="database-url">完整连接字符串</Label>
-                <Textarea
-                  id="database-url"
-                  rows={4}
-                  value={form.url}
-                  onChange={(event) => {
-                    setForm((prev) => ({ ...prev, url: event.target.value }))
-                    setTestResult(null)
-                  }}
-                  placeholder={selectedProfile?.connection_example || "请输入完整连接字符串"}
-                />
-                <div className="text-xs text-muted-foreground">
-                  适用于特殊驱动、云厂商参数、ODBC、非标准 query 参数等高级场景。
-                </div>
-              </div>
-            </TabsContent>
-          </Tabs>
-
-          {form.connection_mode === "form" ? (
-            <div className="space-y-2 rounded-xl border border-border bg-muted/20 p-4">
-              <div className="text-sm font-medium">连接字符串预览</div>
-              <Textarea
-                rows={3}
-                value={previewMaskedUrl || previewUrl}
-                readOnly
-                placeholder={schemaLoading ? "正在生成预览..." : "填写连接信息后会在这里显示预览"}
-              />
-              <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-muted-foreground">
+          <div className="border-b border-border/70 px-6 py-5">
+            <DialogHeader>
+              <div className="flex items-center justify-between">
                 <div>
-                  {previewLoading
-                    ? "正在生成最新预览..."
-                    : "预览中的敏感信息会自动脱敏；保存时以后端最终生成结果为准。"}
+                  <DialogTitle>{editingRecord ? "编辑数据源" : "新增数据源"}</DialogTitle>
+                  <DialogDescription className="mt-1">
+                    {currentStep === 1 && "第一步：基本信息与类型"}
+                    {currentStep === 2 && "第二步：连接参数配置"}
+                    {currentStep === 3 && "第三步：高级选项与预览"}
+                  </DialogDescription>
                 </div>
-                {selectedProfile ? <div>模板示例：{selectedProfile.connection_example}</div> : null}
+                <div className="flex items-center gap-2 pr-6">
+                  {[1, 2, 3].map((s) => (
+                    <div
+                      key={s}
+                      className={cn(
+                        "flex h-7 w-7 items-center justify-center rounded-full text-xs font-semibold transition-all",
+                        currentStep === s
+                          ? "bg-primary text-primary-foreground shadow-sm shadow-primary/20"
+                          : currentStep > s
+                          ? "bg-primary/20 text-primary"
+                                                      : "bg-white border border-border text-muted-foreground"                      )}
+                    >
+                      {s}
+                    </div>
+                  ))}
+                </div>
               </div>
-            </div>
-          ) : (
-            <div className="rounded-xl border border-border bg-muted/20 p-4 text-xs text-muted-foreground">
-              高级模式直接以你填写的完整连接字符串为准，不再额外生成预览。
-            </div>
-          )}
-
-          {testResult ? (
-            <div className={`rounded-xl border px-4 py-3 text-sm ${
-              testResult.status === "connected"
-                ? "border-green-500/30 bg-green-500/10 text-green-700"
-                : "border-red-500/30 bg-red-500/10 text-red-700"
-            }`}>
-              <div className="font-medium">{testResult.status === "connected" ? "连接测试成功" : "连接测试失败"}</div>
-              <div className="mt-1">{testResult.message}</div>
-              {typeof testResult.table_count === "number" ? (
-                <div className="mt-1 text-xs">识别到 {testResult.table_count} 个顶层对象</div>
-              ) : null}
-            </div>
-          ) : null}
-
-          <div className="flex items-center justify-between rounded-xl border border-border bg-muted/40 px-4 py-3">
-            <div>
-              <div className="text-sm font-medium">启用状态</div>
-              <div className="text-xs text-muted-foreground">保存后即可出现在数据源列表中；禁用后不会参与连接测试与使用。</div>
-            </div>
-            <Switch
-              checked={form.enabled}
-              onCheckedChange={(checked) => setForm((prev) => ({ ...prev, enabled: checked }))}
-            />
+            </DialogHeader>
           </div>
-        </div>
-        </div>
 
-        <div className="border-t border-border/70 px-6 py-4">
-        <DialogFooter className="flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-          <Button
-            variant="outline"
-            onClick={handleTestConnection}
-            disabled={testingConnection || schemaLoading || !canTest}
-          >
-            {testingConnection ? "测试中..." : "测试连接"}
-          </Button>
-          <div className="flex items-center gap-2">
-            <Button variant="outline" onClick={() => onOpenChange(false)}>
-              取消
-            </Button>
-            <Button onClick={handleSubmit} disabled={submitting || schemaLoading || !canSubmit}>
-              {submitting ? "保存中..." : "保存数据源"}
-            </Button>
+          <div className="flex-1 overflow-y-auto px-6 py-6">
+            {currentStep === 1 && (
+              <div className="space-y-5 animate-in fade-in slide-in-from-right-4 duration-300">
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label className="text-sm font-semibold">数据源名称</Label>
+                    <Input
+                      value={form.name}
+                      onChange={(event) => setForm((prev) => ({ ...prev, name: event.target.value }))}
+                      placeholder="例如：CRM 主库"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <Label className="text-sm font-semibold">所属系统</Label>
+                      <Button variant="ghost" className="h-auto px-0 text-xs" onClick={onCreateSystem}>
+                        新增系统
+                      </Button>
+                    </div>
+                    <Select
+                      value={form.system_id}
+                      onValueChange={(value) => setForm((prev) => ({ ...prev, system_id: value }))}
+                      options={systemOptions}
+                      placeholder="请选择所属系统"
+                    />
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <Label className="text-sm font-semibold">数据库类型</Label>
+                  <Select
+                    value={form.type}
+                    onValueChange={(value) =>
+                      setForm((prev) => ({
+                        ...prev,
+                        type: value,
+                        connection_mode: prev.connection_mode === "url" ? "url" : "form",
+                        url: prev.connection_mode === "url" ? prev.url : "",
+                        connection_form: {},
+                      }))
+                    }
+                    options={typeOptions}
+                    placeholder="请选择数据库类型"
+                  />
+                  {selectedProfile && (
+                    <div className="rounded-lg bg-primary/5 p-3 mt-2">
+                      <div className="text-xs font-medium text-muted-foreground">支持详情</div>
+                      <div className="mt-1 text-sm">{selectedProfile.display_name} ({selectedProfile.protocol})</div>
+                      <div className="mt-1 text-[11px] text-muted-foreground">{selectedProfile.notes[0]}</div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {currentStep === 2 && (
+              <div className="space-y-5 animate-in fade-in slide-in-from-right-4 duration-300">
+                <Tabs
+                  value={form.connection_mode}
+                  onValueChange={(value) => setForm((prev) => ({ ...prev, connection_mode: value as ConnectionMode }))}
+                  className="w-full"
+                >
+                  <TabsList className="grid w-full grid-cols-2">
+                    <TabsTrigger value="form">普通模式 (表单)</TabsTrigger>
+                    <TabsTrigger value="url">高级模式 (URL)</TabsTrigger>
+                  </TabsList>
+                  <TabsContent value="form" className="space-y-4 pt-4">
+                    {schemaLoading ? (
+                      <div className="py-10 text-center text-sm text-muted-foreground">加载表单定义中...</div>
+                    ) : (
+                      <div className="grid grid-cols-2 gap-4">
+                        {visibleBaseFields.map(renderField)}
+                      </div>
+                    )}
+                  </TabsContent>
+                  <TabsContent value="url" className="space-y-4 pt-4">
+                    <div className="space-y-2">
+                      <Label className="text-sm font-semibold">完整连接字符串</Label>
+                      <Textarea
+                        rows={6}
+                        value={form.url}
+                        onChange={(event) => {
+                          setForm((prev) => ({ ...prev, url: event.target.value }))
+                          setTestResult(null)
+                        }}
+                        placeholder={selectedProfile?.connection_example || "请输入完整连接字符串"}
+                        className="font-mono text-xs"
+                      />
+                      <p className="text-[11px] text-muted-foreground">适用于特殊驱动、云厂商参数、ODBC 等高级场景。</p>
+                    </div>
+                  </TabsContent>
+                </Tabs>
+              </div>
+            )}
+
+            {currentStep === 3 && (
+              <div className="space-y-6 animate-in fade-in slide-in-from-right-4 duration-300">
+                <div className="grid grid-cols-2 gap-4">
+                   <div className="flex items-center justify-between rounded-lg border border-border p-3">
+                      <div>
+                        <div className="text-sm font-medium">只读模式</div>
+                        <div className="text-[10px] text-muted-foreground">启用后仅允许执行 SELECT。</div>
+                      </div>
+                      <Switch
+                        checked={form.read_only}
+                        onCheckedChange={(checked) => setForm((prev) => ({ ...prev, read_only: checked }))}
+                      />
+                   </div>
+                   <div className="flex items-center justify-between rounded-lg border border-border p-3">
+                      <div>
+                        <div className="text-sm font-medium">启用状态</div>
+                        <div className="text-[10px] text-muted-foreground">控制数据源是否对 Agent 可见。</div>
+                      </div>
+                      <Switch
+                        checked={form.enabled}
+                        onCheckedChange={(checked) => setForm((prev) => ({ ...prev, enabled: checked }))}
+                      />
+                   </div>
+                </div>
+
+                <div className="rounded-xl border border-border bg-white p-4">
+                  <div className="flex items-center justify-between">
+                    <div className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">连接预览</div>
+                    {previewLoading && <div className="text-[10px] animate-pulse">更新中...</div>}
+                  </div>
+                  <Textarea
+                    rows={3}
+                    className="mt-2 font-mono text-[11px] leading-relaxed bg-background/50"
+                    value={previewMaskedUrl || previewUrl || "等待输入配置..."}
+                    readOnly
+                  />
+                </div>
+
+                {testResult && (
+                  <div className={cn(
+                    "rounded-lg border p-3 text-xs",
+                    testResult.status === "connected" ? "border-green-500/20 bg-green-500/5 text-green-600" : "border-red-500/20 bg-red-500/5 text-red-600"
+                  )}>
+                    <div className="font-semibold">{testResult.status === "connected" ? "连接测试成功" : "连接测试失败"}</div>
+                    <div className="mt-1">{testResult.message}</div>
+                    {testResult.table_count != null && (
+                      <div className="mt-1 opacity-80">识别到顶层对象: {testResult.table_count}</div>
+                    )}
+                  </div>
+                )}
+                
+                {visibleAdvancedFields.length > 0 && (
+                  <div className="space-y-3 rounded-xl border border-border bg-white p-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="text-sm font-medium">高级选项</div>
+                      <Button 
+                        variant="outline" 
+                        size="sm" 
+                        onClick={() => setShowAdvanced(!showAdvanced)}
+                      >
+                        {showAdvanced ? "收起" : "展开"}
+                      </Button>
+                    </div>
+                    {showAdvanced && (
+                      <div className="grid grid-cols-2 gap-4 pt-2 animate-in fade-in slide-in-from-top-2 duration-200">
+                        {visibleAdvancedFields.map(renderField)}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
-        </DialogFooter>
-        </div>
+
+          <div className="border-t border-border/70 bg-white px-6 py-4">
+            <DialogFooter className="flex items-center justify-between sm:justify-between">
+              <div>
+                {currentStep > 1 && (
+                  <Button variant="outline" onClick={() => setCurrentStep(prev => prev - 1)}>
+                    上一步
+                  </Button>
+                )}
+              </div>
+              <div className="flex gap-2">
+                <Button variant="ghost" onClick={() => onOpenChange(false)}>
+                  取消
+                </Button>
+                {currentStep === 2 && canTest && (
+                   <Button variant="outline" onClick={handleTestConnection} disabled={testingConnection}>
+                      {testingConnection ? "测试中..." : "测试连接"}
+                   </Button>
+                )}
+                {currentStep < 3 ? (
+                  <Button 
+                    onClick={() => setCurrentStep(prev => prev + 1)}
+                    disabled={currentStep === 1 && (!form.name.trim() || !form.system_id.trim())}
+                  >
+                    下一步
+                  </Button>
+                ) : (
+                  <div className="flex gap-2">
+                    <Button variant="outline" onClick={handleTestConnection} disabled={testingConnection}>
+                      测试连接
+                    </Button>
+                    <Button onClick={handleSubmit} disabled={submitting || !canSubmit}>
+                      {submitting ? "保存中..." : "完成并保存"}
+                    </Button>
+                  </div>
+                )}
+              </div>
+            </DialogFooter>
+          </div>
         </div>
       </DialogContent>
     </Dialog>

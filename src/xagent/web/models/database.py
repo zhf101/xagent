@@ -41,7 +41,7 @@ def get_engine() -> Engine:
 
 
 def init_db(db_url: str | None = None) -> None:
-    """Initialize database, create all tables and default users"""
+    """Initialize database engine/session and align schema to current Alembic head."""
     import logging
     import os
 
@@ -114,11 +114,8 @@ def init_db(db_url: str | None = None) -> None:
     # Create session factory
     _SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=_engine)
 
-    # Try upgrade db to head first
+    # 单基线路径下，数据库结构统一由 Alembic 负责创建/升级。
     try_upgrade_db(_engine)
-
-    # Create all tables
-    Base.metadata.create_all(bind=_engine)
 
     logger = logging.getLogger(__name__)
     logger.info("Database initialized. Waiting for first admin setup.")

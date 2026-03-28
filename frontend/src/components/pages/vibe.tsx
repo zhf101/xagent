@@ -141,7 +141,7 @@ export function VibePage() {
       completed: "bg-green-500/20 text-green-400 border border-green-500/30",
       running: "bg-blue-500/20 text-blue-400 border border-blue-500/30",
       failed: "bg-red-500/20 text-red-400 border border-red-500/30",
-      pending: "bg-muted/50 text-muted-foreground border border-muted"
+      pending: "bg-white border border-border text-muted-foreground"
     }
 
     return (

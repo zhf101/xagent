@@ -451,8 +451,8 @@ function StepActionItem({ action, onViewDetail, onOpenTerminal, onFileClick }: S
         className={cn(
             "w-full flex items-center justify-between py-3 px-3 text-xs transition-colors rounded-md border",
             isRunning ? "bg-primary/10 border-primary/20 text-primary" :
-            isExpanded ? "bg-muted/50 border-border text-foreground" :
-            "bg-muted/50 border-transparent hover:bg-muted/60 text-muted-foreground/80 hover:text-foreground"
+            isExpanded ? "bg-white border-border text-foreground" :
+            "bg-white border-transparent hover:bg-primary/5 text-muted-foreground/80 hover:text-foreground"
         )}
       >
         <span className="flex items-center gap-2 overflow-hidden">
@@ -495,9 +495,9 @@ function StepActionItem({ action, onViewDetail, onOpenTerminal, onFileClick }: S
             transition={{ duration: 0.2 }}
             className="overflow-hidden"
           >
-             <ScrollArea ref={scrollRef} className="max-h-[200px] w-full mt-1 bg-muted/30 border border-border/50 rounded-md overflow-auto">
+             <ScrollArea ref={scrollRef} className="max-h-[200px] w-full mt-1 bg-white border border-border/50 rounded-md overflow-auto">
                <div
-                 className="p-3 space-y-2 font-mono text-xs cursor-pointer hover:bg-muted/50 transition-colors"
+                 className="p-3 space-y-2 font-mono text-xs cursor-pointer hover:bg-primary/5 transition-colors"
                  onClick={() => onViewDetail(action)}
                >
                  {action.type === 'tool' && (
@@ -714,8 +714,7 @@ export function TraceEventRenderer({ events }: TraceEventRendererProps) {
   return (
     <div className="space-y-4">
       {skillSelection && (
-        <div className="bg-muted/30 border border-border/50 rounded-lg p-3 flex items-center gap-2">
-          <Cpu className="w-4 h-4 text-primary" />
+                  <div className="bg-white border border-border/50 rounded-lg p-3 flex items-center gap-2">          <Cpu className="w-4 h-4 text-primary" />
           <span className="text-sm">
             {t('traceEventRenderer.skillSelected')}: <span className="font-medium">{skillSelection}</span>
           </span>

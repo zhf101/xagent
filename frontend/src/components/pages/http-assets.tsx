@@ -27,7 +27,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import { getApiUrl } from "@/lib/utils"
+import { cn, getApiUrl } from "@/lib/utils"
 import { apiRequest } from "@/lib/api-wrapper"
 
 interface BizSystemRecord {
@@ -155,7 +155,7 @@ function parseJsonField(label: string, value: string, fallback: any) {
 function methodBadgeTone(method: string) {
   if (method === "GET") return "border-blue-500/30 bg-blue-500/10 text-blue-600"
   if (method === "POST") return "border-emerald-500/30 bg-emerald-500/10 text-emerald-600"
-  return "border-border bg-muted text-muted-foreground"
+  return "border-border bg-white text-muted-foreground"
 }
 
 export function HttpAssetsPage() {
@@ -177,6 +177,7 @@ export function HttpAssetsPage() {
   const [debuggingAsset, setDebuggingAsset] = useState<HttpAssetRecord | null>(null)
   const [debugSubmitting, setDebugSubmitting] = useState(false)
   const [debugResult, setDebugResult] = useState<HttpAssetDebugResult | null>(null)
+  const [currentStep, setCurrentStep] = useState(1)
   const [debugForm, setDebugForm] = useState({
     system_short: "",
     method: "GET",
@@ -282,6 +283,7 @@ export function HttpAssetsPage() {
 
   const openCreateDialog = () => {
     setEditingAsset(null)
+    setCurrentStep(1)
     setForm({
       ...EMPTY_FORM,
       system_short: systems[0]?.system_short || "",
@@ -291,6 +293,7 @@ export function HttpAssetsPage() {
 
   const openEditDialog = (asset: HttpAssetRecord) => {
     setEditingAsset(asset)
+    setCurrentStep(1)
     setForm({
       name: asset.name,
       system_short: asset.system_short,
@@ -509,7 +512,7 @@ export function HttpAssetsPage() {
       <div className="border-b border-border/80 px-6 py-4">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex items-center gap-3">
-            <div className="rounded-lg border border-border bg-muted/40 px-2.5 py-1 text-xs font-medium text-muted-foreground">
+            <div className="rounded-lg border border-border bg-primary/5 px-2.5 py-1 text-xs font-medium text-primary">
               HTTP ASSET
             </div>
             <h1 className="text-xl font-semibold tracking-tight">HTTP 资产</h1>
@@ -658,108 +661,171 @@ export function HttpAssetsPage() {
       </div>
 
       <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
-        <DialogContent className="max-h-[90vh] max-w-3xl overflow-hidden p-0">
+        <DialogContent className="max-h-[90vh] max-w-2xl overflow-hidden p-0">
           <div className="flex max-h-[90vh] flex-col">
             <div className="border-b border-border/70 px-6 py-5">
               <DialogHeader>
-                <DialogTitle>{editingAsset ? "编辑 HTTP 资产" : "新增 HTTP 资产"}</DialogTitle>
-                <DialogDescription>录入接口元数据，让 HTTP agent 后续优先命中已治理资产。</DialogDescription>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <DialogTitle>{editingAsset ? "编辑 HTTP 资产" : "新增 HTTP 资产"}</DialogTitle>
+                    <DialogDescription className="mt-1">
+                      {currentStep === 1 && "第一步：基本连接信息"}
+                      {currentStep === 2 && "第二步：鉴权与参数配置"}
+                      {currentStep === 3 && "第三步：请求体与响应提取"}
+                    </DialogDescription>
+                  </div>
+                  <div className="flex items-center gap-2 pr-6">
+                    {[1, 2, 3].map((s) => (
+                      <div
+                        key={s}
+                        className={cn(
+                          "flex h-7 w-7 items-center justify-center rounded-full text-xs font-semibold transition-all",
+                          currentStep === s
+                            ? "bg-primary text-primary-foreground shadow-sm shadow-primary/20"
+                            : currentStep > s
+                            ? "bg-primary/20 text-primary"
+                            : "bg-white border border-border text-muted-foreground"
+                        )}
+                      >
+                        {s}
+                      </div>
+                    ))}
+                  </div>
+                </div>
               </DialogHeader>
             </div>
-            <div className="flex-1 overflow-y-auto px-6 py-5">
-              <div className="grid gap-4 lg:grid-cols-2">
-            <div className="space-y-4">
-              <div className="space-y-2">
-                <Label>资产名称</Label>
-                <Input value={form.name} onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))} />
-              </div>
-              <div className="space-y-2">
-                <Label>所属系统</Label>
-                <Select
-                  value={form.system_short}
-                  onValueChange={(value) => setForm((prev) => ({ ...prev, system_short: value }))}
-                  options={systemOptions}
-                  placeholder="请选择所属系统"
-                />
-              </div>
-              <div className="space-y-2">
-                <Label>接口描述</Label>
-                <Input value={form.description} onChange={(e) => setForm((prev) => ({ ...prev, description: e.target.value }))} />
-              </div>
-              <div className="space-y-2">
-                <Label>敏感等级</Label>
-                <Input value={form.sensitivity_level} onChange={(e) => setForm((prev) => ({ ...prev, sensitivity_level: e.target.value }))} placeholder="low / medium / high" />
-              </div>
-              <div className="grid gap-4 md:grid-cols-2">
-                <div className="space-y-2">
-                  <Label>Method</Label>
-                  <Select value={form.method} onValueChange={(value) => setForm((prev) => ({ ...prev, method: value }))} options={methodOptions} />
+
+            <div className="flex-1 overflow-y-auto px-6 py-6">
+              {currentStep === 1 && (
+                <div className="space-y-5 animate-in fade-in slide-in-from-right-4 duration-300">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label className="text-sm font-semibold">资产名称</Label>
+                      <Input value={form.name} onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))} placeholder="例如：获取订单详情" />
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-sm font-semibold">所属系统</Label>
+                      <Select
+                        value={form.system_short}
+                        onValueChange={(value) => setForm((prev) => ({ ...prev, system_short: value }))}
+                        options={systemOptions}
+                        placeholder="选择所属系统"
+                      />
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-sm font-semibold">Base URL</Label>
+                    <Input value={form.base_url} onChange={(e) => setForm((prev) => ({ ...prev, base_url: e.target.value }))} placeholder="https://api.example.com" />
+                  </div>
+                  <div className="grid grid-cols-3 gap-4">
+                    <div className="space-y-2">
+                      <Label className="text-sm font-semibold">请求方法</Label>
+                      <Select
+                        value={form.method}
+                        onValueChange={(value) => setForm((prev) => ({ ...prev, method: value }))}
+                        options={methodOptions}
+                      />
+                    </div>
+                    <div className="col-span-2 space-y-2">
+                      <Label className="text-sm font-semibold">Path Template</Label>
+                      <Input value={form.path_template} onChange={(e) => setForm((prev) => ({ ...prev, path_template: e.target.value }))} placeholder="/v1/orders/{order_id}" />
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-sm font-semibold">接口描述</Label>
+                    <Textarea rows={3} value={form.description} onChange={(e) => setForm((prev) => ({ ...prev, description: e.target.value }))} placeholder="详细描述该接口的功能和用途" />
+                  </div>
                 </div>
-                <div className="space-y-2">
-                  <Label>鉴权类型</Label>
-                  <Select value={form.auth_type} onValueChange={(value) => setForm((prev) => ({ ...prev, auth_type: value }))} options={authOptions} />
+              )}
+
+              {currentStep === 2 && (
+                <div className="space-y-5 animate-in fade-in slide-in-from-right-4 duration-300">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label className="text-sm font-semibold">鉴权类型</Label>
+                      <Select
+                        value={form.auth_type}
+                        onValueChange={(value) => setForm((prev) => ({ ...prev, auth_type: value }))}
+                        options={authOptions}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-sm font-semibold">鉴权 Token / Key</Label>
+                      <Input value={form.auth_token} onChange={(e) => setForm((prev) => ({ ...prev, auth_token: e.target.value }))} placeholder="Token 或 API Key" />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label className="text-sm font-semibold">默认请求头 (JSON)</Label>
+                      <Textarea rows={4} className="font-mono text-xs" value={form.default_headers_json} onChange={(e) => setForm((prev) => ({ ...prev, default_headers_json: e.target.value }))} />
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-sm font-semibold">查询参数 (JSON)</Label>
+                      <Textarea rows={4} className="font-mono text-xs" value={form.query_params_json} onChange={(e) => setForm((prev) => ({ ...prev, query_params_json: e.target.value }))} />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-3 gap-4">
+                    <div className="space-y-2">
+                      <Label className="text-sm font-semibold">超时时间 (s)</Label>
+                      <Input type="number" value={form.timeout} onChange={(e) => setForm((prev) => ({ ...prev, timeout: e.target.value }))} />
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-sm font-semibold">重试次数</Label>
+                      <Input type="number" value={form.retry_count} onChange={(e) => setForm((prev) => ({ ...prev, retry_count: e.target.value }))} />
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-sm font-semibold">敏感等级</Label>
+                      <Input value={form.sensitivity_level} onChange={(e) => setForm((prev) => ({ ...prev, sensitivity_level: e.target.value }))} placeholder="L1 / L2" />
+                    </div>
+                  </div>
                 </div>
-              </div>
-              <div className="space-y-2">
-                <Label>Base URL</Label>
-                <Input value={form.base_url} onChange={(e) => setForm((prev) => ({ ...prev, base_url: e.target.value }))} placeholder="https://example.com" />
-              </div>
-              <div className="space-y-2">
-                <Label>Path Template</Label>
-                <Input value={form.path_template} onChange={(e) => setForm((prev) => ({ ...prev, path_template: e.target.value }))} placeholder="/api/users/{id}" />
-              </div>
+              )}
+
+              {currentStep === 3 && (
+                <div className="space-y-5 animate-in fade-in slide-in-from-right-4 duration-300">
+                  <div className="space-y-2">
+                    <Label className="text-sm font-semibold">JSON 请求体 (JSON)</Label>
+                    <Textarea rows={5} className="font-mono text-xs" value={form.json_body_json} onChange={(e) => setForm((prev) => ({ ...prev, json_body_json: e.target.value }))} placeholder='{"key": "value"}' />
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-sm font-semibold">表单字段 (JSON)</Label>
+                    <Textarea rows={3} className="font-mono text-xs" value={form.form_fields_json} onChange={(e) => setForm((prev) => ({ ...prev, form_fields_json: e.target.value }))} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-sm font-semibold">响应提取规则 (JSON)</Label>
+                    <Textarea rows={5} className="font-mono text-xs" value={form.response_extract_json} onChange={(e) => setForm((prev) => ({ ...prev, response_extract_json: e.target.value }))} />
+                    <p className="text-[11px] text-muted-foreground">定义如何从 API 响应中提取字段供后续节点使用。</p>
+                  </div>
+                </div>
+              )}
             </div>
-            <div className="space-y-4">
-              <div className="space-y-2">
-                <Label>Auth Token</Label>
-                <Input value={form.auth_token} onChange={(e) => setForm((prev) => ({ ...prev, auth_token: e.target.value }))} placeholder="可选" />
-              </div>
-              <div className="grid gap-4 md:grid-cols-2">
-                <div className="space-y-2">
-                  <Label>Timeout</Label>
-                  <Input value={form.timeout} onChange={(e) => setForm((prev) => ({ ...prev, timeout: e.target.value }))} />
+
+            <div className="border-t border-border/70 bg-white px-6 py-4">
+              <DialogFooter className="flex items-center justify-between sm:justify-between">
+                <div>
+                  {currentStep > 1 && (
+                    <Button variant="outline" onClick={() => setCurrentStep(prev => prev - 1)}>
+                      上一步
+                    </Button>
+                  )}
                 </div>
-                <div className="space-y-2">
-                  <Label>Retry Count</Label>
-                  <Input value={form.retry_count} onChange={(e) => setForm((prev) => ({ ...prev, retry_count: e.target.value }))} />
+                <div className="flex gap-2">
+                  <Button variant="ghost" onClick={() => setIsCreateDialogOpen(false)}>
+                    取消
+                  </Button>
+                  {currentStep < 3 ? (
+                    <Button 
+                      onClick={() => setCurrentStep(prev => prev + 1)}
+                      disabled={currentStep === 1 && (!form.name.trim() || !form.base_url.trim() || !form.path_template.trim())}
+                    >
+                      下一步
+                    </Button>
+                  ) : (
+                    <Button onClick={handleCreate} disabled={submitting}>
+                      {submitting ? "保存中..." : "保存资产"}
+                    </Button>
+                  )}
                 </div>
-              </div>
-              <div className="space-y-2">
-                <Label>默认请求头 JSON</Label>
-                <Textarea rows={4} value={form.default_headers_json} onChange={(e) => setForm((prev) => ({ ...prev, default_headers_json: e.target.value }))} />
-              </div>
-              <div className="space-y-2">
-                <Label>默认 Query JSON</Label>
-                <Textarea rows={4} value={form.query_params_json} onChange={(e) => setForm((prev) => ({ ...prev, query_params_json: e.target.value }))} />
-              </div>
-              <div className="space-y-2">
-                <Label>默认 JSON Body</Label>
-                <Textarea rows={4} value={form.json_body_json} onChange={(e) => setForm((prev) => ({ ...prev, json_body_json: e.target.value }))} placeholder='{"demo": true}' />
-              </div>
-              <div className="space-y-2">
-                <Label>默认 Form JSON</Label>
-                <Textarea rows={4} value={form.form_fields_json} onChange={(e) => setForm((prev) => ({ ...prev, form_fields_json: e.target.value }))} />
-              </div>
-              <div className="space-y-2">
-                <Label>响应提取规则 JSON</Label>
-                <Textarea
-                  rows={5}
-                  value={form.response_extract_json}
-                  onChange={(e) => setForm((prev) => ({ ...prev, response_extract_json: e.target.value }))}
-                  placeholder='{"fields":{"userId":"data.user.id"},"message_path":"message","summary_template":"用户ID={userId}"}'
-                />
-              </div>
-            </div>
-              </div>
-            </div>
-            <div className="border-t border-border/70 px-6 py-4">
-              <DialogFooter>
-                <Button variant="outline" onClick={() => setIsCreateDialogOpen(false)}>
-                  取消
-                </Button>
-                <Button onClick={handleCreate} disabled={submitting || systems.length === 0}>
-                  {submitting ? "保存中..." : "保存"}
-                </Button>
               </DialogFooter>
             </div>
           </div>
@@ -775,20 +841,20 @@ export function HttpAssetsPage() {
           {viewingAsset ? (
             <div className="space-y-4">
               <div className="grid gap-4 md:grid-cols-2">
-                <div className="rounded-xl border border-border bg-muted/40 p-4">
+                <div className="rounded-xl border border-border bg-white p-4">
                   <div className="text-xs text-muted-foreground">资产名称</div>
                   <div className="mt-1 font-medium">{viewingAsset.name}</div>
                 </div>
-                <div className="rounded-xl border border-border bg-muted/40 p-4">
+                <div className="rounded-xl border border-border bg-white p-4">
                   <div className="text-xs text-muted-foreground">所属系统</div>
                   <div className="mt-1 font-medium">{viewingAsset.system_short}</div>
                 </div>
               </div>
-              <div className="rounded-xl border border-border bg-muted/40 p-4">
+              <div className="rounded-xl border border-border bg-white p-4">
                 <div className="text-xs text-muted-foreground">描述</div>
                 <div className="mt-1 text-sm">{viewingAsset.description || "-"}</div>
               </div>
-              <div className="rounded-xl border border-border bg-muted/40 p-4">
+              <div className="rounded-xl border border-border bg-white p-4">
                 <div className="text-xs text-muted-foreground">配置</div>
                 <pre className="mt-2 overflow-auto whitespace-pre-wrap break-all text-xs">
                   {JSON.stringify(viewingAsset.config || {}, null, 2)}
@@ -861,23 +927,23 @@ export function HttpAssetsPage() {
               </div>
             </div>
             <div className="space-y-4">
-              <div className="rounded-xl border border-border bg-muted/30 p-4">
+              <div className="rounded-xl border border-border bg-white p-4">
                 <div className="text-xs text-muted-foreground">命中结果</div>
                 <pre className="mt-2 whitespace-pre-wrap break-all text-xs">
                   {JSON.stringify(debugResult?.asset_match || null, null, 2)}
                 </pre>
               </div>
-              <div className="rounded-xl border border-border bg-muted/30 p-4">
+              <div className="rounded-xl border border-border bg-white p-4">
                 <div className="text-xs text-muted-foreground">摘要</div>
                 <div className="mt-2 text-sm">{debugResult?.summary || "-"}</div>
               </div>
-              <div className="rounded-xl border border-border bg-muted/30 p-4">
+              <div className="rounded-xl border border-border bg-white p-4">
                 <div className="text-xs text-muted-foreground">提取字段</div>
                 <pre className="mt-2 whitespace-pre-wrap break-all text-xs">
                   {JSON.stringify(debugResult?.extracted_fields || null, null, 2)}
                 </pre>
               </div>
-              <div className="rounded-xl border border-border bg-muted/30 p-4">
+              <div className="rounded-xl border border-border bg-white p-4">
                 <div className="text-xs text-muted-foreground">原始响应</div>
                 <pre className="mt-2 max-h-[260px] overflow-auto whitespace-pre-wrap break-all text-xs">
                   {JSON.stringify(debugResult?.body || null, null, 2)}
@@ -933,7 +999,7 @@ export function HttpAssetsPage() {
               />
             </div>
             {resolveResult ? (
-              <div className="rounded-xl border border-border bg-muted/40 p-4 text-sm">
+              <div className="rounded-xl border border-border bg-white p-4 text-sm">
                 <div className="font-medium">{resolveResult.matched ? "命中成功" : "未命中"}</div>
                 <div className="mt-2 text-muted-foreground">
                   {resolveResult.asset_name ? `资产：${resolveResult.asset_name}` : resolveResult.reason || "-"}

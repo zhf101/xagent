@@ -132,7 +132,7 @@ function StepDetail({ step }: { step: StepExecution }) {
         <Collapsible open={expandedSections.resultData} onOpenChange={() => toggleSection('resultData')}>
           <Card className="border-border">
             <CollapsibleTrigger asChild>
-              <div className="flex items-center justify-between p-3 cursor-pointer hover:bg-muted/50 transition-colors">
+              <div className="flex items-center justify-between p-3 cursor-pointer hover:bg-primary/5 transition-colors">
                 <div className="flex items-center gap-2">
                   <Database className="h-4 w-4 text-muted-foreground" />
                   <span className="text-base font-medium">{t("agent.layout.right.labels.resultData")}</span>
@@ -215,7 +215,7 @@ function StepDetail({ step }: { step: StepExecution }) {
                   const fileName = typeof file === 'object' && file !== null ? (file.filename || 'Unknown File') : 'Unknown File'
                   const fileId = typeof file === 'object' && file !== null ? (file.file_id || '') : ''
                   return (
-                    <div key={index} className="flex items-center justify-between p-2 bg-muted/30 rounded hover:bg-muted/50 transition-colors">
+                    <div key={index} className="flex items-center justify-between p-2 bg-white rounded hover:bg-primary/5 transition-colors">
                       <div className="flex items-center gap-2 flex-1 min-w-0">
                         <FileText className="h-3 w-3 text-muted-foreground flex-shrink-0" />
                         <span className="text-sm text-muted-foreground font-mono truncate" title={fileId}>
@@ -244,8 +244,7 @@ function StepDetail({ step }: { step: StepExecution }) {
       )}
 
       {/* Execution Time */}
-      <div className="flex items-center justify-between p-3 bg-muted/30 rounded">
-        <div className="flex items-center gap-2">
+              <div className="flex items-center justify-between p-3 bg-white rounded">        <div className="flex items-center gap-2">
           <Clock className="h-4 w-4 text-muted-foreground" />
           <span className="text-sm text-muted-foreground">{t("agent.layout.right.labels.executionTime")}</span>
         </div>
@@ -343,8 +342,7 @@ function StepSummary({ step }: { step: StepExecution }) {
       {step.tool_names && step.tool_names.length > 0 && (
         <div className="flex items-center gap-2">
           <Wrench className="h-4 w-4 text-muted-foreground flex-shrink-0" />
-          <span className="text-base font-mono text-muted-foreground bg-muted px-2 py-1 rounded">
-            {step.tool_names.join(", ")}
+                          <span className="text-base font-mono text-muted-foreground bg-primary/5 px-2 py-1 rounded">            {step.tool_names.join(", ")}
           </span>
         </div>
       )}
@@ -535,7 +533,7 @@ export function RightPanel({
                 }
               }}
               disabled={!selectedStepId || steps.findIndex(s => s.id === selectedStepId) === 0 || isTransitioning}
-              className="p-1 text-sm bg-muted border border-border rounded hover:bg-accent disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
+              className="p-1 text-sm bg-white border border-border rounded hover:bg-primary/5 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
             >
               ← {t("agent.layout.right.buttons.prevStep")}
             </button>
@@ -555,7 +553,7 @@ export function RightPanel({
                 }
               }}
               disabled={!selectedStepId || steps.findIndex(s => s.id === selectedStepId) === steps.length - 1 || isTransitioning}
-              className="p-1 text-sm bg-muted border border-border rounded hover:bg-accent disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
+              className="p-1 text-sm bg-white border border-border rounded hover:bg-primary/5 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
             >
               {t("agent.layout.right.buttons.nextStep")} →
             </button>

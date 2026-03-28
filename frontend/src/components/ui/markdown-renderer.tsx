@@ -226,7 +226,7 @@ export function JsonRenderer({ data, className = '', onFileClick }: JsonRenderer
     if (data.output && typeof data.output === 'string' && isLikelyMarkdown(data.output.trim())) {
       return (
         <div className={`space-y-3 ${className}`}>
-          <div className="bg-muted p-3 rounded text-sm font-mono overflow-x-auto whitespace-pre-wrap">
+          <div className="bg-primary/5 p-3 rounded text-sm font-mono overflow-x-auto whitespace-pre-wrap">
             <div className="text-green-400 mb-2">✅ Task completed successfully</div>
             <div className="text-gray-400">Goal: {data.goal}</div>
           </div>
@@ -248,7 +248,7 @@ export function JsonRenderer({ data, className = '', onFileClick }: JsonRenderer
           {expanded ? '▼' : '▶'} JSON Data
         </button>
         {expanded && (
-          <pre className="bg-muted p-3 rounded text-xs font-mono overflow-x-auto whitespace-pre-wrap">
+          <pre className="bg-primary/5 p-3 rounded text-xs font-mono overflow-x-auto whitespace-pre-wrap">
             {JSON.stringify(data, null, 2)}
           </pre>
         )}
@@ -258,8 +258,7 @@ export function JsonRenderer({ data, className = '', onFileClick }: JsonRenderer
 
   // For other types, display as string
   return (
-    <pre className={`bg-muted py-3 rounded text-sm font-mono overflow-x-auto whitespace-pre-wrap ${className}`}>
-      {String(data)}
+              <pre className={`bg-primary/5 py-3 rounded text-sm font-mono overflow-x-auto whitespace-pre-wrap ${className}`}>      {String(data)}
     </pre>
   )
 }

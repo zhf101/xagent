@@ -3,29 +3,72 @@
 @tailwind components;
 @tailwind utilities;
 
-/* XAgent Theme System - Supports dynamic theme switching */
+/* 
+ * XAgent Theme System - 红白简洁风格
+ * 主色：#d33b32 (红色)
+ * 背景：纯白
+ * 设计理念：简洁、专业、现代 - 灰色慎用
+ */
 :root {
-  /* Default dark theme colors - Maintains backward compatibility */
-  --background: 222.2 84% 4.9%;
-  --foreground: 210 40% 98%;
-  --card: 222.2 84% 4.9%;
-  --card-foreground: 210 40% 98%;
-  --popover: 222.2 84% 4.9%;
-  --popover-foreground: 210 40% 98%;
-  --primary: 217.2 91.2% 59.8%;
-  --primary-foreground: 222.2 84% 4.9%;
-  --secondary: 217.2 32.6% 17.5%;
-  --secondary-foreground: 210 40% 98%;
-  --muted: 217.2 32.6% 17.5%;
-  --muted-foreground: 215 20.2% 65.1%;
-  --accent: 217.2 32.6% 17.5%;
-  --accent-foreground: 210 40% 98%;
-  --destructive: 0 84.2% 60.2%;
-  --destructive-foreground: 210 40% 98%;
-  --border: 217.2 32.6% 17.5%;
-  --input: 217.2 32.6% 17.5%;
-  --ring: 224.3 76.3% 94.1%;
-  --radius: 0.5rem;
+  /* 主色系 - 红色主题 */
+  --primary: 3 70% 52%;           /* #d33b32 */
+  --primary-foreground: 0 0% 100%;
+  
+  /* 链接颜色 */
+  --link: 3 70% 52%;              /* #d33b32 */
+  --link-hover: 3 75% 61%;        /* #e65950 */
+  --link-active: 3 62% 39%;       /* #a12c26 */
+  
+  /* 浅色主题配色 - 纯白背景 */
+  --background: 0 0% 100%;        /* #ffffff 纯白 */
+  --foreground: 0 0% 13%;         /* #1f1f1f 主文字 */
+  --card: 0 0% 100%;              /* #ffffff */
+  --card-foreground: 0 0% 13%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 0 0% 13%;
+  --secondary: 0 0% 97%;          /* #f7f7f7 很浅的灰，用于非激活按钮 */
+  --secondary-foreground: 0 0% 40%; /* #666666 */
+  --muted: 0 0% 98%;              /* #fafafa 极浅灰 */
+  --muted-foreground: 0 0% 50%;   /* #808080 次要文字 */
+  --accent: 0 0% 98%;             /* #fafafa */
+  --accent-foreground: 0 0% 13%;
+  --destructive: 0 84% 60%;
+  --destructive-foreground: 0 0% 98%;
+  --border: 0 0% 92%;             /* #ececec 边框 */
+  --input: 0 0% 92%;
+  --ring: 3 70% 52%;
+  --radius: 0.375rem;             /* 6px */
+  
+  /* 阴影 */
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.04);
+  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.08);
+  --shadow-lg: 0 4px 16px rgba(0, 0, 0, 0.1);
+}
+
+/* 暗色主题 - 保持主色不变，调整背景和文字 */
+.dark {
+  --primary: 3 70% 52%;
+  --primary-foreground: 0 0% 100%;
+  --link: 3 70% 52%;
+  --link-hover: 3 75% 61%;
+  --link-active: 3 62% 39%;
+  --background: 220 15% 10%;      /* 深灰背景 */
+  --foreground: 220 10% 92%;      /* 浅色文字 */
+  --card: 220 15% 14%;            /* 略浅的卡片背景 */
+  --card-foreground: 220 10% 92%;
+  --popover: 220 15% 14%;
+  --popover-foreground: 220 10% 92%;
+  --secondary: 220 15% 25%;
+  --secondary-foreground: 220 10% 92%;
+  --muted: 220 15% 18%;
+  --muted-foreground: 220 10% 60%;
+  --accent: 220 15% 18%;
+  --accent-foreground: 220 10% 92%;
+  --destructive: 0 84% 60%;
+  --destructive-foreground: 0 0% 98%;
+  --border: 220 15% 20%;
+  --input: 220 15% 20%;
+  --ring: 3 70% 52%;
 }
 
 @layer base {

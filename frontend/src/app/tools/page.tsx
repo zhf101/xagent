@@ -339,16 +339,16 @@ export default function ToolsPage() {
     const icon = getToolIcon(tool.name, tool.type, tool.category)
 
     return (
-      <Card className="hover:shadow-md transition-all duration-300 border-border/50 hover:border-primary hover:-translate-y-1">
+      <Card className="hover:shadow-md transition-all duration-300 border-border/40 hover:border-primary/30 hover:-translate-y-1">
         <CardContent className="p-6">
           <div className="flex items-start justify-between mb-4">
             <div className="flex gap-4">
-              <div className="mt-1 bg-muted/50 p-3 rounded-lg h-fit">
+              <div className="mt-1 bg-primary/5 p-3 rounded-lg h-fit">
                 {icon}
               </div>
               <div>
                 <h3 className="font-semibold text-base mb-1">{tool.name}</h3>
-                <Badge variant={variant} className="font-normal text-xs bg-muted text-muted-foreground hover:bg-muted">
+                <Badge variant={variant} className="font-normal text-xs border border-border/60 text-muted-foreground bg-white">
                   {label}
                 </Badge>
               </div>
@@ -369,16 +369,16 @@ export default function ToolsPage() {
 
   const MCPServerCard = ({ server }: { server: MCPServer }) => {
     return (
-      <Card className="hover:shadow-md cursor-pointer transition-all duration-300 border-border/50 hover:border-primary hover:-translate-y-1" onClick={() => handleEditMcpServer(server)}>
+      <Card className="hover:shadow-md cursor-pointer transition-all duration-300 border-border/40 hover:border-primary/30 hover:-translate-y-1" onClick={() => handleEditMcpServer(server)}>
         <CardContent className="p-6">
           <div className="flex items-start justify-between mb-4">
             <div className="flex gap-4">
-              <div className="mt-1 bg-muted/50 p-3 rounded-lg h-fit">
+              <div className="mt-1 bg-primary/5 p-3 rounded-lg h-fit">
                 {getToolIcon(server.name, 'mcp', 'mcp')}
               </div>
               <div>
                 <h3 className="font-semibold text-base mb-1">{server.name}</h3>
-                <Badge variant="secondary" className="font-normal text-xs bg-muted text-muted-foreground hover:bg-muted">
+                <Badge variant="secondary" className="font-normal text-xs border border-border/60 text-muted-foreground bg-white">
                   {t('tools.mcp.badge')}
                 </Badge>
               </div>

@@ -195,6 +195,67 @@ class OpenVikingService:
             json={"pattern": pattern, "uri": uri},
         )
 
+    async def relations(
+        self,
+        *,
+        user_id: int | str,
+        uri: str,
+        agent_id: Optional[str] = None,
+    ) -> Any:
+        """查询某个 OpenViking 节点的关系。"""
+
+        return await self._client.request(
+            "GET",
+            "/api/v1/relations",
+            user_id=user_id,
+            agent_id=agent_id,
+            params={"uri": uri},
+        )
+
+    async def link(
+        self,
+        *,
+        user_id: int | str,
+        from_uri: str,
+        to_uris: list[str] | str,
+        reason: str,
+        agent_id: Optional[str] = None,
+    ) -> Any:
+        """创建 OpenViking 节点关系。"""
+
+        return await self._client.request(
+            "POST",
+            "/api/v1/relations/link",
+            user_id=user_id,
+            agent_id=agent_id,
+            json={
+                "from_uri": from_uri,
+                "to_uris": to_uris,
+                "reason": reason,
+            },
+        )
+
+    async def unlink(
+        self,
+        *,
+        user_id: int | str,
+        from_uri: str,
+        to_uri: str,
+        agent_id: Optional[str] = None,
+    ) -> Any:
+        """删除 OpenViking 节点关系。"""
+
+        return await self._client.request(
+            "DELETE",
+            "/api/v1/relations/link",
+            user_id=user_id,
+            agent_id=agent_id,
+            json={
+                "from_uri": from_uri,
+                "to_uri": to_uri,
+            },
+        )
+
     async def create_session(
         self,
         *,

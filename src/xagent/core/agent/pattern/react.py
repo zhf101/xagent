@@ -166,6 +166,14 @@ class ReActPattern(AgentPattern):
     4. Repeat until final answer or max iterations
     """
 
+    _OPENVIKING_RELATIONS_GUIDANCE = (
+        "OpenViking relations usage guidance:\n"
+        "- Use openviking_relations only when you already have a known URI and need to inspect what that node is linked to.\n"
+        "- If you do not yet know the URI, use openviking_search first.\n"
+        "- Do not use openviking_relations as a substitute for normal search or reading.\n"
+        "- Use openviking_link or openviking_unlink only for explicit graph maintenance when the relationship is already confirmed.\n"
+    )
+
     def __init__(
         self,
         llm: BaseLLM,
@@ -1119,6 +1127,9 @@ class ReActPattern(AgentPattern):
     def _build_system_prompt(self) -> str:
         """Build system prompt that enforces structured action output."""
         tool_names = self.tool_registry.list_tools()
+        relations_guidance = ""
+        if "openviking_relations" in tool_names:
+            relations_guidance = "\n" + self._OPENVIKING_RELATIONS_GUIDANCE + "\n"
 
         # Check if custom system prompt is provided in context
         custom_prompt = ""
@@ -1183,6 +1194,7 @@ You must respond with a structured action in the following JSON format:
 
 Available tools:
 {chr(10).join(tool_descriptions)}
+{relations_guidance}
 
 Rules:
 1. You must respond with valid JSON only
@@ -1269,6 +1281,10 @@ Failure case:
             # Build tool descriptions
             tool_descriptions = self._build_tool_descriptions(tool_names)
 
+            relations_guidance = ""
+            if "openviking_relations" in tool_names:
+                relations_guidance = "\n" + self._OPENVIKING_RELATIONS_GUIDANCE + "\n"
+
             action_requirements = f"""
 
 === ACTION FORMAT REQUIREMENTS ===
@@ -1286,6 +1302,7 @@ You must respond with a structured action in the following JSON format:
 
 Available tools:
 {chr(10).join(tool_descriptions)}
+{relations_guidance}
 
 Rules:
 1. You must respond with valid JSON only

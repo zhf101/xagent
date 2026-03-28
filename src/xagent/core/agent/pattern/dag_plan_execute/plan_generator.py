@@ -67,6 +67,14 @@ class PlanGenerator:
         "}\n\n"
     )
 
+    _OPENVIKING_RELATIONS_GUIDANCE = (
+        "OPENVIKING RELATIONS GUIDANCE:\n"
+        "- Use openviking_search first when you still need to discover the right URI.\n"
+        "- Consider openviking_relations only after you already have a known URI and the task is about relationships, dependencies, references, or adjacent context.\n"
+        "- Do not add openviking_relations steps for ordinary search, reading, summarization, or answer generation.\n"
+        "- Use openviking_link or openviking_unlink only when the task explicitly requires maintaining the context graph and the relationship is already clear.\n\n"
+    )
+
     def __init__(
         self,
         llm: BaseLLM,
@@ -685,6 +693,9 @@ class PlanGenerator:
                 "2. vision tools - analyze screenshot content\n"
                 "3. browser_evaluate - make targeted modifications\n"
             )
+
+        if "openviking_relations" in tool_names:
+            context_parts.append("\n" + self._OPENVIKING_RELATIONS_GUIDANCE)
 
         return "".join(context_parts)
 

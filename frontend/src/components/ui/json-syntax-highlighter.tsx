@@ -47,7 +47,7 @@ export function JSONSyntaxHighlighter({ data, className = "" }: JSONSyntaxHighli
   }
 
   return (
-    <pre className={`bg-muted p-4 rounded-lg overflow-x-auto ${className}`}>
+    <pre className={`bg-primary/5 p-4 rounded-lg overflow-x-auto ${className}`}>
       <code ref={codeRef} className="language-json text-sm">
         {formatJSON(data)}
       </code>

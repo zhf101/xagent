@@ -536,7 +536,7 @@ export function ChatInput({
           {files.map((file, index) => (
             <div
               key={index}
-              className="flex items-center gap-2 px-3 py-2 bg-secondary/80 rounded-xl text-sm animate-fade-in-scale border border-border/50 hover:border-primary/30 transition-colors"
+              className="flex items-center gap-2 px-3 py-2 bg-white rounded-xl text-sm animate-fade-in-scale border border-border/50 hover:border-primary/30 transition-colors"
             >
               <div className="w-6 h-6 rounded-lg bg-primary/10 flex items-center justify-center">
                 <FileIcon className="w-3.5 h-3.5 text-primary" />
@@ -577,7 +577,7 @@ export function ChatInput({
                     key={index}
                     className={cn(
                       "flex items-center gap-2 px-3 py-2 text-sm rounded-md cursor-pointer transition-colors overflow-scroll",
-                      index === selectedFileIndex ? "bg-accent text-accent-foreground" : "hover:bg-muted",
+                      index === selectedFileIndex ? "bg-accent text-accent-foreground" : "hover:bg-primary/5",
                       downloadingFile === (file.relative_path || file.filename) && "opacity-70"
                     )}
                     onClick={() => insertFile(file)}
@@ -603,8 +603,7 @@ export function ChatInput({
         {mentions.showMentionPicker && (
           <div className="absolute bottom-full left-0 mb-2 w-full max-w-sm rounded-lg border bg-popover shadow-md z-50 overflow-hidden">
             {mentions.mentionPhase === "category" && (
-              <div className="px-3 py-1.5 text-xs text-muted-foreground border-b bg-muted/30">
-                {t("chatPage.mentions.selectCategory")}
+                              <div className="px-3 py-1.5 text-xs text-muted-foreground border-b bg-white">                {t("chatPage.mentions.selectCategory")}
               </div>
             )}
             {mentions.mentionPhase === "items" && mentions.activeCategory && (
@@ -632,7 +631,7 @@ export function ChatInput({
                     key={item.id}
                     className={cn(
                       "flex items-center gap-2 px-3 py-2 text-sm rounded-md cursor-pointer transition-colors",
-                      index === mentions.selectedMentionIndex ? "bg-accent text-accent-foreground" : "hover:bg-muted"
+                      index === mentions.selectedMentionIndex ? "bg-accent text-accent-foreground" : "hover:bg-primary/5"
                     )}
                     onClick={() => {
                       mentions.selectMentionItem(
@@ -730,7 +729,7 @@ export function ChatInput({
                         type="button"
                         variant="ghost"
                         size="sm"
-                        className="h-9 px-3 text-muted-foreground hover:text-foreground hover:bg-secondary/80 rounded-xl gap-2"
+                        className="h-9 px-3 text-muted-foreground hover:text-foreground hover:bg-primary/5 rounded-xl gap-2"
                         disabled={isLoading}
                         title={t('agent.input.actions.config')}
                       >
@@ -757,8 +756,7 @@ export function ChatInput({
               type="button"
               variant="ghost"
               size="sm"
-              className="h-9 w-9 p-0 text-muted-foreground hover:text-foreground hover:bg-secondary/80 rounded-full"
-              onClick={() => fileInputRef.current?.click()}
+                              className="h-9 w-9 p-0 text-muted-foreground hover:text-foreground hover:bg-primary/5 rounded-full"              onClick={() => fileInputRef.current?.click()}
               disabled={isLoading}
               title={t("chatPage.input.actions.upload")}
             >
@@ -796,7 +794,7 @@ export function ChatInput({
                             "flex h-9 w-9 items-center justify-center rounded-full transition-colors",
                             isActive
                               ? "bg-primary/10 text-primary ring-1 ring-primary/20"
-                              : "text-muted-foreground hover:bg-secondary/80 hover:text-foreground"
+                              : "text-muted-foreground hover:bg-primary/5 hover:text-foreground"
                           )}
                         >
                           <item.icon className="h-4 w-4" />
@@ -839,7 +837,7 @@ export function ChatInput({
                 disabled={!canSubmit()}
                 className={cn(
                   "h-8 w-8 rounded-lg transition-all duration-300",
-                  !canSubmit() && "bg-muted text-muted-foreground/50"
+                  !canSubmit() && "bg-white border text-muted-foreground/50"
                 )}
               >
                 {isLoading ? (

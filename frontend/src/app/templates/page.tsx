@@ -195,7 +195,7 @@ export default function TemplatesPage() {
   };
 
   return (
-    <div className="flex flex-col h-full bg-background/50">
+    <div className="flex flex-col h-full bg-background">
       {/* Header */}
       <div className="flex justify-between items-start w-full p-8">
         <div>
@@ -207,7 +207,7 @@ export default function TemplatesPage() {
           value={searchQuery}
           onChange={setSearchQuery}
           containerClassName="w-72"
-          className="bg-secondary/50 border-border/50 focus:bg-background transition-all"
+          className="bg-white border-border focus:border-primary/50 transition-all"
         />
       </div>
 
@@ -220,8 +220,8 @@ export default function TemplatesPage() {
             className={cn(
               "px-4 py-1.5 rounded-full text-sm font-medium transition-all whitespace-nowrap",
               selectedCategory === category.id
-                ? "bg-primary text-primary-foreground shadow-sm"
-                : "bg-secondary/50 text-muted-foreground hover:bg-secondary hover:text-foreground",
+                ? "bg-primary text-white shadow-sm"
+                : "bg-white border border-border text-muted-foreground hover:border-primary/30 hover:text-foreground",
             )}
           >
             {category.label}
@@ -251,7 +251,7 @@ export default function TemplatesPage() {
                       <div
                         key={template.id}
                         onClick={() => handleUseTemplate(template.id)}
-                        className="cursor-pointer shadow-md p-5 rounded-xl border border-border/40 bg-card hover:border-primary/20 hover:shadow-lg transition-all duration-300"
+                        className="cursor-pointer shadow-sm p-5 rounded-xl border border-border/60 bg-white hover:border-primary/30 hover:shadow-md transition-all duration-200"
                       >
                         <h3 className="font-semibold text-base mb-2 group-hover:text-primary transition-colors">
                           {template.name}

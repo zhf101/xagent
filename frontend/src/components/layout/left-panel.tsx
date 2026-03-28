@@ -101,7 +101,7 @@ export function LeftPanel({ onSendMessage, onPauseTask, onResumeTask, messages, 
     }
 
     const customStyles = {
-      pending: "bg-muted/50 text-muted-foreground border-border",
+      pending: "bg-white border border-border text-muted-foreground",
       running: "bg-primary/10 text-primary border-primary/20",
       completed: "bg-green-500/10 text-green-500 border-green-500/20",
       failed: "bg-destructive/10 text-destructive border-destructive/20",
@@ -161,7 +161,7 @@ export function LeftPanel({ onSendMessage, onPauseTask, onResumeTask, messages, 
                     ? "bg-green-500/20 border border-green-500/50 text-foreground backdrop-blur-sm"
                     : message.isFileOutput
                     ? "bg-blue-500/20 border border-blue-500/50 text-foreground backdrop-blur-sm"
-                    : "bg-muted backdrop-blur-sm"
+                    : "bg-white backdrop-blur-sm"
                 )}
               >
                 <div className="flex items-center gap-2 mb-1">

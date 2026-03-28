@@ -307,7 +307,7 @@ export function ChatMessage({
         >
           <button
             onClick={handleCopy}
-            className="hover:text-foreground flex items-center justify-center p-1 rounded-md hover:bg-muted/50 transition-colors"
+            className="hover:text-foreground flex items-center justify-center p-1 rounded-md hover:bg-primary/5 transition-colors"
             title={t("common.copy") || "Copy"}
           >
             {copied ? (

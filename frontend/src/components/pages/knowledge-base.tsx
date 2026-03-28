@@ -144,7 +144,7 @@ export function KnowledgeBasePage() {
                   </div>
                 </div>
 
-                <div className="px-6 py-4 bg-muted/30 border-t flex justify-between items-center text-sm text-muted-foreground">
+                <div className="px-6 py-4 bg-white border-t flex justify-between items-center text-sm text-muted-foreground">
                   <div className="flex items-center">
                     <FileText className="h-4 w-4 mr-2" />
                     {collection.documents} {t("kb.card.documentsLabel")}

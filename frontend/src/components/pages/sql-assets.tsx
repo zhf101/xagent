@@ -28,7 +28,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import { getApiUrl } from "@/lib/utils"
+import { cn, getApiUrl } from "@/lib/utils"
 import { apiRequest } from "@/lib/api-wrapper"
 
 interface BizSystemRecord {
@@ -161,6 +161,7 @@ export function SqlAssetsPage() {
   const [resolveForm, setResolveForm] = useState<ResolveFormState>(EMPTY_RESOLVE_FORM)
   const [resolveResult, setResolveResult] = useState<ResolveResultState | null>(null)
   const [showAdvanced, setShowAdvanced] = useState(false)
+  const [currentStep, setCurrentStep] = useState(1)
 
   const loadAll = async () => {
     setLoading(true)
@@ -279,6 +280,7 @@ export function SqlAssetsPage() {
   const openCreateDialog = () => {
     setEditingAsset(null)
     setShowAdvanced(false)
+    setCurrentStep(1)
     setForm({
       ...EMPTY_FORM,
       datasource_asset_id: String(datasources[0]?.id || ""),
@@ -290,6 +292,7 @@ export function SqlAssetsPage() {
   const openEditDialog = (asset: SqlAssetRecord) => {
     setEditingAsset(asset)
     setShowAdvanced(false)
+    setCurrentStep(1)
     setForm({
       name: asset.name,
       system_short: asset.system_short,
@@ -440,7 +443,7 @@ export function SqlAssetsPage() {
       <div className="border-b border-border/80 px-6 py-4">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex items-center gap-3">
-            <div className="rounded-lg border border-border bg-muted/40 px-2.5 py-1 text-xs font-medium text-muted-foreground">
+            <div className="rounded-lg border border-border bg-primary/5 px-2.5 py-1 text-xs font-medium text-primary">
               SQL ASSET
             </div>
             <h1 className="text-xl font-semibold tracking-tight">SQL 资产</h1>
@@ -575,116 +578,203 @@ export function SqlAssetsPage() {
       </div>
 
       <Dialog open={isFormDialogOpen} onOpenChange={setIsFormDialogOpen}>
-        <DialogContent className="max-h-[90vh] max-w-3xl overflow-hidden p-0">
+        <DialogContent className="max-h-[90vh] max-w-2xl overflow-hidden p-0">
           <div className="flex max-h-[90vh] flex-col">
             <div className="border-b border-border/70 px-6 py-5">
               <DialogHeader>
-                <DialogTitle>{editingAsset ? "编辑 SQL 资产" : "新增 SQL 资产"}</DialogTitle>
-                <DialogDescription>录入 SQL 元数据，让 SQL agent 后续优先命中已治理资产。</DialogDescription>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <DialogTitle>{editingAsset ? "编辑 SQL 资产" : "新增 SQL 资产"}</DialogTitle>
+                    <DialogDescription className="mt-1">
+                      {currentStep === 1 && "第一步：基本信息"}
+                      {currentStep === 2 && "第二步：SQL 配置"}
+                      {currentStep === 3 && "第三步：高级治理"}
+                    </DialogDescription>
+                  </div>
+                  <div className="flex items-center gap-2 pr-6">
+                    {[1, 2, 3].map((s) => (
+                      <div
+                        key={s}
+                        className={cn(
+                          "flex h-7 w-7 items-center justify-center rounded-full text-xs font-semibold transition-all",
+                          currentStep === s
+                            ? "bg-primary text-primary-foreground shadow-sm shadow-primary/20"
+                            : currentStep > s
+                            ? "bg-primary/20 text-primary"
+                            : "bg-white border border-border text-muted-foreground"
+                        )}
+                      >
+                        {s}
+                      </div>
+                    ))}
+                  </div>
+                </div>
               </DialogHeader>
             </div>
-            <div className="flex-1 overflow-y-auto px-6 py-5">
-              <div className="grid gap-4 lg:grid-cols-2">
-            <div className="space-y-4">
-              <div className="space-y-2">
-                <Label>先选择数据源</Label>
-                <Select
-                  value={form.datasource_asset_id}
-                  onValueChange={(value) => {
-                    const nextDatasource =
-                      datasources.find((item) => String(item.id) === value) ?? null
-                    setForm((prev) => ({
-                      ...prev,
-                      datasource_asset_id: value,
-                      system_short: nextDatasource?.system_short || "",
-                    }))
-                  }}
-                  options={datasourceOptions}
-                  placeholder="请选择已配置的数据源"
-                />
-                <div className="text-xs text-muted-foreground">
-                  SQL 资产直接挂在你已配置的数据源下面，不再额外手填 system_short。
-                </div>
-              </div>
-              <div className="space-y-2">
-                <Label>所属系统</Label>
-                <Input value={selectedDatasource?.system_short || form.system_short} readOnly />
-              </div>
-              <div className="space-y-2">
-                <Label>资产名称</Label>
-                <Input value={form.name} onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))} />
-              </div>
-              <div className="space-y-2">
-                <Label>SQL 类型</Label>
-                <Select
-                  value={form.sql_kind}
-                  onValueChange={(value) => setForm((prev) => ({ ...prev, sql_kind: value }))}
-                  options={sqlKindOptions}
-                />
-              </div>
-              <div className="space-y-2">
-                <Label>描述</Label>
-                <Input value={form.description} onChange={(e) => setForm((prev) => ({ ...prev, description: e.target.value }))} />
-              </div>
-            </div>
-            <div className="space-y-4">
-              <div className="space-y-2">
-                <Label>关联表（可选，逗号分隔）</Label>
-                <Input value={form.table_names} onChange={(e) => setForm((prev) => ({ ...prev, table_names: e.target.value }))} placeholder="crm_user, crm_profile" />
-                <div className="text-xs text-muted-foreground">用于帮助命中这条 SQL 资产，不是必须精确声明所有表。</div>
-              </div>
-              <div className="space-y-2">
-                <Label>标签（可选，逗号分隔）</Label>
-                <Input value={form.tags} onChange={(e) => setForm((prev) => ({ ...prev, tags: e.target.value }))} placeholder="用户, 查询, 用户画像" />
-              </div>
-              <div className="space-y-2">
-                <Label>SQL Template</Label>
-                <Textarea rows={7} value={form.sql_template} onChange={(e) => setForm((prev) => ({ ...prev, sql_template: e.target.value }))} placeholder="select * from crm_user where user_id = :user_id" />
-              </div>
-              <Collapsible open={showAdvanced} onOpenChange={setShowAdvanced}>
-                <div className="rounded-xl border border-border bg-muted/20 p-4">
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <div className="text-sm font-medium">高级治理配置</div>
-                      <div className="text-xs text-muted-foreground">只有在确实需要时再填写审批策略、风险等级和参数契约。</div>
-                    </div>
-                    <CollapsibleTrigger asChild>
-                      <Button variant="outline" size="sm">
-                        {showAdvanced ? "收起" : "展开"}
-                      </Button>
-                    </CollapsibleTrigger>
+
+            <div className="flex-1 overflow-y-auto px-6 py-6">
+              {currentStep === 1 && (
+                <div className="space-y-5 animate-in fade-in slide-in-from-right-4 duration-300">
+                  <div className="space-y-2">
+                    <Label className="text-sm font-semibold">选择数据源</Label>
+                    <Select
+                      value={form.datasource_asset_id}
+                      onValueChange={(value) => {
+                        const nextDatasource =
+                          datasources.find((item) => String(item.id) === value) ?? null
+                        setForm((prev) => ({
+                          ...prev,
+                          datasource_asset_id: value,
+                          system_short: nextDatasource?.system_short || "",
+                        }))
+                      }}
+                      options={datasourceOptions}
+                      placeholder="请选择已配置的数据源"
+                    />
+                    <p className="text-[11px] text-muted-foreground leading-relaxed">
+                      SQL 资产直接挂在你已配置的数据源下面，会自动继承所属系统信息。
+                    </p>
                   </div>
-                  <CollapsibleContent className="mt-4 space-y-4">
+                  <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-2">
-                      <Label>审批策略</Label>
-                      <Input value={form.approval_policy} onChange={(e) => setForm((prev) => ({ ...prev, approval_policy: e.target.value }))} placeholder="none / requester_confirm / system_admin_confirm" />
+                      <Label className="text-sm font-semibold">所属系统</Label>
+                      <Input value={selectedDatasource?.system_short || form.system_short} readOnly className="bg-primary/5 border-primary/20" />
                     </div>
                     <div className="space-y-2">
-                      <Label>风险等级</Label>
-                      <Input value={form.risk_level} onChange={(e) => setForm((prev) => ({ ...prev, risk_level: e.target.value }))} placeholder="low / medium / high / critical" />
+                      <Label className="text-sm font-semibold">资产名称</Label>
+                      <Input 
+                        placeholder="例如：查询用户信息"
+                        value={form.name} 
+                        onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))} 
+                      />
                     </div>
-                    <div className="space-y-2">
-                      <Label>参数 Schema JSON</Label>
-                      <Textarea rows={5} value={form.parameter_schema_json} onChange={(e) => setForm((prev) => ({ ...prev, parameter_schema_json: e.target.value }))} />
-                    </div>
-                    <div className="space-y-2">
-                      <Label>敏感等级</Label>
-                      <Input value={form.sensitivity_level} onChange={(e) => setForm((prev) => ({ ...prev, sensitivity_level: e.target.value }))} placeholder="low / medium / high" />
-                    </div>
-                  </CollapsibleContent>
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-sm font-semibold">描述</Label>
+                    <Textarea 
+                      placeholder="简要说明该 SQL 资产的用途"
+                      rows={3}
+                      value={form.description} 
+                      onChange={(e) => setForm((prev) => ({ ...prev, description: e.target.value }))} 
+                    />
+                  </div>
                 </div>
-              </Collapsible>
+              )}
+
+              {currentStep === 2 && (
+                <div className="space-y-5 animate-in fade-in slide-in-from-right-4 duration-300">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label className="text-sm font-semibold">SQL 类型</Label>
+                      <Select
+                        value={form.sql_kind}
+                        onValueChange={(value) => setForm((prev) => ({ ...prev, sql_kind: value }))}
+                        options={sqlKindOptions}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-sm font-semibold">关联表（逗号分隔）</Label>
+                      <Input 
+                        value={form.table_names} 
+                        onChange={(e) => setForm((prev) => ({ ...prev, table_names: e.target.value }))} 
+                        placeholder="crm_user, crm_profile" 
+                      />
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-sm font-semibold">SQL Template</Label>
+                    <div className="relative">
+                      <Textarea 
+                        rows={8} 
+                        className="font-mono text-xs leading-relaxed"
+                        value={form.sql_template} 
+                        onChange={(e) => setForm((prev) => ({ ...prev, sql_template: e.target.value }))} 
+                        placeholder="select * from crm_user where user_id = :user_id" 
+                      />
+                    </div>
+                    <p className="text-[11px] text-muted-foreground">支持使用 :variable 形式定义参数。</p>
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-sm font-semibold">标签（逗号分隔）</Label>
+                    <Input 
+                      value={form.tags} 
+                      onChange={(e) => setForm((prev) => ({ ...prev, tags: e.target.value }))} 
+                      placeholder="用户, 查询, 核心数据" 
+                    />
+                  </div>
+                </div>
+              )}
+
+              {currentStep === 3 && (
+                <div className="space-y-6 animate-in fade-in slide-in-from-right-4 duration-300">
+                  <div className="rounded-lg border border-yellow-500/20 bg-yellow-500/5 p-3 text-[11px] text-yellow-600 dark:text-yellow-400">
+                    提示：高级治理配置仅在需要严格管控资产风险时使用。
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label className="text-sm font-semibold">审批策略</Label>
+                      <Input 
+                        value={form.approval_policy} 
+                        onChange={(e) => setForm((prev) => ({ ...prev, approval_policy: e.target.value }))} 
+                        placeholder="none / requester_confirm" 
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-sm font-semibold">风险等级</Label>
+                      <Input 
+                        value={form.risk_level} 
+                        onChange={(e) => setForm((prev) => ({ ...prev, risk_level: e.target.value }))} 
+                        placeholder="low / medium / high" 
+                      />
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-sm font-semibold">参数 Schema JSON</Label>
+                    <Textarea 
+                      rows={5} 
+                      className="font-mono text-xs"
+                      value={form.parameter_schema_json} 
+                      onChange={(e) => setForm((prev) => ({ ...prev, parameter_schema_json: e.target.value }))} 
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-sm font-semibold">数据敏感度</Label>
+                    <Input 
+                      value={form.sensitivity_level} 
+                      onChange={(e) => setForm((prev) => ({ ...prev, sensitivity_level: e.target.value }))} 
+                      placeholder="L1 / L2 / L3" 
+                    />
+                  </div>
+                </div>
+              )}
             </div>
-              </div>
-            </div>
-            <div className="border-t border-border/70 px-6 py-4">
-              <DialogFooter>
-                <Button variant="outline" onClick={() => setIsFormDialogOpen(false)}>
-                  取消
-                </Button>
-                <Button onClick={handleCreate} disabled={submitting || datasourceOptions.length === 0}>
-                  {submitting ? "保存中..." : "保存"}
-                </Button>
+
+            <div className="border-t border-border/70 bg-white px-6 py-4">
+              <DialogFooter className="flex items-center justify-between sm:justify-between">
+                <div>
+                  {currentStep > 1 && (
+                    <Button variant="outline" onClick={() => setCurrentStep(prev => prev - 1)}>
+                      上一步
+                    </Button>
+                  )}
+                </div>
+                <div className="flex gap-2">
+                  <Button variant="ghost" onClick={() => setIsFormDialogOpen(false)}>
+                    取消
+                  </Button>
+                  {currentStep < 3 ? (
+                    <Button 
+                      onClick={() => setCurrentStep(prev => prev + 1)}
+                      disabled={currentStep === 1 && (!form.name.trim() || !form.datasource_asset_id.trim())}
+                    >
+                      下一步
+                    </Button>
+                  ) : (
+                    <Button onClick={handleCreate} disabled={submitting}>
+                      {submitting ? "保存中..." : "保存资产"}
+                    </Button>
+                  )}
+                </div>
               </DialogFooter>
             </div>
           </div>
@@ -700,16 +790,16 @@ export function SqlAssetsPage() {
           {viewingAsset ? (
             <div className="space-y-4">
               <div className="grid gap-4 md:grid-cols-2">
-                <div className="rounded-xl border border-border bg-muted/40 p-4">
+                <div className="rounded-xl border border-border bg-white p-4">
                   <div className="text-xs text-muted-foreground">资产名称</div>
                   <div className="mt-1 font-medium">{viewingAsset.name}</div>
                 </div>
-                <div className="rounded-xl border border-border bg-muted/40 p-4">
+                <div className="rounded-xl border border-border bg-white p-4">
                   <div className="text-xs text-muted-foreground">所属系统</div>
                   <div className="mt-1 font-medium">{viewingAsset.system_short}</div>
                 </div>
               </div>
-              <div className="rounded-xl border border-border bg-muted/40 p-4">
+              <div className="rounded-xl border border-border bg-white p-4">
                 <div className="text-xs text-muted-foreground">配置</div>
                 <pre className="mt-2 overflow-auto whitespace-pre-wrap break-all text-xs">
                   {JSON.stringify(viewingAsset.config || {}, null, 2)}
@@ -751,7 +841,7 @@ export function SqlAssetsPage() {
               />
             </div>
             {resolveResult ? (
-              <div className="rounded-xl border border-border bg-muted/40 p-4 text-sm">
+              <div className="rounded-xl border border-border bg-white p-4 text-sm">
                 <div className="font-medium">{resolveResult.matched ? "命中成功" : "未命中"}</div>
                 <div className="mt-2 text-muted-foreground">
                   {resolveResult.asset_name ? `资产：${resolveResult.asset_name}` : resolveResult.reason || "-"}

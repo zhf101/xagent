@@ -104,6 +104,36 @@ class OpenVikingGlobResult(BaseModel):
     result: Any = Field(description="OpenViking 返回的 glob 结果")
 
 
+class OpenVikingRelationsArgs(BaseModel):
+    uri: str = Field(description="要查看关系的 Viking URI")
+
+
+class OpenVikingRelationsResult(BaseModel):
+    result: Any = Field(description="OpenViking 返回的 relations 结果")
+
+
+class OpenVikingLinkArgs(BaseModel):
+    from_uri: str = Field(description="关系起点 URI")
+    to_uris: list[str] = Field(description="关系终点 URI 列表")
+    reason: str = Field(
+        min_length=1,
+        description="建立关系的原因，必须填写清楚业务语义",
+    )
+
+
+class OpenVikingLinkResult(BaseModel):
+    result: Any = Field(description="OpenViking 返回的 link 结果")
+
+
+class OpenVikingUnlinkArgs(BaseModel):
+    from_uri: str = Field(description="关系起点 URI")
+    to_uri: str = Field(description="要移除关系的终点 URI")
+
+
+class OpenVikingUnlinkResult(BaseModel):
+    result: Any = Field(description="OpenViking 返回的 unlink 结果")
+
+
 class OpenVikingSearchTool(AbstractBaseTool):
     category = ToolCategory.KNOWLEDGE
 
@@ -369,6 +399,155 @@ class OpenVikingGlobTool(AbstractBaseTool):
         return OpenVikingGlobResult(result=result).model_dump()
 
 
+class OpenVikingRelationsTool(AbstractBaseTool):
+    category = ToolCategory.KNOWLEDGE
+
+    def __init__(self, *, user_id: int, agent_id: str | None = None):
+        self._visibility = ToolVisibility.PUBLIC
+        self._user_id = user_id
+        self._agent_id = agent_id
+
+    @property
+    def name(self) -> str:
+        return "openviking_relations"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Inspect relationships for a known OpenViking URI. "
+            "Use this when you have already identified a memory, resource, or skill node "
+            "and need to understand what it is linked to. Do not use this as a replacement "
+            "for search; if you do not yet know the URI, use openviking_search first."
+        )
+
+    @property
+    def tags(self) -> list[str]:
+        return ["openviking", "context", "relations", "graph", "inspect"]
+
+    def args_type(self) -> Type[BaseModel]:
+        return OpenVikingRelationsArgs
+
+    def return_type(self) -> Type[BaseModel]:
+        return OpenVikingRelationsResult
+
+    def run_json_sync(self, args: Mapping[str, Any]) -> Any:
+        raise NotImplementedError(
+            "OpenVikingRelationsTool only supports async execution."
+        )
+
+    async def run_json_async(self, args: Mapping[str, Any]) -> Any:
+        tool_args = OpenVikingRelationsArgs.model_validate(args)
+        service = get_openviking_service()
+        if not service.search_is_enabled():
+            raise RuntimeError("OpenViking relations is not enabled")
+
+        result = await service.relations(
+            user_id=self._user_id,
+            agent_id=self._agent_id,
+            uri=tool_args.uri,
+        )
+        return OpenVikingRelationsResult(result=result).model_dump()
+
+
+class OpenVikingLinkTool(AbstractBaseTool):
+    category = ToolCategory.KNOWLEDGE
+
+    def __init__(self, *, user_id: int, agent_id: str | None = None):
+        self._visibility = ToolVisibility.PUBLIC
+        self._user_id = user_id
+        self._agent_id = agent_id
+
+    @property
+    def name(self) -> str:
+        return "openviking_link"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Create explicit relationships between OpenViking nodes. "
+            "Only use this when the relationship is intentional, clearly confirmed, and "
+            "the reason is specific. Do not create links for speculative or weak associations."
+        )
+
+    @property
+    def tags(self) -> list[str]:
+        return ["openviking", "context", "relations", "graph", "link"]
+
+    def args_type(self) -> Type[BaseModel]:
+        return OpenVikingLinkArgs
+
+    def return_type(self) -> Type[BaseModel]:
+        return OpenVikingLinkResult
+
+    def run_json_sync(self, args: Mapping[str, Any]) -> Any:
+        raise NotImplementedError("OpenVikingLinkTool only supports async execution.")
+
+    async def run_json_async(self, args: Mapping[str, Any]) -> Any:
+        tool_args = OpenVikingLinkArgs.model_validate(args)
+        service = get_openviking_service()
+        if not service.search_is_enabled():
+            raise RuntimeError("OpenViking link is not enabled")
+
+        result = await service.link(
+            user_id=self._user_id,
+            agent_id=self._agent_id,
+            from_uri=tool_args.from_uri,
+            to_uris=tool_args.to_uris,
+            reason=tool_args.reason,
+        )
+        return OpenVikingLinkResult(result=result).model_dump()
+
+
+class OpenVikingUnlinkTool(AbstractBaseTool):
+    category = ToolCategory.KNOWLEDGE
+
+    def __init__(self, *, user_id: int, agent_id: str | None = None):
+        self._visibility = ToolVisibility.PUBLIC
+        self._user_id = user_id
+        self._agent_id = agent_id
+
+    @property
+    def name(self) -> str:
+        return "openviking_unlink"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Remove an existing relationship between OpenViking nodes. "
+            "Use this only when the current relationship is known to be wrong, duplicated, "
+            "or no longer valid. Do not use it as a general cleanup action."
+        )
+
+    @property
+    def tags(self) -> list[str]:
+        return ["openviking", "context", "relations", "graph", "unlink"]
+
+    def args_type(self) -> Type[BaseModel]:
+        return OpenVikingUnlinkArgs
+
+    def return_type(self) -> Type[BaseModel]:
+        return OpenVikingUnlinkResult
+
+    def run_json_sync(self, args: Mapping[str, Any]) -> Any:
+        raise NotImplementedError(
+            "OpenVikingUnlinkTool only supports async execution."
+        )
+
+    async def run_json_async(self, args: Mapping[str, Any]) -> Any:
+        tool_args = OpenVikingUnlinkArgs.model_validate(args)
+        service = get_openviking_service()
+        if not service.search_is_enabled():
+            raise RuntimeError("OpenViking unlink is not enabled")
+
+        result = await service.unlink(
+            user_id=self._user_id,
+            agent_id=self._agent_id,
+            from_uri=tool_args.from_uri,
+            to_uri=tool_args.to_uri,
+        )
+        return OpenVikingUnlinkResult(result=result).model_dump()
+
+
 @register_tool
 async def create_openviking_tools(config: "BaseToolConfig") -> List[Any]:
     """按配置创建 OpenViking 工具。"""
@@ -391,4 +570,7 @@ async def create_openviking_tools(config: "BaseToolConfig") -> List[Any]:
         OpenVikingListTreeTool(user_id=int(user_id), agent_id=agent_id),
         OpenVikingGrepTool(user_id=int(user_id), agent_id=agent_id),
         OpenVikingGlobTool(user_id=int(user_id), agent_id=agent_id),
+        OpenVikingRelationsTool(user_id=int(user_id), agent_id=agent_id),
+        OpenVikingLinkTool(user_id=int(user_id), agent_id=agent_id),
+        OpenVikingUnlinkTool(user_id=int(user_id), agent_id=agent_id),
     ]

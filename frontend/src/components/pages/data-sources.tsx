@@ -92,7 +92,7 @@ function formatDate(value?: string | null) {
 function getStatusTone(status: DatabaseStatus) {
   if (status === "connected") return "border-green-500/30 bg-green-500/10 text-green-600"
   if (status === "error") return "border-red-500/30 bg-red-500/10 text-red-600"
-  return "border-border bg-muted text-muted-foreground"
+  return "border-border bg-white text-muted-foreground"
 }
 
 function getEnabledTone(enabled: boolean) {
@@ -333,7 +333,7 @@ export function DataSourcesPage() {
       <div className="border-b border-border/80 px-6 py-4">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex items-center gap-3">
-            <div className="rounded-lg border border-border bg-muted/40 px-2.5 py-1 text-xs font-medium text-muted-foreground">
+            <div className="rounded-lg border border-border/60 bg-primary/5 px-2.5 py-1 text-xs font-medium text-primary">
               DATA SOURCE
             </div>
             <h1 className="text-xl font-semibold tracking-tight">数据源配置</h1>
@@ -546,17 +546,17 @@ export function DataSourcesPage() {
           {viewingRecord ? (
             <div className="space-y-4">
               <div className="grid gap-4 md:grid-cols-2">
-                <div className="rounded-xl border border-border bg-muted/40 p-4">
+                <div className="rounded-xl border border-border bg-white p-4">
                   <div className="text-xs text-muted-foreground">业务系统</div>
                   <div className="mt-1 font-medium">{viewingRecord.system_name || "未绑定系统"}</div>
                   <div className="text-xs text-muted-foreground">{viewingRecord.system_short || "-"}</div>
                 </div>
-                <div className="rounded-xl border border-border bg-muted/40 p-4">
+                <div className="rounded-xl border border-border bg-white p-4">
                   <div className="text-xs text-muted-foreground">数据库类型</div>
                   <div className="mt-1 font-medium">{viewingRecord.type}</div>
                 </div>
               </div>
-              <div className="rounded-xl border border-border bg-muted/40 p-4">
+              <div className="rounded-xl border border-border bg-white p-4">
                 <div className="text-xs text-muted-foreground">连接字符串</div>
                 <div className="mt-2 break-all text-sm">{viewingRecord.url}</div>
               </div>
@@ -570,7 +570,7 @@ export function DataSourcesPage() {
                       <Badge variant="outline">{profile.support_level}</Badge>
                     </div>
                     <div className="text-xs text-muted-foreground">连接模板</div>
-                    <div className="rounded-lg border border-border bg-muted/40 p-3 text-xs break-all">
+                    <div className="rounded-lg border border-border bg-white p-3 text-xs break-all">
                       {profile.connection_example}
                     </div>
                     <div className="text-xs text-muted-foreground">驱动依赖</div>

@@ -98,7 +98,7 @@ export function ChatStartScreen({
                       <div
                         key={index}
                         onClick={() => handlePromptClick(promptText)}
-                        className="group relative p-4 h-28 rounded-xl border border-border bg-card hover:bg-muted/50 cursor-pointer transition-all duration-300 flex flex-col justify-center text-left"
+                        className="group relative p-4 h-28 rounded-xl border border-border bg-card hover:bg-primary/5 cursor-pointer transition-all duration-300 flex flex-col justify-center text-left"
                       >
                         <p className="text-sm text-foreground/90 line-clamp-3">{promptText}</p>
                       </div>
@@ -110,7 +110,7 @@ export function ChatStartScreen({
                     <div
                       key={index}
                       onClick={() => handlePromptClick(promptText)}
-                      className="group relative p-4 h-28 rounded-xl border border-border bg-card hover:bg-muted/50 cursor-pointer transition-all duration-300 flex flex-col justify-center items-start text-left gap-3"
+                      className="group relative p-4 h-28 rounded-xl border border-border bg-card hover:bg-primary/5 cursor-pointer transition-all duration-300 flex flex-col justify-center items-start text-left gap-3"
                     >
                       <div className="flex items-center justify-center">
                         {item.icon && <item.icon className="w-5 h-5 text-muted-foreground" />}

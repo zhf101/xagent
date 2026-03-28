@@ -384,7 +384,7 @@ export function MemoryPage() {
       {/* Content Area */}
       <div className="flex flex-1 overflow-hidden">
         {/* Left Sidebar */}
-        <aside className="w-64 border-r bg-muted/10 flex flex-col flex-shrink-0 overflow-y-auto">
+        <aside className="w-64 border-r bg-white flex flex-col flex-shrink-0 overflow-y-auto">
           <div className="p-6 space-y-8">
             <div className="space-y-3">
               <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider px-2">
@@ -485,7 +485,7 @@ export function MemoryPage() {
               </div>
             ) : memories.length === 0 ? (
                <div className="flex flex-col items-center justify-center h-full text-muted-foreground">
-                 <div className="h-16 w-16 bg-muted rounded-full flex items-center justify-center mb-4">
+                 <div className="h-16 w-16 bg-primary/10 rounded-full flex items-center justify-center mb-4">
                    <Database className="h-8 w-8 opacity-50" />
                  </div>
                  <h3 className="text-lg font-medium mb-1">{t("memory.empty.title")}</h3>
@@ -563,7 +563,7 @@ export function MemoryPage() {
                                <div className="flex items-center gap-1 ml-2">
                                  <span className="text-xs text-muted-foreground">{t("memory.item.tagsLabel")}</span>
                                  {memory.tags.slice(0, 3).map(tag => (
-                                   <span key={tag} className="text-xs text-muted-foreground bg-muted/50 px-1.5 py-0.5 rounded">
+                                   <span key={tag} className="text-xs text-muted-foreground bg-white border border-border/50 px-1.5 py-0.5 rounded">
                                      #{tag}
                                    </span>
                                  ))}
@@ -605,7 +605,7 @@ export function MemoryPage() {
                   <Badge variant="secondary">{viewingMemory.category}</Badge>
                   <span className="text-sm text-muted-foreground">{formatDate(viewingMemory.timestamp)}</span>
                 </div>
-                <div className="p-4 bg-muted/50 rounded-lg">
+                <div className="p-4 bg-white rounded-lg">
                   <pre className="whitespace-pre-wrap text-sm font-sans text-foreground">{viewingMemory.content}</pre>
                 </div>
 

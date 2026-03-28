@@ -52,9 +52,10 @@ const en = {
     history: "All Tasks",
     search: "Search Tasks",
     templates: "Templates",
+    workspace: "Workspace",
     sections: {
-      agentDevelopment: "Agent Development",
-      resources: "Resources",
+      main: "MAIN",
+      resources: "RESOURCES",
     },
   },
   chatPage: {

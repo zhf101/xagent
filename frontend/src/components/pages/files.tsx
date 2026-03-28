@@ -363,7 +363,7 @@ export function FilesPage() {
 
       <div className="flex flex-1 overflow-hidden">
         {/* Sidebar */}
-        <aside className="w-64 border-r bg-muted/10 flex-shrink-0 flex flex-col">
+        <aside className="w-64 border-r bg-white flex-shrink-0 flex flex-col">
           <div className="p-6">
             <div className="space-y-6">
               {/* Folders Section */}
@@ -472,7 +472,7 @@ export function FilesPage() {
         <div className="flex-1 overflow-auto px-8 pb-8">
           <div className="border rounded-lg bg-card shadow-sm">
             {/* Table Header */}
-            <div className="grid grid-cols-12 gap-4 p-4 border-b text-xs font-medium text-muted-foreground uppercase tracking-wider bg-muted/30">
+            <div className="grid grid-cols-12 gap-4 p-4 border-b text-xs font-medium text-muted-foreground uppercase tracking-wider bg-white border-border/50">
               <div className="col-span-5 pl-2">{t('files.table.name')}</div>
               <div className="col-span-2">{t('files.table.type')}</div>
               <div className="col-span-2">{t('files.table.size')}</div>
@@ -493,7 +493,7 @@ export function FilesPage() {
                 {filteredFiles.map((file) => (
                   <div
                     key={file.file_id}
-                    className="grid grid-cols-12 gap-4 p-4 hover:bg-muted/50 transition-colors items-center group text-sm"
+                    className="grid grid-cols-12 gap-4 p-4 hover:bg-primary/5 transition-colors items-center group text-sm"
                   >
                     <div className="col-span-5 flex items-center gap-3 min-w-0">
                       {/* Checkbox only visible on hover or selected */}

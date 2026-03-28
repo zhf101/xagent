@@ -52,8 +52,9 @@ const zh = {
     history: "全部任务",
     search: "搜索任务",
     templates: "模板",
+    workspace: "工作台",
     sections: {
-      agentDevelopment: "Agent 开发",
+      main: "主要功能",
       resources: "资源",
     },
   },

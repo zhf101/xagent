@@ -187,7 +187,7 @@ export function ClarificationForm({ interactions, messageId }: ClarificationForm
             {files.length > 0 && (
               <div className="grid gap-2">
                 {files.map((file, index) => (
-                  <div key={index} className="flex items-center gap-2 rounded-md border p-2 text-sm bg-muted/50">
+                  <div key={index} className="flex items-center gap-2 rounded-md border p-2 text-sm bg-white">
                     <FileIcon className="h-4 w-4 text-muted-foreground shrink-0" />
                     <span className="flex-1 truncate">{file.name}</span>
                     <Button
@@ -205,7 +205,7 @@ export function ClarificationForm({ interactions, messageId }: ClarificationForm
 
             {/* Always show upload area to allow adding more files */}
             <div className="relative group cursor-pointer">
-              <div className="flex h-24 w-full flex-col items-center justify-center gap-2 rounded-md border border-dashed bg-muted/30 hover:bg-muted/50 transition-colors">
+              <div className="flex h-24 w-full flex-col items-center justify-center gap-2 rounded-md border border-dashed bg-white hover:bg-primary/5 transition-colors">
                 <Upload className="h-6 w-6 text-muted-foreground group-hover:scale-110 transition-transform" />
                 <span className="text-xs text-muted-foreground">{t("chatPage.fileUpload.hintDragClick")}</span>
               </div>
@@ -247,7 +247,7 @@ export function ClarificationForm({ interactions, messageId }: ClarificationForm
       className="w-full space-y-2 rounded-lg border bg-card text-card-foreground shadow-sm my-2"
     >
       <CollapsibleTrigger asChild>
-        <div className="flex items-center justify-between p-4 bg-muted/80 cursor-pointer hover:bg-muted/60 transition-colors">
+        <div className="flex items-center justify-between p-4 bg-white cursor-pointer hover:bg-primary/5 transition-colors">
           <div className="flex items-center gap-2 font-semibold">
             <MessageSquare className="h-4 w-4" />
             <span className="text-sm">{t("chatPage.clarification.title")}</span>

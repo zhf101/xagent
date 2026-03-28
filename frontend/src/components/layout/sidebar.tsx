@@ -24,15 +24,13 @@ import {
   X,
   ChevronDown,
   ChevronRight,
-  Sparkles,
-  Zap,
+  ChevronLeft,
   Settings,
   Wrench,
   Users,
   Brain,
   Database,
   Server,
-  HardDrive,
   Layers,
   MessageSquare,
   Loader2,
@@ -93,153 +91,138 @@ interface NavigationItem {
   children?: NavigationItem[]
   showTasks?: boolean
   nameKey?: string
+  adminOnly?: boolean  // 仅管理员可见
 }
 
-interface NavigationGroup {
-  key: string
-  title: string
-  titleKey?: string
-  items: NavigationItem[]
-}
-
-const navigationGroups: NavigationGroup[] = [
-  {
-    key: "main",
-    title: "",
-    items: [
+// 用户菜单项（仅保留用户管理）
+const getUserMenuItemsForUser = (user: any): NavigationItem[] => {
+  if (user?.is_admin) {
+    return [
       {
-        name: "Agent Development",
-        nameKey: "nav.sections.agentDevelopment",
-        href: "/workspace",
-        icon: LayoutDashboard,
-        color: "text-blue-500",
-        children: [
-          {
-            name: "Task",
-            nameKey: "nav.task",
-            href: "/task",
-            icon: MessageSquare,
-            color: "text-blue-500"
-          },
-          {
-            name: "Agents",
-            nameKey: "nav.build",
-            href: "/build",
-            icon: Bot,
-            color: "text-yellow-400"
-          },
-          {
-            name: "Templates",
-            nameKey: "nav.templates",
-            href: "/templates",
-            icon: LayoutTemplate,
-            color: "text-purple-400"
-          },
-        ]
-      },
-      {
-        name: "Resources",
-        nameKey: "nav.sections.resources",
-        href: "/resources",
-        icon: Database,
-        color: "text-blue-500",
-        children: [
-          {
-            name: "Knowledge Base",
-            nameKey: "nav.knowledgeBase",
-            href: "/kb",
-            icon: BookOpen,
-            color: "text-gray-500"
-          },
-          {
-            name: "Models",
-            nameKey: "nav.models",
-            href: "/models",
-            icon: Box,
-            color: "text-gray-500"
-          },
-          {
-            name: "Data Sources",
-            nameKey: "nav.dataSources",
-            href: "/data-sources",
-            icon: Database,
-            color: "text-gray-500"
-          },
-          {
-            name: "SQL Assets",
-            nameKey: "nav.sqlAssets",
-            href: "/sql-assets",
-            icon: Layers,
-            color: "text-gray-500"
-          },
-          {
-            name: "HTTP Assets",
-            nameKey: "nav.httpAssets",
-            href: "/http-assets",
-            icon: Server,
-            color: "text-gray-500"
-          },
-          {
-            name: "Memory",
-            nameKey: "nav.memory",
-            href: "/memory",
-            icon: Brain,
-            color: "text-gray-500"
-          }
-        ]
+        name: "User Management",
+        nameKey: "nav.userManagement",
+        href: "/users/",
+        icon: Users,
+        color: "text-blue-400"
       }
     ]
   }
-]
+  return []
+}
 
-const SIDEBAR_COMPACT_STORAGE_KEY = "xagent.sidebar.compact"
-
-const baseUserMenuItems: NavigationItem[] = [
+// 导航菜单项定义
+// 普通用户仅可见：Task、Agents
+// 管理员可见：所有菜单
+const allNavigationItems: NavigationItem[] = [
+  // === 核心功能 ===
+  {
+    name: "Workspace",
+    nameKey: "nav.workspace",
+    href: "/agent/vibe",
+    icon: LayoutDashboard,
+    adminOnly: true
+  },
+  {
+    name: "Task",
+    nameKey: "nav.task",
+    href: "/task",
+    icon: MessageSquare,
+    adminOnly: false
+  },
+  {
+    name: "Agents",
+    nameKey: "nav.build",
+    href: "/build",
+    icon: Bot,
+    adminOnly: false
+  },
+  {
+    name: "Templates",
+    nameKey: "nav.templates",
+    href: "/templates",
+    icon: LayoutTemplate,
+    adminOnly: true
+  },
+  // === 资源管理（仅管理员） ===
+  {
+    name: "Knowledge Base",
+    nameKey: "nav.knowledgeBase",
+    href: "/kb",
+    icon: BookOpen,
+    adminOnly: true
+  },
+  {
+    name: "Models",
+    nameKey: "nav.models",
+    href: "/models",
+    icon: Box,
+    adminOnly: true
+  },
+  {
+    name: "Data Sources",
+    nameKey: "nav.dataSources",
+    href: "/data-sources",
+    icon: Database,
+    adminOnly: true
+  },
+  {
+    name: "SQL Assets",
+    nameKey: "nav.sqlAssets",
+    href: "/sql-assets",
+    icon: Layers,
+    adminOnly: true
+  },
+  {
+    name: "HTTP Assets",
+    nameKey: "nav.httpAssets",
+    href: "/http-assets",
+    icon: Server,
+    adminOnly: true
+  },
+  {
+    name: "Memory",
+    nameKey: "nav.memory",
+    href: "/memory",
+    icon: Brain,
+    adminOnly: true
+  },
+  // === 系统管理（仅管理员） ===
   {
     name: "Tools",
     nameKey: "nav.tools",
     href: "/tools",
     icon: Wrench,
-    color: "text-blue-400"
+    adminOnly: true
   },
   {
     name: "Files",
     nameKey: "nav.files",
     href: "/files",
     icon: FileText,
-    color: "text-blue-400"
+    adminOnly: true
   },
   {
     name: "Monitoring",
     nameKey: "nav.monitoring",
     href: "/monitoring",
     icon: Activity,
-    color: "text-blue-400"
+    adminOnly: true
   },
   {
     name: "Settings",
     nameKey: "nav.settings",
     href: "/settings",
     icon: Settings,
-    color: "text-blue-400"
+    adminOnly: true
   }
 ]
 
-const getUserMenuItemsForUser = (user: any): NavigationItem[] => {
-  const menuItems = [...baseUserMenuItems]
-
-  if (user?.is_admin) {
-    menuItems.splice(-1, 0, {
-      name: "User Management",
-      nameKey: "nav.userManagement",
-      href: "/users/",
-      icon: Users,
-      color: "text-blue-400"
-    })
-  }
-
-  return menuItems
+// 根据用户权限过滤导航项
+const getNavigationItems = (isAdmin: boolean): NavigationItem[] => {
+  return allNavigationItems.filter(item => !item.adminOnly || isAdmin)
 }
+
+const SIDEBAR_COMPACT_STORAGE_KEY = "xagent.sidebar.compact"
 
 interface SidebarProps {
   isCollapsible?: boolean
@@ -295,9 +278,10 @@ export function Sidebar({ className }: SidebarProps) {
   const [isExpanded, setIsExpanded] = useState(false)
   const [compactPreference, setCompactPreference] = useState(false)
   const [compactReasons, setCompactReasons] = useState<SidebarCompactReason[]>([])
-  const [expandedMenus, setExpandedMenus] = useState<string[]>(
-    [...navigationGroups.map((group) => group.key), "/workspace", "/resources"]
-  )
+  // 简化：去掉分组折叠功能，所有菜单始终展开
+  // const [expandedMenus, setExpandedMenus] = useState<string[]>(
+  //   [...navigationGroups.map((group) => group.key), "/workspace", "/resources"]
+  // )
   const [showUserMenu, setShowUserMenu] = useState(false)
   const [isAboutOpen, setIsAboutOpen] = useState(false)
   const sidebarRef = useRef<HTMLDivElement | null>(null)
@@ -591,9 +575,9 @@ export function Sidebar({ className }: SidebarProps) {
   // Build page no longer automatically hides
   // /agent/[id] page does not auto-collapse (for agent chat)
   const isAgentChatPage = pathname.match(/^\/agent\/\d+$/)
-  const shouldShowSidebar = !((pathname.startsWith('/agent') && !pathname.startsWith('/agent/vibe') && !isAgentChatPage)) || isExpanded
   const isAgentPage = (pathname.startsWith('/agent') && !pathname.startsWith('/agent/vibe') && !isAgentChatPage)
-  const supportsCompactMode = !isAgentPage
+  const shouldShowSidebar = !isAgentPage || isExpanded
+  const supportsCompactMode = true
   const isCompactMode =
     supportsCompactMode && (compactPreference || compactReasons.length > 0)
   const isCompactModeControlled = compactReasons.length > 0
@@ -603,11 +587,14 @@ export function Sidebar({ className }: SidebarProps) {
 
     try {
       const savedValue = window.localStorage.getItem(SIDEBAR_COMPACT_STORAGE_KEY)
-      if (savedValue === "1") {
+      // Default to compact if not set
+      if (savedValue === null || savedValue === "1") {
         setCompactPreference(true)
+      } else {
+        setCompactPreference(false)
       }
     } catch {
-      // Ignore storage failures and keep expanded mode.
+      setCompactPreference(true)
     }
   }, [supportsCompactMode])
 
@@ -674,53 +661,15 @@ export function Sidebar({ className }: SidebarProps) {
     }
   }, [isAgentPage, shouldShowSidebar, isExpanded])
 
-  const toggleMenu = (menuName: string) => {
-    setExpandedMenus(prev =>
-      prev.includes(menuName)
-        ? prev.filter(name => name !== menuName)
-        : [...prev, menuName]
-    )
-  }
-
-  const isMenuExpanded = (menuName: string) => {
-    return expandedMenus.includes(menuName)
-  }
-
-  const isGroupActive = (group: NavigationGroup) => {
-    return group.items.some(
-      (item) =>
-        pathname === item.href ||
-        pathname.startsWith(item.href) ||
-        item.children?.some(
-          (child) => pathname === child.href || pathname.startsWith(child.href)
-        )
-    )
-  }
-
-  useEffect(() => {
-    const activeParentMenus = navigationGroups
-      .flatMap((group) => group.items)
-      .filter(
-        (item) =>
-          item.children?.length &&
-          item.children.some(
-            (child) => pathname === child.href || pathname.startsWith(child.href)
-          )
-      )
-      .map((item) => item.href)
-
-    if (!activeParentMenus.length) return
-
-    setExpandedMenus((current) => Array.from(new Set([...current, ...activeParentMenus])))
-  }, [pathname])
+  // 获取当前用户可见的导航项
+  const navigationItems = getNavigationItems(user?.is_admin || false)
 
   const historyHeaderClass =
-    "mb-1 flex items-center justify-between px-4 py-2 text-[11px] font-medium text-muted-foreground/80 tracking-[0.08em] transition-colors hover:text-foreground"
+    "flex items-center justify-between px-3 py-1.5 text-[10px] font-semibold text-muted-foreground/50 tracking-wider uppercase transition-colors hover:text-foreground/80"
   const navItemActiveStyle =
-    "bg-primary/10 text-primary font-semibold rounded-lg mx-2"
+    "bg-primary/10 text-primary font-medium rounded-md mx-1"
   const navItemInactiveStyle =
-    "text-muted-foreground hover:bg-accent/50 hover:text-foreground mx-2 rounded-lg"
-
+              "text-muted-foreground hover:bg-primary/5 hover:text-foreground rounded-md mx-1"
   if (isAgentPage && !shouldShowSidebar) {
     return (
       <div className="flex items-center justify-center w-12 bg-card border-r border-border">
@@ -736,237 +685,128 @@ export function Sidebar({ className }: SidebarProps) {
 
   return (
     <div ref={sidebarRef} className={cn(
-      "flex flex-col bg-card border-r border-border transition-all duration-300 shrink-0",
+      "flex flex-col bg-card border-r border-border transition-all duration-300 shrink-0 z-50 relative",
       isAgentPage ? "h-full" : "h-full",
       shouldShowSidebar
-        ? supportsCompactMode && isCompactMode
-          ? "w-20"
-          : "w-72"
+        ? isCompactMode
+          ? "w-16"
+          : "w-56"
         : "w-0",
       className
     )}>
-      {/* Logo */}
+      {/* 浮动收缩按钮 - http2mcp 风格 */}
+      {shouldShowSidebar && !isCompactModeControlled && (
+        <button
+          onClick={() => setCompactPreference((current) => !current)}
+          className={cn(
+            "absolute top-1/2 z-20 flex items-center justify-center transition-all duration-200",
+            "w-[18px] h-10 rounded-md",
+            "bg-card border border-border",
+            "text-muted-foreground",
+            "hover:text-primary hover:border-primary/30",
+            "shadow-[0_2px_6px_rgba(0,0,0,0.08)]",
+            isCompactMode ? "-right-1" : "-right-2"
+          )}
+          style={{ transform: 'translateY(-50%)' }}
+          title={isCompactMode ? "展开侧边栏" : "收起侧边栏"}
+        >
+          {isCompactMode ? (
+            <ChevronRight className="h-3 w-3" />
+          ) : (
+            <ChevronLeft className="h-3 w-3" />
+          )}
+        </button>
+      )}
+      
+      {/* Logo - http2mcp 风格：简洁居中 */}
       <div
         className={cn(
-          "mt-2 flex h-16 items-center justify-between",
-          supportsCompactMode && isCompactMode ? "px-3" : "px-6"
+          "flex items-center h-12",
+          isCompactMode ? "justify-center" : "gap-2 px-4"
         )}
       >
         <Link
           href="/task"
-          className={cn(
-            "flex items-center gap-2",
-            supportsCompactMode && isCompactMode && "justify-center"
-          )}
+          className="flex items-center gap-2"
           title={branding.appName}
         >
           <img
             src={branding.logoPath}
             alt={branding.logoAlt}
-            className="h-8 w-8 rounded-lg"
+            className="h-6 w-6 rounded shrink-0"
           />
-          {!supportsCompactMode || !isCompactMode ? (
-            <h1 className="text-xl font-bold text-foreground">{branding.appName}</h1>
-          ) : null}
+          {!isCompactMode && (
+            <span className="text-sm font-semibold text-foreground truncate">{branding.appName}</span>
+          )}
         </Link>
-        {isAgentPage && (
+        
+        {!isCompactMode && isAgentPage && (
           <button
             onClick={() => setIsExpanded(false)}
-            className="p-1 text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition-colors"
+            className="ml-auto p-1 text-muted-foreground hover:text-foreground hover:bg-primary/5 rounded transition-colors"
           >
-            <X className="h-5 w-5" />
+            <X className="h-4 w-4" />
           </button>
         )}
-        {!isAgentPage ? (
-          <button
-            onClick={() => setCompactPreference((current) => !current)}
-            className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
-            title={
-              isCompactModeControlled
-                ? "当前由画布聚焦控制，退出展开后可手动切换"
-                : isCompactMode
-                  ? "展开侧边栏"
-                  : "收起侧边栏"
-            }
-            disabled={isCompactModeControlled}
-          >
-            {isCompactMode ? (
-              <PanelLeftOpen className="h-5 w-5" />
-            ) : (
-              <PanelLeftClose className="h-5 w-5" />
-            )}
-          </button>
-        ) : null}
       </div>
 
-      {/* Navigation */}
+      {/* 紧凑模式下的展开提示 */}
+      {isCompactMode && !isCompactModeControlled && (
+        <div className="flex justify-center py-1">
+           <button
+              onClick={() => setCompactPreference(false)}
+              className="rounded p-1.5 text-muted-foreground transition-colors hover:bg-primary/5 hover:text-foreground"
+              title="展开侧边栏"
+            >
+              <PanelLeftOpen className="h-4 w-4" />
+            </button>
+        </div>
+      )}
+
+      {/* Navigation - http2mcp 风格扁平菜单 */}
       <nav
         ref={navRef}
-        className="flex-1 min-h-0 overflow-y-auto px-3 pb-4 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:'none'] [scrollbar-width:'none']"
+        className="flex-1 min-h-0 overflow-y-auto scrollbar-hide"
         onScroll={handleScroll}
       >
-        {/* Sticky Navigation Groups */}
-        <div className="sticky top-0 z-10 bg-card -mx-3 px-3 py-2">
-          {/* Groups */}
-          {navigationGroups.map((group) => {
-            const isExpanded = isMenuExpanded(group.key)
-            const isActiveGroup = isGroupActive(group)
-            const hasGroupHeader = Boolean(group.titleKey || group.title)
-
+        <div className={cn("py-2", isCompactMode ? "px-1" : "px-2")}>
+          {navigationItems.map((item) => {
+            const isActive = pathname === item.href || (item.href !== "/" && pathname.startsWith(item.href))
+            
             return (
-              <div key={group.key} className="mb-6">
-                {hasGroupHeader ? (
-                  <button
-                    type="button"
-                    onClick={() => toggleMenu(group.key)}
-                    className={cn(
-                      historyHeaderClass,
-                      isActiveGroup
-                        ? "text-foreground"
-                        : "text-slate-400 hover:text-foreground"
-                    )}
-                  >
-                    <span className="truncate">
-                      {group.titleKey ? t(group.titleKey) : group.title}
-                    </span>
-                    {isExpanded ? (
-                      <ChevronDown className="h-3.5 w-3.5 opacity-70" />
-                    ) : (
-                      <ChevronRight className="h-3.5 w-3.5 opacity-70" />
-                    )}
-                  </button>
-                ) : null}
-                {(hasGroupHeader ? isExpanded : true) && (
-                  <div className="space-y-1">
-                    {group.items.map((item) => {
-                      const isActive =
-                        pathname === item.href ||
-                        (item.href !== "/" && pathname.startsWith(item.href)) ||
-                        Boolean(
-                          item.children?.some(
-                            (child) =>
-                              pathname === child.href ||
-                              pathname.startsWith(child.href)
-                          )
-                        )
-                      const hasChildren = item.children && item.children.length > 0
-                      const isExpanded = isMenuExpanded(item.href)
-                      const compactHref =
-                        hasChildren && item.children?.[0]?.href
-                          ? item.children[0].href
-                          : item.href
-
-                      if (isCompactMode) {
-                        return (
-                          <Link
-                            key={item.name}
-                            href={compactHref}
-                            title={item.nameKey ? t(item.nameKey) : item.name}
-                            className={cn(
-                              "mx-2 flex h-11 items-center justify-center rounded-xl transition-colors",
-                              isActive
-                                ? "bg-primary/10 text-primary"
-                                : "text-muted-foreground hover:bg-accent/50 hover:text-foreground"
-                            )}
-                          >
-                            <item.icon
-                              className={cn(
-                                "h-5 w-5",
-                                isActive ? "text-primary" : item.color || "text-gray-500"
-                              )}
-                            />
-                          </Link>
-                        )
-                      }
-
-                      if (hasChildren) {
-                        return (
-                          <div key={item.name} className="mb-1">
-                            <button
-                              onClick={() => toggleMenu(item.href)}
-                              className={cn(
-                                "group flex items-center justify-between px-3 py-2 text-sm transition-colors relative w-[calc(100%-1rem)]",
-                                isActive ? navItemActiveStyle : navItemInactiveStyle
-                              )}
-                            >
-                              <div className="flex items-center gap-2.5">
-                                <item.icon
-                                  className={cn(
-                                    "h-4 w-4",
-                                    isActive ? "text-primary" : "text-gray-500"
-                                  )}
-                                />
-                                {item.nameKey ? t(item.nameKey) : item.name}
-                              </div>
-                              {isExpanded ? (
-                                <ChevronDown className="h-3 w-3 opacity-50" />
-                              ) : (
-                                <ChevronRight className="h-3 w-3 opacity-50" />
-                              )}
-                            </button>
-                            {isExpanded && item.children && (
-                              <div className="ml-4 mt-1 space-y-1 border-l border-border/40 pl-2">
-                                {item.children.map((child) => {
-                                  const isChildActive = pathname === child.href
-                                  return (
-                                    <div key={child.href}>
-                                      <Link
-                                        href={child.href}
-                                        className={cn(
-                                          "group flex items-center px-4 py-2 text-sm font-medium transition-colors rounded-lg mx-2",
-                                          isChildActive
-                                            ? "bg-primary/10 text-primary"
-                                            : "text-muted-foreground hover:bg-accent/50 hover:text-foreground"
-                                        )}
-                                      >
-                                        <child.icon
-                                          className={cn(
-                                            "h-4 w-4 mr-2.5",
-                                            isChildActive
-                                              ? "text-primary"
-                                              : child.color || "text-muted-foreground"
-                                          )}
-                                        />
-                                        {child.nameKey ? t(child.nameKey) : child.name}
-                                      </Link>
-                                    </div>
-                                  )
-                                })}
-                              </div>
-                            )}
-                          </div>
-                        )
-                      }
-
-                      return (
-                        <Link
-                          key={item.name}
-                          href={item.href}
-                          className={cn(
-                            "group flex items-center px-3 py-2 text-sm font-medium transition-colors mb-1",
-                            isActive ? navItemActiveStyle : navItemInactiveStyle
-                          )}
-                        >
-                          <item.icon
-                            className={cn(
-                              "h-4 w-4 mr-2.5",
-                              isActive ? "text-primary" : "text-gray-500"
-                            )}
-                          />
-                          {item.nameKey ? t(item.nameKey) : item.name}
-                        </Link>
-                      )
-                    })}
-                  </div>
+              <Link
+                key={item.name}
+                href={item.href}
+                title={isCompactMode ? (item.nameKey ? t(item.nameKey) : item.name) : undefined}
+                className={cn(
+                  "group flex items-center rounded transition-all duration-150",
+                  isCompactMode 
+                    ? "h-10 w-10 mx-auto justify-center mb-1" 
+                    : "h-9 px-3 mb-0.5 justify-start",
+                  isActive 
+                    ? "bg-primary/10 text-primary font-medium" 
+                    : "text-muted-foreground hover:bg-muted/50 hover:text-foreground"
                 )}
-              </div>
+              >
+                <item.icon
+                  className={cn(
+                    isCompactMode ? "h-5 w-5" : "h-4 w-4 mr-2.5",
+                    isActive ? "text-primary" : "text-muted-foreground/70 group-hover:text-foreground"
+                  )}
+                />
+                {!isCompactMode && (
+                  <span className="text-[13px] truncate">
+                    {item.nameKey ? t(item.nameKey) : item.name}
+                  </span>
+                )}
+              </Link>
             )
           })}
         </div>
 
         {/* History Section */}
         {!isCompactMode ? (
-          <div>
+          <div className="mt-2 pt-2 border-t border-border/50">
             <div
               className={historyHeaderClass}
               onMouseEnter={() => setIsSearchHovered(true)}
@@ -980,15 +820,15 @@ export function Sidebar({ className }: SidebarProps) {
                     onChange={setSearchQuery}
                     onFocus={() => setIsSearchFocused(true)}
                     onBlur={() => setIsSearchFocused(false)}
-                    containerClassName="w-full h-7"
-                    className="h-7 text-xs text-black bg-transparent border-slate-500/50 focus:border-primary"
+                    containerClassName="w-full h-6"
+                    className="h-6 text-xs bg-transparent border-muted-foreground/30 focus:border-primary"
                   />
                 </div>
               ) : (
                 <span className="flex-1 truncate">{t('nav.history')}</span>
               )}
               <div
-                className="cursor-pointer p-1 -mr-1 hover:bg-slate-200 dark:hover:bg-slate-700 rounded transition-colors"
+                className="cursor-pointer p-0.5 -mr-0.5 hover:bg-muted rounded transition-colors"
                 onClick={() => setIsHistoryExpanded(!isHistoryExpanded)}
               >
                 {isHistoryExpanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
@@ -996,9 +836,9 @@ export function Sidebar({ className }: SidebarProps) {
             </div>
 
             {isHistoryExpanded && (
-              <div className="space-y-1">
+              <div className="space-y-0.5 mt-1">
                 {isLoadingTasks ? (
-                    <div className="flex items-center justify-center py-4">
+                    <div className="flex items-center justify-center py-3">
                       <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
                     </div>
                 ) : tasks.length > 0 ? (
@@ -1011,13 +851,13 @@ export function Sidebar({ className }: SidebarProps) {
                           href={`/task/${task.task_id}`}
                           title={task.title}
                           className={cn(
-                            "group flex items-center px-3 py-2 text-sm transition-colors mb-1 truncate relative pr-8 rounded-lg mx-2",
+                            "group flex items-center px-3 py-1.5 text-[13px] transition-colors truncate relative pr-8 rounded-md mx-1",
                             String(currentTaskId) === String(task.task_id)
                               ? navItemActiveStyle
                               : navItemInactiveStyle
                           )}
                         >
-                          <div className="relative h-4 w-4 mr-3 flex-shrink-0">
+                          <div className="relative h-4 w-4 mr-2 flex-shrink-0">
                             {task.agent_id && task.agent_logo_url ? (
                                <img
                                  src={`${getApiUrl()}${task.agent_logo_url}`}
@@ -1027,27 +867,27 @@ export function Sidebar({ className }: SidebarProps) {
                             ) : (
                               <MessageSquare className={cn(
                                 "h-4 w-4 absolute inset-0 transition-opacity duration-200 group-hover:opacity-0",
-                                String(currentTaskId) === String(task.task_id) ? "text-accent-foreground" : "text-gray-500"
+                                String(currentTaskId) === String(task.task_id) ? "text-primary" : "text-muted-foreground"
                               )} />
                             )}
                             <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex items-center justify-center">
-                              {task.status === 'running' && <Loader2 className="h-4 w-4 animate-spin text-blue-500" />}
+                              {task.status === 'running' && <Loader2 className="h-4 w-4 animate-spin text-primary" />}
                               {task.status === 'completed' && <CheckCircle2 className="h-4 w-4 text-green-500" />}
                               {task.status === 'failed' && <XCircle className="h-4 w-4 text-red-500" />}
                               {task.status === 'paused' && <PauseCircle className="h-4 w-4 text-yellow-500" />}
-                              {task.status === 'pending' && <Loader2 className="h-4 w-4 animate-spin text-gray-400" />}
+                              {task.status === 'pending' && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
                             </div>
                           </div>
                           <span className="truncate flex-1 text-left">{task.title || "Untitled Task"}</span>
                           {unreadTasks.has(String(task.task_id)) && (
-                            <div className="absolute right-4 top-1/2 -translate-y-1/2 h-2 w-2 rounded-full bg-primary group-hover:opacity-0 transition-opacity" />
+                            <div className="absolute right-3 top-1/2 -translate-y-1/2 h-1.5 w-1.5 rounded-full bg-primary group-hover:opacity-0 transition-opacity" />
                           )}
                           <button
                             onClick={(e) => deleteTask(task.task_id, e)}
-                            className="absolute right-2 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity p-1 text-muted-foreground hover:text-red-500 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700"
+                            className="absolute right-1 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity p-1 text-muted-foreground hover:text-red-500 rounded hover:bg-muted"
                             title={t('common.delete')}
                           >
-                            <Trash2 className="h-3.5 w-3.5" />
+                            <Trash2 className="h-3 w-3" />
                           </button>
                         </Link>
                     )})}
@@ -1058,7 +898,7 @@ export function Sidebar({ className }: SidebarProps) {
                     )}
                   </>
                 ) : (
-                    <div className="px-4 py-2 text-sm text-muted-foreground">
+                    <div className="px-3 py-2 text-xs text-muted-foreground">
                       {t('common.noData')}
                     </div>
                   )}
@@ -1066,7 +906,7 @@ export function Sidebar({ className }: SidebarProps) {
             )}
           </div>
         ) : (
-          <div className="mt-4">
+          <div className="mt-2 pt-2 border-t border-border/50">
             <button
               type="button"
               onClick={() => {
@@ -1075,7 +915,7 @@ export function Sidebar({ className }: SidebarProps) {
                 }
                 setIsHistoryExpanded(true)
               }}
-              className="mx-2 flex h-11 w-[calc(100%-1rem)] items-center justify-center rounded-xl text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+              className="mx-2 flex h-9 w-[calc(100%-1rem)] items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
               title={isCompactModeControlled ? "当前由画布聚焦控制，无法展开任务列表" : t('nav.history')}
               disabled={isCompactModeControlled}
             >
@@ -1087,18 +927,18 @@ export function Sidebar({ className }: SidebarProps) {
 
 
       {/* User Profile */}
-      <div className="p-4 relative mt-auto" ref={userMenuRef}>
+      <div className="px-3 py-3 relative mt-auto border-t border-border/50" ref={userMenuRef}>
         {showUserMenu && (
-          <div className="absolute bottom-full left-4 right-4 mb-2 bg-popover border border-border rounded-lg shadow-lg overflow-hidden animate-in fade-in zoom-in-95 duration-200 z-50">
+          <div className="absolute bottom-full left-3 right-3 mb-1 bg-popover border border-border rounded-md shadow-lg overflow-hidden animate-in fade-in zoom-in-95 duration-200 z-50">
              <div className="py-1">
                 {getUserMenuItemsForUser(user).map((item) => (
                   <Link
                     key={item.href}
                     href={item.href}
-                    className="flex items-center px-4 py-2 text-sm text-foreground hover:bg-accent transition-colors"
+                    className="flex items-center px-3 py-1.5 text-[13px] text-foreground hover:bg-muted transition-colors"
                     onClick={() => setShowUserMenu(false)}
                   >
-                    <item.icon className="h-4 w-4 mr-3 text-muted-foreground" />
+                    <item.icon className="h-4 w-4 mr-2 text-muted-foreground" />
                     {item.nameKey ? t(item.nameKey) : item.name}
                   </Link>
                 ))}
@@ -1107,9 +947,9 @@ export function Sidebar({ className }: SidebarProps) {
                     setShowUserMenu(false)
                     setIsAboutOpen(true)
                   }}
-                  className="flex w-full items-center px-4 py-2 text-sm text-foreground hover:bg-accent transition-colors text-left"
+                  className="flex w-full items-center px-3 py-1.5 text-[13px] text-foreground hover:bg-muted transition-colors text-left"
                 >
-                  <Info className="h-4 w-4 mr-3 text-muted-foreground" />
+                  <Info className="h-4 w-4 mr-2 text-muted-foreground" />
                   {t("sidebar.about.menu")}
                 </button>
                 <div className="h-px bg-border my-1 mx-2" />
@@ -1118,9 +958,9 @@ export function Sidebar({ className }: SidebarProps) {
                     logout()
                     setShowUserMenu(false)
                   }}
-                  className="flex w-full items-center px-4 py-2 text-sm hover:bg-red-50 dark:hover:bg-red-900/10 transition-colors text-left"
+                  className="flex w-full items-center px-3 py-1.5 text-[13px] hover:bg-red-50 dark:hover:bg-red-900/10 transition-colors text-left"
                 >
-                  <LogOut className="h-4 w-4 mr-3" />
+                  <LogOut className="h-4 w-4 mr-2" />
                   {t('sidebar.user.logoutTitle')}
                 </button>
              </div>
@@ -1129,19 +969,19 @@ export function Sidebar({ className }: SidebarProps) {
         <button
           onClick={() => setShowUserMenu(!showUserMenu)}
           className={cn(
-            "flex w-full items-center gap-2 rounded-lg p-2 text-left transition-colors hover:bg-accent/50",
-            isCompactMode ? "justify-center -ml-0" : "-ml-2"
+            "flex w-full items-center gap-2 rounded-md p-1.5 text-left transition-colors hover:bg-muted/50",
+            isCompactMode ? "justify-center" : ""
           )}
         >
-          <div className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center">
+          <div className="h-7 w-7 rounded-full bg-primary/10 flex items-center justify-center">
             <User className="h-4 w-4 text-primary" />
           </div>
           {!isCompactMode ? (
             <>
-              <div className="ml-3 flex-1">
-                <p className="text-sm font-medium text-foreground">{user?.username || t('sidebar.user.defaultName')}</p>
+              <div className="flex-1">
+                <p className="text-[13px] font-medium text-foreground truncate">{user?.username || t('sidebar.user.defaultName')}</p>
               </div>
-              <ChevronDown className={cn("h-4 w-4 text-muted-foreground transition-transform", showUserMenu && "rotate-180")} />
+              <ChevronDown className={cn("h-3.5 w-3.5 text-muted-foreground transition-transform", showUserMenu && "rotate-180")} />
             </>
           ) : null}
         </button>

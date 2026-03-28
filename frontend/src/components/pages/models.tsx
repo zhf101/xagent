@@ -945,7 +945,7 @@ export function ModelsPage() {
                     return (
                       <Card key={providerId} className="flex flex-col justify-between p-6 hover:shadow-md transition-shadow">
                         <div className="flex items-start gap-3">
-                          <div className="p-2 bg-muted rounded-lg shrink-0">
+                          <div className="p-2 bg-primary/5 rounded-lg shrink-0">
                             {providerConfig.icon}
                           </div>
                           <div>
@@ -956,7 +956,7 @@ export function ModelsPage() {
                                 return (
                                   <div
                                     key={m.id}
-                                    className={`flex items-center gap-2 p-1 rounded transition-colors ${m.can_edit ? 'cursor-pointer hover:bg-muted/50' : 'cursor-default'}`}
+                                    className={`flex items-center gap-2 p-1 rounded transition-colors ${m.can_edit ? 'cursor-pointer hover:bg-primary/5' : 'cursor-default'}`}
                                     onClick={() => m.can_edit && handleEdit(m)}
                                   >
                                     <Badge variant="secondary" className={`text-xs px-2 py-0.5 h-auto whitespace-normal text-left flex items-center gap-2 ${!m.is_owner ? 'text-orange-500' : ''}`}>
@@ -1013,7 +1013,7 @@ export function ModelsPage() {
                   {exploreProviders.map(provider => (
                     <Card key={provider.id} className="p-6 hover:shadow-md transition-shadow flex flex-col justify-between h-full">
                     <div>
-                      <div className="mb-4 p-2 bg-muted/50 rounded-lg w-fit">
+                      <div className="mb-4 p-2 bg-primary/5 rounded-lg w-fit">
                         {provider.icon}
                       </div>
                       <h3 className="font-semibold text-lg mb-2">{provider.name}</h3>
@@ -1214,7 +1214,7 @@ export function ModelsPage() {
                      </ScrollArea>
                    </>
                  ) : (
-                   <div className="flex items-center justify-center p-8 border rounded-md text-muted-foreground italic bg-muted/30">
+                   <div className="flex items-center justify-center p-8 border rounded-md text-muted-foreground italic bg-white">
                      {t('models.dialog.modelsFetchedAfterConnect')}
                    </div>
                  )}

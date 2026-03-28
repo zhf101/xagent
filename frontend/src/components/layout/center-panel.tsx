@@ -214,7 +214,7 @@ const PlanningLoadingState = () => {
                         ? "border-primary bg-primary/10 shadow-lg shadow-primary/20"
                         : isCompleted
                         ? "border-green-500/50 bg-green-500/10"
-                        : "border-muted-foreground/30 bg-muted/20",
+                        : "border-muted-foreground/30 bg-white",
                       step.color
                     )}
                   >
@@ -238,7 +238,7 @@ const PlanningLoadingState = () => {
           </div>
 
           {/* Progress bar */}
-          <div className="w-full bg-muted rounded-full h-2 overflow-hidden">
+          <div className="w-full bg-primary/20 rounded-full h-2 overflow-hidden">
             <div
               className="h-full bg-gradient-to-r from-primary to-purple-500 rounded-full transition-all duration-1000 ease-out"
               style={{
@@ -364,7 +364,7 @@ const nodeTypes: NodeTypes = {
 
           {/* Tools / Tags */}
           {data.tool_names && data.tool_names.length > 0 && (
-            <div className="flex items-center gap-1.5 bg-muted/60 rounded-md px-2 py-1 w-fit border border-border/50">
+            <div className="flex items-center gap-1.5 bg-white rounded-md px-2 py-1 w-fit border border-border/50">
               <Wrench className="flex-shrink-0 w-3.5 h-3.5 text-muted-foreground" />
               <span className="text-xs font-medium text-muted-foreground">{data.tool_names.join(', ')}</span>
             </div>
@@ -374,7 +374,7 @@ const nodeTypes: NodeTypes = {
           {data.conditional_branches && Object.keys(data.conditional_branches).length > 0 && (
             <div className="space-y-1.5 mt-1">
               {Object.entries(data.conditional_branches).map(([branch, target], idx) => (
-                <div key={idx} className="bg-muted/40 rounded-lg px-3 py-2 border border-border/40">
+                <div key={idx} className="bg-white rounded-lg px-3 py-2 border border-border/40">
                   <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-0.5">{t("agent.layout.center.labels.branches")} {idx + 1}</div>
                   <div className="text-xs font-medium text-foreground">{branch}</div>
                 </div>
@@ -514,8 +514,7 @@ function CenterPanelInner({
     }
 
     const customStyles = {
-      planning: "bg-muted/50 text-muted-foreground border-border",
-      executing: "bg-primary/10 text-primary border-primary/20",
+              planning: "bg-white text-muted-foreground border-border",      executing: "bg-primary/10 text-primary border-primary/20",
       completed: "bg-green-500/10 text-green-500 border-green-500/20",
       failed: "bg-destructive/10 text-destructive border-destructive/20",
     }
@@ -541,7 +540,7 @@ function CenterPanelInner({
           {/* Layout Controls */}
           {dagNodes.length > 0 && (
             <div className="flex items-center gap-2">
-              <div className="flex items-center gap-1 bg-muted/50 rounded-md p-1">
+              <div className="flex items-center gap-1 bg-white rounded-md p-1">
                 <Button
                   variant={dagLayout === 'TB' ? 'default' : 'ghost'}
                   size="sm"
@@ -580,8 +579,7 @@ function CenterPanelInner({
         </div>
 
       {/* DAG Visualization */}
-      <div className="flex-1 relative bg-slate-50 dark:bg-muted/20 w-full h-full min-h-[500px]">
-        {hasError ? (
+                <div className="flex-1 relative bg-slate-50 dark:bg-white w-full h-full min-h-[500px]">        {hasError ? (
           <ErrorState />
         ) : isPlanning ? (
           <PlanningLoadingState />
@@ -691,7 +689,7 @@ function CenterPanelInner({
                     <span className="text-muted-foreground">{t("agent.layout.center.labels.tools")}</span>
                     <div className="flex flex-wrap gap-1">
                       {selectedNode.data.tool_names.map((tool, index) => (
-                        <span key={index} className="font-mono text-foreground bg-muted px-2 py-1 rounded text-xs">
+                        <span key={index} className="font-mono text-foreground bg-primary/5 px-2 py-1 rounded text-xs">
                           <Wrench className="h-3 w-3 inline mr-1" />
                           {tool}
                         </span>
@@ -703,7 +701,7 @@ function CenterPanelInner({
               {selectedNode.data.tool_names && selectedNode.data.tool_names.length === 0 && (
                 <div className="flex items-center justify-between">
                   <span className="text-muted-foreground">{t("agent.layout.center.labels.tools")}</span>
-                  <span className="font-mono text-foreground bg-muted px-2 py-1 rounded text-xs">
+                  <span className="font-mono text-foreground bg-primary/5 px-2 py-1 rounded text-xs">
                     <Brain className="h-3 w-3 inline mr-1" />
                     {t("agent.layout.center.labels.pureAnalysis")}
                   </span>
@@ -713,7 +711,7 @@ function CenterPanelInner({
               {selectedNode.data.description && (
                 <div>
                   <span className="text-muted-foreground">{t("agent.layout.center.labels.description")}</span>
-                  <p className="mt-1 text-muted-foreground leading-relaxed bg-muted p-2 rounded">
+                  <p className="mt-1 text-muted-foreground leading-relaxed bg-white p-2 rounded">
                     {selectedNode.data.description}
                   </p>
                 </div>

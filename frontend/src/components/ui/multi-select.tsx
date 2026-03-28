@@ -148,7 +148,7 @@ export function MultiSelect({ values, onValuesChange, options, placeholder, clas
         <div className="flex items-center gap-2 flex-wrap">
           {selectedOptions.length > 0 ? (
             selectedOptions.map((option) => (
-              <div key={option.value} className="flex items-center gap-1 bg-secondary text-secondary-foreground px-2 py-1 rounded-md text-xs">
+              <div key={option.value} className="flex items-center gap-1 bg-white border border-border text-foreground px-2 py-1 rounded-md text-xs">
                 {option.label}
                 <button
                   type="button"
@@ -206,7 +206,7 @@ export function MultiSelect({ values, onValuesChange, options, placeholder, clas
                       )}
                     </div>
                     {option.count !== undefined && (
-                      <span className="text-xs text-muted-foreground bg-secondary px-2 py-0.5 rounded-full ml-2">
+                      <span className="text-xs text-muted-foreground bg-white border border-border/50 px-2 py-0.5 rounded-full ml-2">
                         {option.count}
                       </span>
                     )}
