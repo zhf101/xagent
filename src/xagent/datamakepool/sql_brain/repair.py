@@ -6,7 +6,7 @@ import re
 
 from xagent.core.model.chat.basic.base import BaseLLM
 
-from .llm_utils import extract_sql_from_text, run_async_sync
+from .llm_utils import extract_sql_from_text, extract_text_response, run_async_sync
 from .models import RetrievedDDL, SqlRepairResult
 from .models import SqlGenerationContext
 from .prompt_builder import build_sql_repair_messages
@@ -57,13 +57,14 @@ def _repair_with_llm(
             temperature=0.0,
         )
     )
-    if not isinstance(response, str):
+    normalized_response = extract_text_response(response)
+    if normalized_response is None:
         return None, "LLM repair returned non-text response."
 
-    repaired_sql = extract_sql_from_text(response)
+    repaired_sql = extract_sql_from_text(normalized_response)
     if not repaired_sql:
         return None, "LLM repair returned empty SQL."
-    return repaired_sql, response
+    return repaired_sql, normalized_response
 
 
 def repair_sql(

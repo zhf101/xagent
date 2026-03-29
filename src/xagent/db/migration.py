@@ -54,6 +54,28 @@ def reset_database_to_empty(engine: Engine) -> None:
             conn.exec_driver_sql("PRAGMA foreign_keys=ON")
 
 
+def get_missing_declared_tables(engine: Engine) -> list[str]:
+    """检查当前数据库是否缺少 ORM 已声明的表。
+
+    当前仓库采用“单基线 + ORM 真相源”策略：
+    - 新空库通过 baseline migration 一次性创建整套表
+    - 若代码里的 ORM 已声明新表，但当前数据库仍停在旧结构，
+      仅执行 `upgrade head` 不会补这些表，因此需要显式探测 schema drift
+    """
+
+    try:
+        from xagent.web import models as web_models  # noqa: F401
+        from xagent.web.models.database import Base
+
+        inspector = inspect(engine)
+        existing_tables = set(inspector.get_table_names())
+        declared_tables = set(Base.metadata.tables.keys())
+        return sorted(declared_tables - existing_tables)
+    except Exception as exc:
+        logger.warning("Failed to inspect schema drift, skipping check: %s", exc)
+        return []
+
+
 def try_upgrade_db(engine: Engine) -> None:
     """按当前单基线迁移链初始化或升级数据库。
 
@@ -98,6 +120,17 @@ def try_upgrade_db(engine: Engine) -> None:
             with engine.connect() as conn:
                 alembic_cfg.attributes["connection"] = conn
                 command.upgrade(alembic_cfg, "head")
+            missing_tables = get_missing_declared_tables(engine)
+            if missing_tables:
+                logger.warning(
+                    "Database schema is missing declared tables %s. "
+                    "Resetting database destructively and recreating from head.",
+                    missing_tables,
+                )
+                reset_database_to_empty(engine)
+                with engine.connect() as conn:
+                    alembic_cfg.attributes["connection"] = conn
+                    command.upgrade(alembic_cfg, "head")
     except Exception as e:
         logger.error(f"Automatic database upgrade failed: {e}")
         raise

@@ -68,10 +68,9 @@ class FlowDraftService:
     """FlowDraft 的 CRUD、收敛与状态转换。"""
 
     REQUIRED_PARAM_KEYS = (
-        "target_system",
         "target_entity",
-        "execution_method",
         "target_environment",
+        "data_count",
     )
 
     PARAM_LABELS = {

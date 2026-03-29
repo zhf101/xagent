@@ -235,7 +235,10 @@ class ConversationReasoningEngine:
         missing_fields: list[str] | None = None,
     ) -> ReasoningPacket:
         """同步调用 LLM 进行 ReAct 推断，失败时降级。"""
-        from xagent.datamakepool.sql_brain.llm_utils import run_async_sync
+        from xagent.datamakepool.sql_brain.llm_utils import (
+            extract_text_response,
+            run_async_sync,
+        )
 
         user_prompt = _build_user_prompt(
             goal=goal,
@@ -252,10 +255,11 @@ class ConversationReasoningEngine:
             {"role": "user", "content": user_prompt},
         ]
         try:
-            raw = run_async_sync(
+            raw_response = run_async_sync(
                 self._llm.chat(messages=messages, temperature=0.2)
             )
-            if not isinstance(raw, str) or not raw.strip():
+            raw = extract_text_response(raw_response)
+            if raw is None:
                 raise ValueError("empty LLM response")
             return _parse_llm_response(raw)
         except Exception as exc:

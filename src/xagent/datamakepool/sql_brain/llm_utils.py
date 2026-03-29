@@ -45,6 +45,34 @@ def run_async_sync(coro: Any) -> Any:
     return result
 
 
+def extract_text_response(response: Any) -> str | None:
+    """把不同 LLM 实现返回的“文本结果”统一抽成字符串。
+
+    当前项目里存在两类常见返回：
+    1. 直接返回字符串
+    2. 返回 `{"type": "text", "content": "..."}` 结构
+
+    datamakepool 侧很多链路历史上默认只接收字符串，这会让 OpenAI 实现
+    的成功响应被误判成“空响应”或“非文本响应”。这里做统一归一化，
+    让上层业务只处理真正的文本内容。
+    """
+
+    if isinstance(response, str):
+        normalized = response.strip()
+        return normalized or None
+
+    if isinstance(response, dict):
+        if response.get("type") != "text":
+            return None
+        content = response.get("content")
+        if not isinstance(content, str):
+            return None
+        normalized = content.strip()
+        return normalized or None
+
+    return None
+
+
 def extract_sql_from_text(text: str) -> str:
     """从模型响应里尽量抽出 SQL 片段。"""
 

@@ -42,10 +42,9 @@ from .runtime_adapter import CompiledPlanRuntimeAdapter
 from .runtime_service import ConversationRuntimeService
 
 DATA_GENERATION_REQUIRED_FIELDS = (
-    "target_system",
     "target_entity",
-    "execution_method",
     "target_environment",
+    "data_count",
 )
 
 _FIELD_LABEL_MAP = {
@@ -1141,7 +1140,7 @@ class DataGenerationConversationService:
             return fallback_result(missing_fields=missing_fields)
         draft = self._flow_draft_service.get_active_draft(int(session.id))
         effective_facts = self._get_effective_fact_snapshot(session, draft=draft)
-        return self._reasoning_engine.reason(
+        reasoning = self._reasoning_engine.reason(
             goal=str(session.goal or ""),
             history_summary=str(session.latest_summary or ""),
             fact_snapshot=effective_facts,
@@ -1156,6 +1155,150 @@ class DataGenerationConversationService:
             ),
             missing_fields=missing_fields,
         )
+        return self._enrich_reasoning_from_probe_blockers(
+            reasoning=reasoning,
+            draft=draft,
+            fact_snapshot=effective_facts,
+        )
+
+    def _enrich_reasoning_from_probe_blockers(
+        self,
+        *,
+        reasoning: ReasoningResult,
+        draft: Any | None,
+        fact_snapshot: dict[str, Any],
+    ) -> ReasoningResult:
+        """当 ReAct 没把 probe blocker 说透时，用结构化 finding 补全表达。
+
+        设计原则：
+        - 不替 ReAct 选择主动作，动作仍交给主脑和 hard guard
+        - 只在 blocker finding 客观存在时，补全 blockers / question / ui_hint
+        - 这样可以保证“probe 失败 -> 只问阻塞项”形成稳定闭环
+        """
+
+        unresolved = self._list_unresolved_probe_blockers(draft)
+        if not unresolved:
+            return reasoning
+
+        blocker_fields = self._extract_probe_blocker_fields(unresolved)
+        blocker_lines = self._build_probe_blocker_lines(
+            findings=unresolved,
+            blocker_fields=blocker_fields,
+        )
+        for line in blocker_lines:
+            if line and line not in reasoning.blockers:
+                reasoning.blockers.append(line)
+
+        evidence_line = self._build_probe_blocker_evidence(unresolved)
+        if evidence_line and evidence_line not in reasoning.evidence:
+            reasoning.evidence.append(evidence_line)
+
+        if not str(reasoning.question or "").strip():
+            reasoning.question = self._build_probe_blocker_question(
+                findings=unresolved,
+                blocker_fields=blocker_fields,
+            )
+
+        interactions = list((reasoning.ui_hint or {}).get("interactions") or [])
+        if not interactions and blocker_fields:
+            reasoning.ui_hint = dict(reasoning.ui_hint or {})
+            reasoning.ui_hint.setdefault("type", "clarification_form")
+            reasoning.ui_hint["interactions"] = self._build_missing_field_interactions(
+                fact_snapshot=fact_snapshot,
+                missing_fields=blocker_fields,
+            )
+        return reasoning
+
+    @staticmethod
+    def _list_unresolved_probe_blockers(draft: Any | None) -> list[dict[str, Any]]:
+        if draft is None:
+            return []
+        blockers: list[dict[str, Any]] = []
+        for finding in list(getattr(draft, "probe_findings", []) or []):
+            if not isinstance(finding, dict):
+                continue
+            if bool(finding.get("resolved")):
+                continue
+            if str(finding.get("verdict") or "").lower() != "blocker":
+                continue
+            blockers.append(finding)
+        return blockers[-5:]
+
+    @staticmethod
+    def _normalize_probe_blocker_field(value: Any) -> str | None:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        if not normalized:
+            return None
+        if "." in normalized:
+            normalized = normalized.split(".")[-1].strip()
+        known_fields = {
+            "target_system",
+            "target_entity",
+            "execution_method",
+            "target_environment",
+            "data_count",
+            "field_constraints",
+            "data_dependencies",
+        }
+        return normalized if normalized in known_fields else None
+
+    def _extract_probe_blocker_fields(
+        self,
+        findings: list[dict[str, Any]],
+    ) -> list[str]:
+        ordered_fields: list[str] = []
+        for finding in findings:
+            for raw in list(finding.get("raw_findings") or []):
+                field = self._normalize_probe_blocker_field(raw)
+                if field and field not in ordered_fields:
+                    ordered_fields.append(field)
+        return ordered_fields
+
+    def _build_probe_blocker_lines(
+        self,
+        *,
+        findings: list[dict[str, Any]],
+        blocker_fields: list[str],
+    ) -> list[str]:
+        lines: list[str] = []
+        if blocker_fields:
+            labels = "、".join(self._field_label(field) for field in blocker_fields)
+            lines.append(f"最近一次 probe 仍卡在这些阻塞项：{labels}")
+        primary_detail = str(findings[-1].get("detail") or "").strip() if findings else ""
+        if primary_detail:
+            lines.append(primary_detail)
+        return lines[:3]
+
+    @staticmethod
+    def _build_probe_blocker_evidence(findings: list[dict[str, Any]]) -> str | None:
+        if not findings:
+            return None
+        latest = findings[-1]
+        probe_type = str(latest.get("probe_type") or "").strip()
+        target_ref = str(latest.get("target_ref") or "").strip()
+        detail = str(latest.get("detail") or "").strip()
+        if probe_type or target_ref:
+            return (
+                f"最近一次 {probe_type or 'probe'} 试跑目标 {target_ref or '?'} "
+                f"返回 blocker：{detail or '存在未解决阻塞'}"
+            )
+        return detail or None
+
+    def _build_probe_blocker_question(
+        self,
+        *,
+        findings: list[dict[str, Any]],
+        blocker_fields: list[str],
+    ) -> str:
+        if blocker_fields:
+            labels = "、".join(self._field_label(field) for field in blocker_fields)
+            return f"请先补充或修正这些 probe 阻塞项：{labels}。"
+        latest_detail = str(findings[-1].get("detail") or "").strip() if findings else ""
+        if latest_detail:
+            return f"最近一次 probe 失败点是：{latest_detail}。请只处理这个阻塞项后再继续。"
+        return "最近一次 probe 仍有未解决阻塞，请先处理该阻塞项后再继续。"
 
     def _get_effective_fact_snapshot(
         self,

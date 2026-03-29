@@ -20,7 +20,11 @@ from .datamakepool_flow_draft_detail import (
     DataMakepoolFlowDraftParam,
     DataMakepoolFlowDraftStep,
 )
-from .datamakepool_probe import DataMakepoolProbeRun
+from .datamakepool_probe import (
+    DataMakepoolProbeAttempt,
+    DataMakepoolProbeFinding,
+    DataMakepoolProbeRun,
+)
 from .agent import Agent
 from .chat_message import TaskChatMessage
 from .datamakepool_approval import DataMakepoolApproval
@@ -83,6 +87,8 @@ __all__ = [
     "DataMakepoolFlowDraftParam",
     "DataMakepoolFlowDraftMapping",
     "DataMakepoolProbeRun",
+    "DataMakepoolProbeAttempt",
+    "DataMakepoolProbeFinding",
     "LegacyScenarioCatalog",
     "UploadedFile",
     "SandboxInfo",

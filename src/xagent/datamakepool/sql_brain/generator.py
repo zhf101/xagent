@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from xagent.core.model.chat.basic.base import BaseLLM
 
-from .llm_utils import extract_sql_from_text, run_async_sync
+from .llm_utils import extract_sql_from_text, extract_text_response, run_async_sync
 from .models import SqlGenerationContext, SqlGenerationResult
 from .prompt_builder import build_sql_messages
 
@@ -53,24 +53,25 @@ class SqlBrainGenerator:
             )
         )
 
-        if not isinstance(response, str):
+        normalized_response = extract_text_response(response)
+        if normalized_response is None:
             return SqlGenerationResult(
                 intermediate_sql=None,
                 reasoning="LLM 返回了非文本结果，已回退到保守生成策略。",
                 needs_schema_introspection=not bool(context.ddl_snippets),
             )
 
-        extracted_sql = self._extract_sql(response)
-        if "intermediate_sql" in response.lower():
+        extracted_sql = self._extract_sql(normalized_response)
+        if "intermediate_sql" in normalized_response.lower():
             return SqlGenerationResult(
                 intermediate_sql=extracted_sql,
-                reasoning=response,
+                reasoning=normalized_response,
                 needs_schema_introspection=True,
             )
 
         return SqlGenerationResult(
             sql=extracted_sql,
-            reasoning=response,
+            reasoning=normalized_response,
         )
 
     def _generate_without_llm(

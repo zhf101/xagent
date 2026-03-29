@@ -59,6 +59,8 @@ def init_db(db_url: str | None = None) -> None:
         DataMakepoolFlowDraftMapping,
         DataMakepoolFlowDraftParam,
         DataMakepoolFlowDraftStep,
+        DataMakepoolProbeAttempt,
+        DataMakepoolProbeFinding,
         DataMakepoolProbeRun,
         DataMakepoolRecallSnapshot,
         DataMakepoolRun,

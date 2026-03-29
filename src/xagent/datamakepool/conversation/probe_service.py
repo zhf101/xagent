@@ -17,7 +17,11 @@ from xagent.datamakepool.probe import (
 from xagent.datamakepool.templates import TemplateService
 from xagent.web.models.datamakepool_asset import DataMakepoolAsset
 from xagent.web.models.datamakepool_conversation import DataMakepoolConversationSession
-from xagent.web.models.datamakepool_probe import DataMakepoolProbeRun
+from xagent.web.models.datamakepool_probe import (
+    DataMakepoolProbeAttempt,
+    DataMakepoolProbeFinding,
+    DataMakepoolProbeRun,
+)
 from .flow_draft_service import FlowDraftService
 from .runtime_service import ConversationRuntimeService
 
@@ -126,7 +130,7 @@ class ProbeService:
             success="success" if result.get("success") else "failed",
             input_payload=payload,
             raw_result=result.get("raw_result"),
-            findings=result.get("findings"),
+            findings=None,
             result_summary=result.get("summary"),
             user_visible_message=result.get("message"),
         )
@@ -139,6 +143,23 @@ class ProbeService:
             planned_probe=planned_probe,
             result=result,
             probe_run_id=int(row.id),
+        )
+        row.findings = list(feedback.findings or [])
+        self._db.add(row)
+        self._db.commit()
+        self._db.refresh(row)
+        attempt = self._persist_probe_attempt(
+            probe_run_id=int(row.id),
+            planned_probe=planned_probe,
+            payload=payload,
+            result=result,
+            feedback=feedback,
+        )
+        persisted_findings = self._persist_probe_findings(
+            session_id=int(session.id),
+            probe_run_id=int(row.id),
+            probe_attempt_id=int(attempt.id) if attempt is not None else None,
+            feedback=feedback,
         )
         active_draft_id = (
             int(session.active_flow_draft_id)
@@ -160,30 +181,116 @@ class ProbeService:
                 "probe_type": probe_type,
                 "raw_result": result.get("raw_result"),
                 "findings": result.get("findings"),
+                "normalized_findings": list(feedback.findings or []),
             },
         )
 
         return {
             "execution_run_id": int(run.id),
             "probe_run_id": int(row.id),
+            "probe_attempt_id": int(attempt.id) if attempt is not None else None,
             "success": bool(result.get("success")),
             "summary": result.get("summary"),
             "message": result.get("message"),
             "raw_result": result.get("raw_result"),
+            "normalized_findings": list(feedback.findings or []),
             "ui": {
                 "type": "probe_result",
                 "message": result.get("message"),
                 "data": {
                     "probe_run_id": int(row.id),
+                    "probe_attempt_id": int(attempt.id) if attempt is not None else None,
                     "probe_type": probe_type,
                     "target_ref": target_ref,
                     "reason": planned_probe.reason,
                     "summary": result.get("summary"),
                     "raw_result": result.get("raw_result"),
                     "findings": result.get("findings") or [],
+                    "normalized_findings": list(feedback.findings or []),
+                    "persisted_finding_ids": persisted_findings,
                 },
             },
         }
+
+    def _persist_probe_attempt(
+        self,
+        *,
+        probe_run_id: int,
+        planned_probe: Any,
+        payload: dict[str, Any],
+        result: dict[str, Any],
+        feedback: Any,
+    ) -> DataMakepoolProbeAttempt:
+        """记录本次 probe 真正采用的输入与失败类型。
+
+        这里不直接复用 `ProbeRun.input_payload`，因为 attempt 层需要保存
+        “planner 最终选了哪个 step/target、用了什么 mode、归一后的失败类型”。
+        """
+
+        failure_type = None
+        if not result.get("success"):
+            first_finding = next(iter(list(getattr(feedback, "findings", []) or [])), None)
+            if isinstance(first_finding, dict):
+                failure_type = str(first_finding.get("finding_type") or "").strip() or None
+        attempt = DataMakepoolProbeAttempt(
+            probe_run_id=probe_run_id,
+            attempt_no=1,
+            normalized_input_payload={
+                "probe_type": str(planned_probe.probe_type),
+                "target_ref": str(planned_probe.target_ref),
+                "step_key": getattr(planned_probe, "step_key", None),
+                "mode": str(planned_probe.mode),
+                "reason": str(planned_probe.reason),
+                "payload": dict(payload or {}),
+            },
+            raw_result=result.get("raw_result"),
+            success="success" if result.get("success") else "failed",
+            failure_type=failure_type,
+            result_summary=str(result.get("summary") or ""),
+        )
+        self._db.add(attempt)
+        self._db.commit()
+        self._db.refresh(attempt)
+        return attempt
+
+    def _persist_probe_findings(
+        self,
+        *,
+        session_id: int,
+        probe_run_id: int,
+        probe_attempt_id: int | None,
+        feedback: Any,
+    ) -> list[int]:
+        """把归一化 finding 落成可检索的细表。"""
+
+        persisted_ids: list[int] = []
+        for finding in list(getattr(feedback, "findings", []) or []):
+            if not isinstance(finding, dict):
+                continue
+            row = DataMakepoolProbeFinding(
+                session_id=session_id,
+                probe_run_id=probe_run_id,
+                probe_attempt_id=probe_attempt_id,
+                step_key=str(finding.get("step_key") or "").strip() or None,
+                probe_type=str(finding.get("probe_type") or "").strip() or "unknown",
+                target_ref=str(finding.get("target_ref") or "").strip() or None,
+                verdict=str(finding.get("verdict") or "").strip() or "unknown",
+                finding_type=str(finding.get("finding_type") or "").strip()
+                or "unknown",
+                severity=str(finding.get("severity") or "").strip() or "info",
+                resolved=bool(finding.get("resolved", False)),
+                detail=str(finding.get("detail") or "").strip() or None,
+                payload={
+                    "step_name": finding.get("step_name"),
+                    "raw_findings": list(finding.get("raw_findings") or []),
+                },
+            )
+            self._db.add(row)
+            self._db.flush()
+            if row.id is not None:
+                persisted_ids.append(int(row.id))
+        self._db.commit()
+        return persisted_ids
 
     def _probe_sql_asset(
         self,
