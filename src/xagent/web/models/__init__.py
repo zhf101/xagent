@@ -14,6 +14,7 @@ from .datamakepool_conversation_runtime import (
     DataMakepoolConversationExecutionRun,
     DataMakepoolDecisionFrame,
 )
+from .datamakepool_flow_draft import DataMakepoolFlowDraft
 from .datamakepool_probe import DataMakepoolProbeRun
 from .agent import Agent
 from .chat_message import TaskChatMessage
@@ -72,6 +73,7 @@ __all__ = [
     "DataMakepoolCandidateChoice",
     "DataMakepoolDecisionFrame",
     "DataMakepoolConversationExecutionRun",
+    "DataMakepoolFlowDraft",
     "DataMakepoolProbeRun",
     "LegacyScenarioCatalog",
     "UploadedFile",

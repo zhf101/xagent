@@ -77,6 +77,15 @@ class DataMakepoolConversationSession(Base):  # type: ignore
         ),
         nullable=True,
     )
+    active_flow_draft_id = Column(
+        Integer,
+        ForeignKey(
+            "datamakepool_flow_drafts.id",
+            use_alter=True,
+            name="fk_datamakepool_conversation_active_flow_draft_id",
+        ),
+        nullable=True,
+    )
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(
         DateTime(timezone=True),
@@ -99,6 +108,11 @@ class DataMakepoolConversationSession(Base):  # type: ignore
     active_recall_snapshot = relationship(
         "DataMakepoolRecallSnapshot",
         foreign_keys=[active_recall_snapshot_id],
+        post_update=True,
+    )
+    active_flow_draft = relationship(
+        "DataMakepoolFlowDraft",
+        foreign_keys=[active_flow_draft_id],
         post_update=True,
     )
     recall_snapshots = relationship(
