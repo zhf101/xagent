@@ -1,4 +1,8 @@
-"""智能造数平台会话运行态账本。"""
+"""智能造数平台会话运行态账本。
+
+本轮补齐后，DecisionFrame / ExecutionRun 都会显式关联 FlowDraft，
+避免后续审计时只能从 session 反推“当时到底执行的是哪版草稿”。
+"""
 
 from sqlalchemy import JSON, Column, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.sql import func
@@ -16,6 +20,12 @@ class DataMakepoolDecisionFrame(Base):  # type: ignore
         Integer,
         ForeignKey("datamakepool_conversation_sessions.id"),
         nullable=False,
+        index=True,
+    )
+    linked_flow_draft_id = Column(
+        Integer,
+        ForeignKey("datamakepool_flow_drafts.id"),
+        nullable=True,
         index=True,
     )
     state_before = Column(String(64), nullable=False, index=True)
@@ -40,6 +50,12 @@ class DataMakepoolConversationExecutionRun(Base):  # type: ignore
         index=True,
     )
     task_id = Column(Integer, ForeignKey("tasks.id"), nullable=False, index=True)
+    linked_draft_id = Column(
+        Integer,
+        ForeignKey("datamakepool_flow_drafts.id"),
+        nullable=True,
+        index=True,
+    )
     run_type = Column(String(32), nullable=False, index=True)
     status = Column(String(32), nullable=False, default="running", index=True)
     trigger_event_type = Column(String(64), nullable=False, index=True)

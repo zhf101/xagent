@@ -29,7 +29,12 @@ from xagent.web.models.datamakepool_conversation import (
     DataMakepoolRecallSnapshot,
 )
 from xagent.web.models.task import Task
-from .decision_engine import DataGenerationDecisionEngine
+from xagent.core.model.chat.basic.base import BaseLLM
+from xagent.web.services.model_service import get_compact_model, get_default_model
+from .decision_engine import DataGenerationDecisionEngine, DraftSignals
+from .flow_draft_service import FlowDraftService
+from .reasoning_engine import ConversationReasoningEngine, fallback_result
+from .reasoning_models import ReasoningResult
 from .runtime_service import ConversationRuntimeService
 
 DATA_GENERATION_REQUIRED_FIELDS = (
@@ -80,10 +85,24 @@ class DataGenerationConversationDecision:
 class DataGenerationConversationService:
     """智能造数平台的 Phase 1 会话驱动服务。"""
 
-    def __init__(self, db: Session):
+    def __init__(self, db: Session, *, user_id: int | None = None):
         self._db = db
         self._runtime = ConversationRuntimeService(db)
         self._decision_engine = DataGenerationDecisionEngine()
+        self._flow_draft_service = FlowDraftService(db)
+        llm = self._resolve_llm(user_id=user_id)
+        self._reasoning_engine: ConversationReasoningEngine | None = (
+            ConversationReasoningEngine(llm) if llm is not None else None
+        )
+
+    @staticmethod
+    def _resolve_llm(*, user_id: int | None) -> BaseLLM | None:
+        if user_id is None:
+            return None
+        llm = get_compact_model(user_id)
+        if llm is not None:
+            return llm
+        return get_default_model(user_id)
 
     def get_or_create_session(
         self,
@@ -171,6 +190,11 @@ class DataGenerationConversationService:
         initial_missing_fields = self._compute_initial_missing_fields(
             entry_recall=entry_recall,
             fact_snapshot=merged_fact_snapshot,
+        )
+        self._sync_flow_draft(
+            session=session,
+            fact_snapshot=merged_fact_snapshot,
+            reasoning_result=None,
         )
         session.latest_summary = (
             "未命中可直接复用候选，系统先给出判断依据与建议补充项"
@@ -847,9 +871,15 @@ class DataGenerationConversationService:
         session: DataMakepoolConversationSession,
     ) -> dict[str, Any]:
         fact_snapshot = dict(session.fact_snapshot or {})
+        draft = self._flow_draft_service.get_active_draft(int(session.id))
         selected_candidate_id = fact_snapshot.get("selected_candidate_id")
         selected_source_type = fact_snapshot.get("selected_source_type")
         reuse_strategy = fact_snapshot.get("reuse_strategy")
+        compiled_dag = (
+            dict(draft.compiled_dag_payload or {})
+            if draft is not None and draft.compiled_dag_payload
+            else None
+        )
 
         lines = [
             "你正在处理一个已经完成首轮用户确认的智能造数会话。",
@@ -873,20 +903,42 @@ class DataGenerationConversationService:
             lines.append(f"- 用户当前关注的候选对象: {selected_candidate_id}")
         if selected_source_type:
             lines.append(f"- 候选来源类型: {selected_source_type}")
+        if draft is not None:
+            lines.append(f"- Active FlowDraft: id={int(draft.id)}, status={draft.status}")
+        if compiled_dag:
+            lines.append(
+                f"- 已生成 compiled DAG，步骤数: {len(list(compiled_dag.get('steps') or []))}"
+            )
+            for step in list(compiled_dag.get("steps") or [])[:5]:
+                lines.append(
+                    "- compiled_step: "
+                    f"{step.get('step_key')} "
+                    f"(kind={step.get('kind')}, target_ref={step.get('target_ref')}, "
+                    f"deps={step.get('dependencies') or []})"
+                )
 
         execution_goal = (
-            f"{session.goal}\n\n用户补充与确认信息：\n" + "\n".join(lines[2:])
+            f"{draft.goal_summary if draft and draft.goal_summary else session.goal}\n\n用户补充与确认信息：\n"
+            + "\n".join(lines[2:])
             if len(lines) > 2
             else session.goal
         )
 
         return {
             "datamakepool_conversation_session_id": int(session.id),
+            "datamakepool_active_flow_draft_id": (
+                int(draft.id) if draft is not None else None
+            ),
             "datamakepool_conversation_ready": True,
             "datamakepool_execution_choice": reuse_strategy or "scratch",
             "datamakepool_selected_candidate_id": selected_candidate_id,
             "datamakepool_selected_source_type": selected_source_type,
-            "datamakepool_conversation_facts": fact_snapshot,
+            "datamakepool_conversation_facts": (
+                dict(compiled_dag.get("params") or {})
+                if compiled_dag
+                else fact_snapshot
+            ),
+            "datamakepool_compiled_dag": compiled_dag,
             "datamakepool_execution_goal": execution_goal,
             "system_prompt": "\n".join(lines),
         }
@@ -915,16 +967,24 @@ class DataGenerationConversationService:
             and self._snapshot_has_candidates(latest_snapshot),
             fact_snapshot=fact_snapshot,
         )
-        prompted_missing_fields = self._select_followup_prompt_fields(
+        reasoning = self._reason(
+            session=session,
+            current_message=user_message,
             missing_fields=missing_fields,
-            fact_snapshot=fact_snapshot,
         )
+        self._sync_flow_draft(
+            session=session,
+            fact_snapshot=fact_snapshot,
+            reasoning_result=reasoning,
+        )
+        draft_signals = self._load_draft_signals(session)
         decision = self._decision_engine.decide_after_user_message(
-            missing_fields=missing_fields
+            missing_fields=missing_fields,
+            draft_signals=draft_signals,
         )
 
         session.state = decision.next_state
-        session.latest_summary = "当前消息未提供新的关键字段，系统先返回判断依据与缺口说明"
+        session.latest_summary = reasoning.understanding or "系统已返回判断依据与缺口说明"
         self._db.add(session)
         self._db.commit()
         self._runtime.record_decision(
@@ -934,28 +994,31 @@ class DataGenerationConversationService:
             recommended_action=decision.recommended_action,
             state_after=session.state,
             allowed_actions=decision.allowed_actions,
-            rationale=(
-                "用户本轮输入未能解析出新的结构化关键字段，"
-                "应先解释当前判断依据和仍缺失的信息，避免重复机械追问。"
-            ),
+            rationale=reasoning.understanding,
         )
 
+        message_parts = [reasoning.understanding]
+        if reasoning.evidence:
+            message_parts.append("\n判断依据：\n" + "\n".join(f"- {e}" for e in reasoning.evidence))
+        if reasoning.blockers:
+            message_parts.append("\n当前阻塞点：\n" + "\n".join(f"- {b}" for b in reasoning.blockers))
+        if reasoning.question:
+            message_parts.append(f"\n{reasoning.question}")
+
         chat_response = {
-            "message": (
-                "这条消息目前没有提供可直接写入会话状态的关键字段，所以系统暂时不能推进到正式执行。"
-                f"\n\n你的原话是：{user_message.strip()}"
-                f"\n\n当前已识别的信息：\n{self._format_known_facts(fact_snapshot=fact_snapshot)}"
-                f"\n\n仍然缺少：\n{self._format_missing_fields(missing_fields=missing_fields)}"
-                f"{self._format_snapshot_basis(latest_snapshot=latest_snapshot)}"
-                "\n\n如果你是在确认系统为什么判断未命中历史场景，我已经把依据写在上面；"
-                "如果你暂时不想补字段，也不需要重复回答首轮那套问题。"
-            ),
+            "message": "\n".join(message_parts),
+            "interactions": reasoning.suggested_interactions,
         }
+        ui = (
+            {"type": "clarification_form", "interactions": reasoning.suggested_interactions}
+            if reasoning.suggested_interactions
+            else None
+        )
         return DataGenerationConversationDecision(
             should_pause_for_user=True,
             state=session.state,
             chat_response=chat_response,
-            ui=None,
+            ui=ui,
         )
 
     def _decide_with_updated_facts(
@@ -991,17 +1054,28 @@ class DataGenerationConversationService:
             and self._snapshot_has_candidates(latest_snapshot),
             fact_snapshot=fact_snapshot,
         )
-        prompted_missing_fields = self._select_followup_prompt_fields(
+        reasoning = self._reason(
+            session=session,
+            current_message=str(user_message or ""),
             missing_fields=missing_fields,
-            fact_snapshot=fact_snapshot,
         )
+        self._sync_flow_draft(
+            session=session,
+            fact_snapshot=fact_snapshot,
+            reasoning_result=reasoning,
+        )
+        draft_signals = self._load_draft_signals(session)
         decision = self._decision_engine.decide_after_user_message(
-            missing_fields=missing_fields
+            missing_fields=missing_fields,
+            draft_signals=draft_signals,
         )
 
-        if missing_fields:
+        # LLM says we can proceed even if field-check says missing — trust LLM
+        effective_missing = missing_fields if reasoning.recommended_action == "REQUEST_CLARIFICATION" else []
+
+        if effective_missing:
             session.state = decision.next_state
-            session.latest_summary = "用户已补充部分信息，但仍存在关键缺口，继续澄清"
+            session.latest_summary = reasoning.understanding or "用户已补充部分信息，仍存在关键缺口"
             self._db.add(session)
             self._db.commit()
             self._runtime.record_decision(
@@ -1011,20 +1085,73 @@ class DataGenerationConversationService:
                 recommended_action=decision.recommended_action,
                 state_after=session.state,
                 allowed_actions=decision.allowed_actions,
-                rationale=decision.rationale,
+                rationale=reasoning.understanding,
+            )
+            message_parts = [reasoning.understanding]
+            if reasoning.evidence:
+                message_parts.append("\n判断依据：\n" + "\n".join(f"- {e}" for e in reasoning.evidence))
+            if reasoning.blockers:
+                message_parts.append("\n当前阻塞点：\n" + "\n".join(f"- {b}" for b in reasoning.blockers))
+            if reasoning.question:
+                message_parts.append(f"\n{reasoning.question}")
+            chat_response = {
+                "message": "\n".join(message_parts),
+                "interactions": reasoning.suggested_interactions,
+            }
+            ui = (
+                {"type": "clarification_form", "interactions": reasoning.suggested_interactions}
+                if reasoning.suggested_interactions
+                else None
             )
             return DataGenerationConversationDecision(
                 should_pause_for_user=True,
                 state=session.state,
-                chat_response=self._build_followup_clarification_response(
-                    fact_snapshot=fact_snapshot,
-                    missing_fields=prompted_missing_fields,
-                    latest_snapshot=latest_snapshot,
-                ),
-                ui=self._build_clarification_ui(
-                    fact_snapshot=fact_snapshot,
-                    missing_fields=prompted_missing_fields,
-                ),
+                chat_response=chat_response,
+                ui=ui,
+            )
+
+        if decision.recommended_action in {
+            "RUN_PROBE",
+            "REQUEST_APPROVAL_RESOLUTION",
+            "REQUEST_CLARIFICATION",
+        }:
+            session.state = decision.next_state
+            session.latest_summary = reasoning.understanding or decision.rationale
+            self._db.add(session)
+            self._db.commit()
+            self._runtime.record_decision(
+                session=session,
+                state_before=state_before,
+                input_event_type=input_event_type,
+                recommended_action=decision.recommended_action,
+                state_after=session.state,
+                allowed_actions=decision.allowed_actions,
+                rationale=reasoning.understanding or decision.rationale,
+            )
+            message_parts = [reasoning.understanding or decision.rationale]
+            if reasoning.evidence:
+                message_parts.append("\n判断依据：\n" + "\n".join(f"- {e}" for e in reasoning.evidence))
+            if reasoning.blockers:
+                message_parts.append("\n当前阻塞点：\n" + "\n".join(f"- {b}" for b in reasoning.blockers))
+            if decision.recommended_action == "RUN_PROBE":
+                message_parts.append(
+                    "\n当前草稿已达到 probe_ready，但还没有通过 probe 校验，"
+                    "请先对已选候选执行试跑。"
+                )
+            chat_response = {
+                "message": "\n".join(message_parts),
+                "interactions": reasoning.suggested_interactions,
+            }
+            ui = (
+                {"type": "clarification_form", "interactions": reasoning.suggested_interactions}
+                if reasoning.suggested_interactions
+                else None
+            )
+            return DataGenerationConversationDecision(
+                should_pause_for_user=True,
+                state=session.state,
+                chat_response=chat_response,
+                ui=ui,
             )
 
         session.state = decision.next_state
@@ -1046,6 +1173,105 @@ class DataGenerationConversationService:
             state=session.state,
             execution_context=execution_context,
         )
+
+    def _build_recall_summary(
+        self,
+        session: DataMakepoolConversationSession,
+        entry_recall: Any | None = None,
+    ) -> str:
+        """为 LLM 构造可读的召回情况摘要。"""
+        snapshot = self._get_active_recall_snapshot(session)
+        if snapshot is None and entry_recall is None:
+            return ""
+        lines: list[str] = []
+        if entry_recall is not None:
+            t = len(list(entry_recall.template_candidates or []))
+            s = len(list(entry_recall.sql_asset_candidates or []))
+            h = len(list(entry_recall.http_asset_candidates or []))
+            lc = len(list(entry_recall.legacy_candidates or []))
+        elif snapshot is not None:
+            t = len(list(snapshot.template_candidates or []))
+            s = len(list(snapshot.sql_asset_candidates or []))
+            h = len(list(snapshot.http_asset_candidates or []))
+            lc = len(list(snapshot.legacy_candidates or []))
+        else:
+            return ""
+        if t:
+            lines.append(f"模板候选 {t} 条")
+        if s:
+            lines.append(f"SQL 资产候选 {s} 条")
+        if h:
+            lines.append(f"HTTP 资产候选 {h} 条")
+        if lc:
+            lines.append(f"存量场景候选 {lc} 条")
+        if not lines:
+            return "本轮召回未命中任何候选。"
+        return "本轮召回命中：" + "，".join(lines)
+
+    def _reason(
+        self,
+        *,
+        session: DataMakepoolConversationSession,
+        current_message: str = "",
+        missing_fields: list[str],
+        entry_recall: Any | None = None,
+    ) -> ReasoningResult:
+        """调用 LLM ReAct 推断，不可用时降级。"""
+        if self._reasoning_engine is None:
+            return fallback_result(missing_fields=missing_fields)
+        draft = self._flow_draft_service.get_active_draft(int(session.id))
+        return self._reasoning_engine.reason(
+            goal=str(session.goal or ""),
+            history_summary=str(session.latest_summary or ""),
+            fact_snapshot=dict(session.fact_snapshot or {}),
+            recall_summary=self._build_recall_summary(session, entry_recall),
+            current_message=current_message,
+            probe_findings=list((draft.probe_findings if draft else None) or []),
+            draft_status=str(draft.status) if draft else None,
+            missing_fields=missing_fields,
+        )
+
+    def _load_draft_signals(
+        self, session: DataMakepoolConversationSession
+    ) -> DraftSignals | None:
+        """从 active FlowDraft 构造 DraftSignals，无 draft 时返回 None。"""
+        draft = self._flow_draft_service.get_active_draft(int(session.id))
+        if draft is None:
+            return None
+        return DraftSignals(
+            draft_status=str(draft.status or "drafting"),
+            probe_findings=list(draft.probe_findings or []),
+            readiness_verdict=dict(draft.readiness_verdict or {}),
+            has_approval_blocks=False,  # approval 接入在后续 phase 完成
+        )
+
+    def _sync_flow_draft(
+        self,
+        *,
+        session: DataMakepoolConversationSession,
+        fact_snapshot: dict[str, Any],
+        reasoning_result: ReasoningResult | None,
+    ) -> None:
+        """根据当前会话事实刷新 active FlowDraft。"""
+
+        if not fact_snapshot and reasoning_result is None:
+            return
+        draft = self._flow_draft_service.upsert_from_conversation(
+            session_id=int(session.id),
+            goal_summary=str(session.goal or ""),
+            fact_snapshot=fact_snapshot,
+            draft_patch=(
+                dict(reasoning_result.draft_patch or {})
+                if reasoning_result is not None
+                else None
+            ),
+            notes=str(reasoning_result.understanding or "")
+            if reasoning_result is not None and reasoning_result.understanding
+            else None,
+        )
+        session.active_flow_draft_id = int(draft.id)
+        self._db.add(session)
+        self._db.commit()
 
     def _parse_user_message(self, message: str) -> dict[str, Any]:
         result: dict[str, Any] = {}

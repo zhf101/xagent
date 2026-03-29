@@ -15,6 +15,11 @@ from .datamakepool_conversation_runtime import (
     DataMakepoolDecisionFrame,
 )
 from .datamakepool_flow_draft import DataMakepoolFlowDraft
+from .datamakepool_flow_draft_detail import (
+    DataMakepoolFlowDraftMapping,
+    DataMakepoolFlowDraftParam,
+    DataMakepoolFlowDraftStep,
+)
 from .datamakepool_probe import DataMakepoolProbeRun
 from .agent import Agent
 from .chat_message import TaskChatMessage
@@ -74,6 +79,9 @@ __all__ = [
     "DataMakepoolDecisionFrame",
     "DataMakepoolConversationExecutionRun",
     "DataMakepoolFlowDraft",
+    "DataMakepoolFlowDraftStep",
+    "DataMakepoolFlowDraftParam",
+    "DataMakepoolFlowDraftMapping",
     "DataMakepoolProbeRun",
     "LegacyScenarioCatalog",
     "UploadedFile",

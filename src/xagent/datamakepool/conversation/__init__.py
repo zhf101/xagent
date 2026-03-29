@@ -10,8 +10,13 @@ from .runtime_service import ConversationRuntimeService
 from .decision_engine import (
     ConversationDecisionOutcome,
     DataGenerationDecisionEngine,
+    DraftSignals,
 )
 from .flow_draft_service import FlowDraftService
+from .plan_compiler import FlowDraftPlanCompiler
+from .reasoning_engine import ConversationReasoningEngine
+from .reasoning_models import ReasoningResult
+from .readiness_gate import FlowDraftReadinessGate, ReadinessResult
 from .response_builder import ConversationResponseBuilder
 from .orchestrator import (
     ConversationGateResult,
@@ -26,7 +31,13 @@ __all__ = [
     "ConversationRuntimeService",
     "ConversationDecisionOutcome",
     "DataGenerationDecisionEngine",
+    "DraftSignals",
     "FlowDraftService",
+    "FlowDraftPlanCompiler",
+    "ConversationReasoningEngine",
+    "ReasoningResult",
+    "FlowDraftReadinessGate",
+    "ReadinessResult",
     "ConversationResponseBuilder",
     "ConversationGateResult",
     "DataGenerationConversationOrchestrator",

@@ -27,11 +27,21 @@ class ConversationRuntimeService:
         input_event_type: str,
         recommended_action: str,
         state_after: str,
+        linked_flow_draft_id: int | None = None,
         allowed_actions: list[str] | None = None,
         rationale: str | None = None,
     ) -> DataMakepoolDecisionFrame:
         frame = DataMakepoolDecisionFrame(
             session_id=int(session.id),
+            linked_flow_draft_id=(
+                int(linked_flow_draft_id)
+                if linked_flow_draft_id is not None
+                else (
+                    int(session.active_flow_draft_id)
+                    if getattr(session, "active_flow_draft_id", None) is not None
+                    else None
+                )
+            ),
             state_before=state_before,
             input_event_type=input_event_type,
             recommended_action=recommended_action,
@@ -54,6 +64,7 @@ class ConversationRuntimeService:
         task_id: int,
         run_type: str,
         trigger_event_type: str,
+        linked_draft_id: int | None = None,
         target_ref: str | None = None,
         input_payload: dict[str, Any] | None = None,
         status: str = "running",
@@ -61,6 +72,15 @@ class ConversationRuntimeService:
         run = DataMakepoolConversationExecutionRun(
             session_id=int(session.id),
             task_id=int(task_id),
+            linked_draft_id=(
+                int(linked_draft_id)
+                if linked_draft_id is not None
+                else (
+                    int(session.active_flow_draft_id)
+                    if getattr(session, "active_flow_draft_id", None) is not None
+                    else None
+                )
+            ),
             run_type=run_type,
             status=status,
             trigger_event_type=trigger_event_type,

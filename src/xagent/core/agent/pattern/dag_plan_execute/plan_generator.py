@@ -726,6 +726,7 @@ class PlanGenerator:
         entry_recall = state.get("entry_recall_result")
         conversation_ready = bool(state.get("datamakepool_conversation_ready"))
         fact_snapshot = state.get("datamakepool_conversation_facts")
+        compiled_dag = state.get("datamakepool_compiled_dag")
 
         if not entry_recall and not conversation_ready:
             return ""
@@ -746,6 +747,18 @@ class PlanGenerator:
                     value = fact_snapshot.get(field)
                     if value not in (None, "", []):
                         lines.append(f"- 已确认{label}: {value}")
+            if isinstance(compiled_dag, dict):
+                lines.append(
+                    f"- 已存在 FlowDraft compiled DAG: draft_id={compiled_dag.get('draft_id')}, "
+                    f"version={compiled_dag.get('version')}, "
+                    f"steps={len(list(compiled_dag.get('steps') or []))}"
+                )
+                for step in list(compiled_dag.get("steps") or [])[:5]:
+                    lines.append(
+                        f"- compiled_step: {step.get('step_key')} "
+                        f"(kind={step.get('kind')}, target_ref={step.get('target_ref')}, "
+                        f"deps={step.get('dependencies') or []})"
+                    )
         else:
             lines.append("- 会话门控状态: 未完成，只允许补当前最关键的缺口，不要重复整套固定问卷")
 

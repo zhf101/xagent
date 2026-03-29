@@ -60,9 +60,9 @@ class ApprovalPauseResult:
 class DataGenerationConversationOrchestrator:
     """收口 data_generation 会话门控的最小编排器。"""
 
-    def __init__(self, db):
+    def __init__(self, db, *, user_id: int | None = None):
         self._db = db
-        self._service = DataGenerationConversationService(db)
+        self._service = DataGenerationConversationService(db, user_id=user_id)
         self._runtime = ConversationRuntimeService(db)
 
     @property
@@ -192,14 +192,18 @@ class DataGenerationConversationOrchestrator:
                     == "direct_execute"
                     else "planned_execute"
                 ),
+                linked_draft_id=execution_context.get("datamakepool_active_flow_draft_id"),
                 trigger_event_type=trigger_event_type,
                 target_ref=str(
                     execution_context.get("datamakepool_selected_candidate_id") or ""
                 )
                 or None,
-                input_payload=dict(
-                    execution_context.get("datamakepool_conversation_facts") or {}
-                ),
+                input_payload={
+                    "compiled_dag": execution_context.get("datamakepool_compiled_dag"),
+                    "facts": dict(
+                        execution_context.get("datamakepool_conversation_facts") or {}
+                    ),
+                },
             )
             execution_context["datamakepool_execution_run_id"] = int(execution_run.id)
 

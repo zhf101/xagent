@@ -1429,7 +1429,7 @@ async def handle_chat_message(
                     domain_mode == "data_generation"
                     and task.status not in [TaskStatus.PAUSED, TaskStatus.RUNNING]
                 ):
-                    conversation_orchestrator = DataGenerationConversationOrchestrator(db)
+                    conversation_orchestrator = DataGenerationConversationOrchestrator(db, user_id=int(user.id))
                     conversation_service = conversation_orchestrator.service
                     session = conversation_service.get_or_create_session(
                         task=task,
@@ -1983,7 +1983,7 @@ async def handle_execute_task(
                         db=db,
                         user=user,
                     ).coordinate(str(task.description))
-                    conversation_orchestrator = DataGenerationConversationOrchestrator(db)
+                    conversation_orchestrator = DataGenerationConversationOrchestrator(db, user_id=int(user.id))
                     prepared = conversation_orchestrator.prepare_execution(
                         task=task,
                         user_id=int(user.id),
@@ -2901,7 +2901,7 @@ async def handle_probe_request(
             )
             return
 
-        conversation_service = DataGenerationConversationService(db)
+        conversation_service = DataGenerationConversationService(db, user_id=int(user.id))
         session = conversation_service.get_or_create_session(
             task=task,
             user_id=int(user.id),
@@ -2984,7 +2984,7 @@ async def handle_conversation_update(
             )
             return
 
-        conversation_service = DataGenerationConversationService(db)
+        conversation_service = DataGenerationConversationService(db, user_id=int(user.id))
         decision = conversation_service.apply_fact_updates(
             task=task,
             user_id=int(user.id),

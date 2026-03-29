@@ -13,6 +13,7 @@ from xagent.datamakepool.templates import TemplateService
 from xagent.web.models.datamakepool_asset import DataMakepoolAsset
 from xagent.web.models.datamakepool_conversation import DataMakepoolConversationSession
 from xagent.web.models.datamakepool_probe import DataMakepoolProbeRun
+from .flow_draft_service import FlowDraftService
 from .runtime_service import ConversationRuntimeService
 
 
@@ -33,6 +34,7 @@ class ProbeService:
         self._db = db
         self._template_service = TemplateService(db)
         self._runtime = ConversationRuntimeService(db)
+        self._flow_draft_service = FlowDraftService(db)
 
     def run_probe(
         self,
@@ -50,6 +52,11 @@ class ProbeService:
             task_id=int(session.task_id),
             run_type="probe",
             trigger_event_type="USER_REQUEST_PROBE",
+            linked_draft_id=(
+                int(session.active_flow_draft_id)
+                if getattr(session, "active_flow_draft_id", None) is not None
+                else None
+            ),
             target_ref=target_ref,
             input_payload={
                 "probe_type": probe_type,
@@ -88,6 +95,27 @@ class ProbeService:
         self._db.add(row)
         self._db.commit()
         self._db.refresh(row)
+
+        draft_findings, param_updates, mapping_updates, step_updates = self._build_draft_feedback(
+            session=session,
+            probe_type=probe_type,
+            target_ref=target_ref,
+            result=result,
+            probe_run_id=int(row.id),
+        )
+        active_draft_id = (
+            int(session.active_flow_draft_id)
+            if getattr(session, "active_flow_draft_id", None) is not None
+            else None
+        )
+        if active_draft_id is not None:
+            self._flow_draft_service.apply_probe_findings(
+                active_draft_id,
+                findings=draft_findings,
+                param_updates=param_updates,
+                mapping_updates=mapping_updates,
+                step_updates=step_updates,
+            )
 
         fact_snapshot = dict(session.fact_snapshot or {})
         probe_findings = list(fact_snapshot.get("probe_findings") or [])
@@ -138,6 +166,140 @@ class ProbeService:
                 },
             },
         }
+
+    def _build_draft_feedback(
+        self,
+        *,
+        session: DataMakepoolConversationSession,
+        probe_type: str,
+        target_ref: str,
+        result: dict[str, Any],
+        probe_run_id: int,
+    ) -> tuple[
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+    ]:
+        """把 probe 结果转成 FlowDraft 可消费的结构化补丁。"""
+
+        active_draft = None
+        if getattr(session, "active_flow_draft_id", None) is not None:
+            active_draft = self._flow_draft_service.get_draft_by_id(int(session.active_flow_draft_id))
+
+        step_key = self._match_step_key(
+            draft=active_draft,
+            probe_type=probe_type,
+            target_ref=target_ref,
+        )
+        success = bool(result.get("success"))
+        summary = str(result.get("summary") or "")
+        raw_findings = list(result.get("findings") or [])
+
+        normalized_findings = [
+            {
+                "probe_run_id": probe_run_id,
+                "step_key": step_key,
+                "step_name": step_key,
+                "probe_type": probe_type,
+                "target_ref": target_ref,
+                "verdict": "passed" if success else "blocker",
+                "severity": "info" if success else "error",
+                "detail": summary,
+                "raw_findings": raw_findings,
+            }
+        ]
+
+        param_updates: list[dict[str, Any]] = []
+        mapping_updates: list[dict[str, Any]] = []
+        step_updates: list[dict[str, Any]] = []
+
+        if step_key:
+            step_updates.append(
+                {
+                    "step_key": step_key,
+                    "status": "probe_ready" if success else "blocked",
+                    "blocking_reason": None if success else summary,
+                }
+            )
+
+        if not success:
+            for finding in raw_findings:
+                if isinstance(finding, str):
+                    param_key = str(finding).strip()
+                    if not param_key:
+                        continue
+                    param_updates.append(
+                        {
+                            "param_key": param_key,
+                            "status": "blocked",
+                            "blocking_reason": f"probe 缺少参数：{param_key}",
+                        }
+                    )
+                    if step_key:
+                        mapping_updates.append(
+                            {
+                                "target_step_key": step_key,
+                                "target_field": param_key,
+                                "status": "blocked",
+                                "blocking_reason": f"{step_key}.{param_key} 缺少可用输入",
+                            }
+                        )
+        else:
+            fact_snapshot = dict(session.fact_snapshot or {})
+            for key, value in fact_snapshot.items():
+                if value in (None, "", [], {}):
+                    continue
+                param_updates.append(
+                    {
+                        "param_key": str(key),
+                        "value": value,
+                        "status": "ready",
+                        "blocking_reason": None,
+                    }
+                )
+            if step_key:
+                for target_field in (
+                    "target_system",
+                    "target_entity",
+                    "target_environment",
+                    "execution_method",
+                    "data_count",
+                    "field_constraints",
+                    "data_dependencies",
+                ):
+                    mapping_updates.append(
+                        {
+                            "target_step_key": step_key,
+                            "target_field": target_field,
+                            "status": "ready",
+                            "blocking_reason": None,
+                        }
+                    )
+
+        return normalized_findings, param_updates, mapping_updates, step_updates
+
+    @staticmethod
+    def _match_step_key(
+        *,
+        draft: Any,
+        probe_type: str,
+        target_ref: str,
+    ) -> str | None:
+        if draft is None:
+            return None
+        executor_alias = {
+            "sql_asset": "sql",
+            "http_asset": "http",
+            "template": "template",
+        }.get(probe_type, probe_type)
+        for step in list(getattr(draft, "step_rows", []) or []):
+            if str(step.target_ref or "") == str(target_ref):
+                return str(step.step_key)
+        for step in list(getattr(draft, "step_rows", []) or []):
+            if str(step.executor_type or "") == executor_alias:
+                return str(step.step_key)
+        return None
 
     def _probe_sql_asset(
         self,
