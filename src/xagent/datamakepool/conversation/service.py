@@ -219,6 +219,23 @@ class DataGenerationConversationService:
         fact_snapshot = dict(session.fact_snapshot or {})
         parsed = self._parse_user_message(user_message)
         if not parsed:
+            # 执行入口可能直接复用已补齐的 fact_snapshot，此时 user_message 为空是正常情况。
+            # 只要当前快照已经满足最小执行条件，就不应再次退回“继续澄清”。
+            if not str(user_message or "").strip():
+                latest_snapshot = self._get_active_recall_snapshot(session)
+                missing_fields = self._compute_missing_fields(
+                    has_candidates=latest_snapshot is not None
+                    and self._snapshot_has_candidates(latest_snapshot),
+                    fact_snapshot=fact_snapshot,
+                )
+                if not missing_fields:
+                    return self._decide_with_updated_facts(
+                        session=session,
+                        state_before=state_before,
+                        fact_snapshot=fact_snapshot,
+                        input_event_type="USER_FREE_TEXT",
+                        user_message=user_message,
+                    )
             return self._build_no_progress_decision(
                 session=session,
                 state_before=state_before,
@@ -972,6 +989,10 @@ class DataGenerationConversationService:
         missing_fields = self._compute_missing_fields(
             has_candidates=latest_snapshot is not None
             and self._snapshot_has_candidates(latest_snapshot),
+            fact_snapshot=fact_snapshot,
+        )
+        prompted_missing_fields = self._select_followup_prompt_fields(
+            missing_fields=missing_fields,
             fact_snapshot=fact_snapshot,
         )
         decision = self._decision_engine.decide_after_user_message(

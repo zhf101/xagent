@@ -222,6 +222,88 @@ class DAGPlanExecutePattern(AgentPattern):
         )
         self.result_analyzer = ResultAnalyzer(llm, tracer or Tracer())
 
+    @staticmethod
+    def _is_data_generation_conversation_ready(context: Optional[AgentContext]) -> bool:
+        """判断造数任务是否已经通过外层会话门控。"""
+
+        return bool(
+            context
+            and hasattr(context, "state")
+            and context.state.get("domain_mode") == "data_generation"
+            and context.state.get("datamakepool_conversation_ready") is True
+        )
+
+    @staticmethod
+    def _build_data_generation_fallback_interactions(
+        recall_result: Dict[str, Any],
+    ) -> List[Interaction]:
+        """构造首轮兜底澄清问题。
+
+        优先使用 recall 返回的 missing_params，只补最关键的 1-3 个缺口；
+        只有在 recall 本身没有给出缺口时，才退回到最小通用问题集。
+        """
+
+        interaction_factory: Dict[str, Callable[[], Interaction]] = {
+            "target_system": lambda: Interaction(
+                type=InteractionType.TEXT_INPUT,
+                field="target_system",
+                label="目标系统",
+                placeholder="如：订单系统、CRM、支付系统",
+            ),
+            "target_entity": lambda: Interaction(
+                type=InteractionType.TEXT_INPUT,
+                field="target_entity",
+                label="目标表名或接口",
+                placeholder="如：t_order、/api/order/create",
+            ),
+            "execution_method": lambda: Interaction(
+                type=InteractionType.SELECT_ONE,
+                field="execution_method",
+                label="执行方式",
+                options=[
+                    {"value": "sql", "label": "SQL 直接写入"},
+                    {"value": "http", "label": "HTTP 接口调用"},
+                    {"value": "dubbo", "label": "Dubbo 服务调用"},
+                    {"value": "auto", "label": "自动选择（推荐）"},
+                ],
+            ),
+            "target_environment": lambda: Interaction(
+                type=InteractionType.TEXT_INPUT,
+                field="target_environment",
+                label="目标环境",
+                placeholder="如：dev / test / staging",
+            ),
+            "data_count": lambda: Interaction(
+                type=InteractionType.NUMBER_INPUT,
+                field="data_count",
+                label="数据量",
+            ),
+        }
+        field_alias = {
+            "目标系统": "target_system",
+            "目标表/接口": "target_entity",
+            "目标表名或接口": "target_entity",
+            "执行方式": "execution_method",
+            "目标环境": "target_environment",
+            "数据量": "data_count",
+        }
+
+        selected_fields: List[str] = []
+        for item in list(recall_result.get("missing_params") or []):
+            field_name = str(item.get("field") or "").strip()
+            normalized = field_alias.get(field_name, field_name)
+            if normalized in interaction_factory and normalized not in selected_fields:
+                selected_fields.append(normalized)
+
+        if not selected_fields:
+            selected_fields = ["target_system", "target_entity", "execution_method"]
+
+        return [
+            interaction_factory[field_name]()
+            for field_name in selected_fields[:3]
+            if field_name in interaction_factory
+        ]
+
     def _add_user_message(self, content: str) -> None:
         """Add user message to conversation history."""
         self._conversation_history.append(
@@ -502,12 +584,15 @@ class DAGPlanExecutePattern(AgentPattern):
                         and self._context.state.get("domain_mode") == "data_generation"
                         and iteration == 1
                     ):
+                        conversation_ready = self._is_data_generation_conversation_ready(
+                            self._context
+                        )
                         # 检查对话历史中是否已有用户的澄清回复（至少 2 条消息：首次提问 + 回复）
                         user_messages_in_history = [
                             msg for msg in self._conversation_history
                             if msg.get("role") == "user"
                         ]
-                        if len(user_messages_in_history) <= 1:
+                        if not conversation_ready and len(user_messages_in_history) <= 1:
                             logger.warning(
                                 "data_generation 硬保护触发：LLM 返回 plan 但首轮对话"
                                 "必须先澄清，强制覆盖为 chat"
@@ -537,37 +622,11 @@ class DAGPlanExecutePattern(AgentPattern):
                                     "请先提供以下业务信息："
                                 )
 
-                            default_interactions = [
-                                Interaction(
-                                    type=InteractionType.TEXT_INPUT,
-                                    field="target_system",
-                                    label="目标系统",
-                                    placeholder="如：订单系统、CRM、支付系统",
-                                ),
-                                Interaction(
-                                    type=InteractionType.TEXT_INPUT,
-                                    field="target_entity",
-                                    label="目标表名或接口",
-                                    placeholder="如：t_order、/api/order/create",
-                                ),
-                                Interaction(
-                                    type=InteractionType.SELECT_ONE,
-                                    field="execution_method",
-                                    label="执行方式",
-                                    options=[
-                                        {"value": "sql", "label": "SQL 直接写入"},
-                                        {"value": "http", "label": "HTTP 接口调用"},
-                                        {"value": "dubbo", "label": "Dubbo 服务调用"},
-                                        {"value": "auto", "label": "自动选择（推荐）"},
-                                    ],
-                                ),
-                                Interaction(
-                                    type=InteractionType.TEXT_INPUT,
-                                    field="target_environment",
-                                    label="目标环境",
-                                    placeholder="如：dev / test / staging",
-                                ),
-                            ]
+                            default_interactions = (
+                                self._build_data_generation_fallback_interactions(
+                                    recall_result
+                                )
+                            )
 
                             result = PlanGeneratorResult(
                                 type="chat",

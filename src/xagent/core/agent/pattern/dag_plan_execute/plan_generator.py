@@ -87,6 +87,19 @@ class PlanGenerator:
         self.skill_manager = skill_manager
         self.allowed_skills = allowed_skills
 
+    @staticmethod
+    def _is_data_generation_conversation_ready(
+        context: Optional[AgentContext],
+    ) -> bool:
+        """判断造数会话门控是否已经完成。"""
+
+        return bool(
+            context
+            and hasattr(context, "state")
+            and context.state.get("domain_mode") == "data_generation"
+            and context.state.get("datamakepool_conversation_ready") is True
+        )
+
     async def _generate_plan_with_flow(
         self,
         tracer: Any,
@@ -711,10 +724,33 @@ class PlanGenerator:
 
         state = context.state
         entry_recall = state.get("entry_recall_result")
-        if not entry_recall or not isinstance(entry_recall, dict):
+        conversation_ready = bool(state.get("datamakepool_conversation_ready"))
+        fact_snapshot = state.get("datamakepool_conversation_facts")
+
+        if not entry_recall and not conversation_ready:
             return ""
 
         lines: list[str] = ["\n\n## 平台入口召回结果（已自动完成，请据此生成 interactions）\n"]
+
+        if conversation_ready:
+            lines.append("- 会话门控状态: 已完成，当前轮次不得再重复通用澄清问卷")
+            if isinstance(fact_snapshot, dict):
+                for field, label in [
+                    ("target_system", "目标系统"),
+                    ("target_entity", "目标表名或接口"),
+                    ("execution_method", "执行方式"),
+                    ("target_environment", "目标环境"),
+                    ("data_count", "数据量"),
+                    ("field_constraints", "字段约束 / 业务规则"),
+                ]:
+                    value = fact_snapshot.get(field)
+                    if value not in (None, "", []):
+                        lines.append(f"- 已确认{label}: {value}")
+        else:
+            lines.append("- 会话门控状态: 未完成，只允许补当前最关键的缺口，不要重复整套固定问卷")
+
+        if not entry_recall or not isinstance(entry_recall, dict):
+            return "".join(lines)
 
         # 选中策略
         strategy = entry_recall.get("selected_strategy", "")
@@ -799,6 +835,7 @@ class PlanGenerator:
         domain_mode = ""
         if context and hasattr(context, "state"):
             domain_mode = context.state.get("domain_mode", "")
+        datamakepool_ready = self._is_data_generation_conversation_ready(context)
 
         # ── classification 阶段的 custom_prompt 策略 ──
         # data_generation 模式下，不把完整的 ORCHESTRATOR_PROMPT（"你是编排代理"）
@@ -851,18 +888,30 @@ class PlanGenerator:
 
         # ── data_generation 模式下追加不可忽略的强制指令 ──
         if domain_mode == "data_generation":
-            system_prompt += (
-                "\n\n"
-                "=== FINAL OVERRIDE (THIS SUPERSEDES EVERYTHING ABOVE) ===\n"
-                "You are in data_generation mode. "
-                "You MUST return type=\"chat\" with interactions. "
-                "You MUST NOT return type=\"plan\". "
-                "The tools listed above are for FUTURE execution, "
-                "not for you to plan right now. "
-                "Your ONLY job right now is to ask the user "
-                "clarifying questions via interactions.\n"
-                "=== END OVERRIDE ===\n"
-            )
+            if datamakepool_ready:
+                system_prompt += (
+                    "\n\n"
+                    "=== FINAL OVERRIDE (THIS SUPERSEDES EVERYTHING ABOVE) ===\n"
+                    "You are in data_generation mode and the conversation gate is already complete. "
+                    "datamakepool_conversation_ready=true means the user has already provided the minimum required facts. "
+                    "You MUST return type=\"plan\". "
+                    "You MUST NOT ask the user the generic clarification questionnaire again. "
+                    "If some details still look sparse, carry them into the plan as information-gathering or verification steps instead of pausing for more clarification.\n"
+                    "=== END OVERRIDE ===\n"
+                )
+            else:
+                system_prompt += (
+                    "\n\n"
+                    "=== FINAL OVERRIDE (THIS SUPERSEDES EVERYTHING ABOVE) ===\n"
+                    "You are in data_generation mode. "
+                    "You MUST return type=\"chat\" with interactions. "
+                    "You MUST NOT return type=\"plan\". "
+                    "The tools listed above are for FUTURE execution, "
+                    "not for you to plan right now. "
+                    "Your ONLY job right now is to ask the user "
+                    "clarifying questions via interactions.\n"
+                    "=== END OVERRIDE ===\n"
+                )
 
         # Build messages list with history
         messages = [{"role": "system", "content": system_prompt}]
