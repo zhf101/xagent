@@ -2056,19 +2056,7 @@ async def handle_execute_task(
                         db.add(task)
                         db.commit()
 
-                # Get agent and execute task after template match / orchestrator routing decision.
-                agent_service = await agent_manager.get_agent_for_task(
-                    task_id, db, user=user
-                )
-                recovery_state = await load_task_execution_recovery_state(db, task_id)
-                agent_service.set_execution_context_messages(
-                    recovery_state.get("messages", [])
-                )
-                agent_service.set_recovered_skill_context(
-                    recovery_state.get("skill_context")
-                )
-
-                # data_generation 且模板未命中时，进入全局审批闸门。
+                # data_generation 主链严格只走 runtime contract，不再提前恢复旧 agent 执行上下文。
                 if mode_decision.domain_mode == "data_generation":
                     approval_pause = conversation_orchestrator.evaluate_runtime_approval(
                         task=task,
@@ -2080,7 +2068,6 @@ async def handle_execute_task(
                         execution_run_id=task_context.get("datamakepool_execution_run_id"),
                     )
                     if approval_pause.requires_pause:
-                        await agent_service.pause_execution()
                         await manager.broadcast_to_task(
                             {
                                 **approval_pause.response_payload,
@@ -2116,6 +2103,18 @@ async def handle_execute_task(
                         "data_generation 执行入口未产出 runtime contract 结果，旧 agent 回退已被禁用"
                     )
 
+                # Get agent and execute task after template match / orchestrator routing decision.
+                agent_service = await agent_manager.get_agent_for_task(
+                    task_id, db, user=user
+                )
+                recovery_state = await load_task_execution_recovery_state(db, task_id)
+                agent_service.set_execution_context_messages(
+                    recovery_state.get("messages", [])
+                )
+                agent_service.set_recovered_skill_context(
+                    recovery_state.get("skill_context")
+                )
+
                 # Execute task with automatic token tracking
                 result = await agent_manager.execute_task(
                     agent_service=agent_service,
@@ -2146,30 +2145,6 @@ async def handle_execute_task(
                     )
                 if task.status == TaskStatus.COMPLETED:
                     schedule_user_task_prompt_refresh(int(user.id), force=True)
-                    # 执行成功后从多 agent 执行轨迹沉淀模板草稿（仅 data_generation + orchestrator 路径）
-                    if (
-                        mode_decision.domain_mode == "data_generation"
-                        and task.agent_type_enum == AgentType.DATAMAKEPOOL_ORCHESTRATOR
-                    ):
-                        try:
-                            from xagent.datamakepool.extractors import (
-                                TemplateDraftExtractor,
-                            )
-
-                            TemplateDraftExtractor(db).extract_and_save(
-                                task_description=str(task.description),
-                                result=result,
-                                task_id=int(task_id),
-                                system_short=generation_system_short,
-                                created_by=int(user.id),
-                                execution_plan=planning_decision.execution_plan,
-                                params=params,
-                                match_type=match_result.match_type,
-                            )
-                        except Exception as _draft_exc:
-                            logger.warning(
-                                f"TemplateDraftExtractor failed for task {task_id}: {_draft_exc}"
-                            )
 
                 # Send task completion event (don't duplicate result as trace system already sent)
 
@@ -2190,10 +2165,12 @@ async def handle_execute_task(
             )
 
                 # Send task completion event (don't duplicate result as trace system already sent)
-            final_execution_type = (
-                "datamakepool_planned_execute"
-                if mode_decision.domain_mode == "data_generation"
-                else str(result.get("metadata", {}).get("execution_type") or "task_execution")
+            if mode_decision.domain_mode == "data_generation":
+                raise RuntimeError(
+                    "data_generation 不应落入旧 agent 完成分支；请检查 runtime contract 主链是否失效"
+                )
+            final_execution_type = str(
+                result.get("metadata", {}).get("execution_type") or "task_execution"
             )
             final_metadata = (
                 ConversationResponseBuilder.merge_execution_result_metadata(
@@ -2650,6 +2627,7 @@ async def handle_execute_direct(
         schedule_user_task_prompt_refresh,
     )
     from ...datamakepool.conversation import (
+        ConversationResponseBuilder,
         ConversationRuntimeService,
         DataGenerationConversationService,
     )
@@ -2698,14 +2676,19 @@ async def handle_execute_direct(
                 user_id=int(user.id),
                 goal=str(task.description),
             )
-            fact_snapshot = dict(session.fact_snapshot or {})
+            fact_snapshot = conversation_service._get_effective_fact_snapshot(  # type: ignore[attr-defined]
+                session
+            )
             fact_snapshot["reuse_strategy"] = "direct_execute"
             fact_snapshot["selected_candidate_id"] = candidate_id
             if strategy == "template_direct":
                 fact_snapshot["selected_source_type"] = "template"
             elif strategy == "legacy_direct":
                 fact_snapshot["selected_source_type"] = "legacy_scenario"
-            session.fact_snapshot = fact_snapshot
+            conversation_service._persist_session_fact_snapshot(  # type: ignore[attr-defined]
+                session,
+                fact_snapshot,
+            )
             session.state = "direct_executing"
             db.add(session)
             db.commit()
@@ -2847,30 +2830,19 @@ async def handle_execute_direct(
                 "success": success,
                 "result": output,
                 "output": output,
-                "metadata": {
-                    **metadata,
-                    "conversation_state": session.state
+                "metadata": (
+                    ConversationResponseBuilder.merge_execution_result_metadata(
+                        session=session,
+                        execution_type="datamakepool_direct_execute",
+                        base_metadata=metadata,
+                    )
                     if DatamakepoolTaskModeGateway.resolve_domain_mode(task)
                     == "data_generation"
-                    else None,
-                    "execution_type": "datamakepool_direct_execute",
-                    "fact_snapshot": dict(session.fact_snapshot or {})
-                    if DatamakepoolTaskModeGateway.resolve_domain_mode(task)
-                    == "data_generation"
-                    else None,
-                    "latest_summary": session.latest_summary
-                    if DatamakepoolTaskModeGateway.resolve_domain_mode(task)
-                    == "data_generation"
-                    else None,
-                    "active_decision_frame_id": session.active_decision_frame_id
-                    if DatamakepoolTaskModeGateway.resolve_domain_mode(task)
-                    == "data_generation"
-                    else None,
-                    "active_execution_run_id": session.active_execution_run_id
-                    if DatamakepoolTaskModeGateway.resolve_domain_mode(task)
-                    == "data_generation"
-                    else None,
-                },
+                    else {
+                        **metadata,
+                        "execution_type": "datamakepool_direct_execute",
+                    }
+                ),
                 "timestamp": datetime.now(timezone.utc).timestamp(),
             },
             task_id,

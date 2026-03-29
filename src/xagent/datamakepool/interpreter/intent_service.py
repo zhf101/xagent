@@ -4,7 +4,7 @@
 - 标准化后的目标描述
 - 模板匹配结果
 - 初步推断出的参数
-- 是否需要回退到 agent 动态规划
+- 是否需要进入 ReAct 主脑的 runtime 收敛链
 
 支持两种工作模式：
 1. 向量召回模式（有 retriever + ranker + template_service）：
@@ -41,7 +41,7 @@ class ExecutionIntent:
     template_match: TemplateMatchResult
     template_params: dict[str, Any]
     primary_system_short: str | None
-    fallback_to_agent_planning: bool
+    requires_runtime_orchestration: bool
     involved_assets: list[int]
     approval_requirements: list[str]
 
@@ -130,7 +130,7 @@ class IntentService:
             template_match=match_result,
             template_params=params,
             primary_system_short=params.get("system_short"),
-            fallback_to_agent_planning=not match_result.is_full_match,
+            requires_runtime_orchestration=not match_result.is_full_match,
             involved_assets=[],
             approval_requirements=[],
         )

@@ -154,7 +154,7 @@ class DataGenerationConversationService:
         snapshot = self._upsert_recall_snapshot(session, entry_recall)
         self._sync_candidate_choices(session, entry_recall)
         inferred_facts = self._infer_facts_from_goal(goal=goal)
-        merged_fact_snapshot = dict(session.fact_snapshot or {})
+        merged_fact_snapshot = self._get_effective_fact_snapshot(session)
         merged_fact_snapshot.update(
             {
                 key: value
@@ -162,7 +162,7 @@ class DataGenerationConversationService:
                 if value not in (None, "", [])
             }
         )
-        session.fact_snapshot = merged_fact_snapshot
+        self._persist_session_fact_snapshot(session, merged_fact_snapshot)
 
         has_candidates = self._has_any_candidates(entry_recall)
         session.active_recall_snapshot_id = int(snapshot.id)
@@ -1012,8 +1012,6 @@ class DataGenerationConversationService:
         input_event_type: str,
         user_message: str | None,
     ) -> DataGenerationConversationDecision:
-        session.fact_snapshot = fact_snapshot
-
         latest_snapshot = self._get_active_recall_snapshot(session)
         if user_message:
             selected_choice = self._resolve_choice_from_message(
@@ -1028,8 +1026,13 @@ class DataGenerationConversationService:
                 fact_snapshot["selected_source_type"] = selected_choice.get(
                     "source_type"
                 )
-                session.fact_snapshot = fact_snapshot
-                self._mark_selected_choice(session, selected_choice)
+                self._mark_selected_choice(
+                    session,
+                    selected_choice,
+                    fact_snapshot=fact_snapshot,
+                )
+
+        self._persist_session_fact_snapshot(session, fact_snapshot)
 
         missing_fields = self._compute_missing_fields(
             has_candidates=latest_snapshot is not None
@@ -1172,6 +1175,20 @@ class DataGenerationConversationService:
             current_draft,
             fallback=dict(session.fact_snapshot or {}),
         )
+
+    def _persist_session_fact_snapshot(
+        self,
+        session: DataMakepoolConversationSession,
+        fact_snapshot: dict[str, Any],
+    ) -> None:
+        """把当前有效事实回写到 session，作为兼容落盘副本。
+
+        约束：
+        - session.fact_snapshot 不再是主真相，只是为了兼容旧链路的镜像
+        - 调用方应继续把 `fact_snapshot` 变量往下传，不要回头再从 session 读
+        """
+
+        session.fact_snapshot = dict(fact_snapshot or {})
 
     def _load_draft_signals(
         self, session: DataMakepoolConversationSession
@@ -1574,6 +1591,8 @@ class DataGenerationConversationService:
         self,
         session: DataMakepoolConversationSession,
         selected_choice: dict[str, Any],
+        *,
+        fact_snapshot: dict[str, Any] | None = None,
     ) -> None:
         candidate_id = selected_choice.get("candidate_id")
         if not candidate_id:
@@ -1589,7 +1608,9 @@ class DataGenerationConversationService:
         if row is None:
             return
         row.status = "confirmed"
-        row.user_params = dict(session.fact_snapshot or {})
+        row.user_params = dict(
+            fact_snapshot or self._get_effective_fact_snapshot(session)
+        )
         self._db.add(row)
         self._db.commit()
 

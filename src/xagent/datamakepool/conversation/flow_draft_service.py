@@ -6,7 +6,7 @@
 
 当前阶段的职责边界：
 1. 基于会话事实构建或更新 active draft
-2. 把 probe 结果补丁回 draft，而不是只写 session.fact_snapshot
+2. 把 probe 结果补丁回 draft，而不是只写 session.fact_snapshot 兼容镜像
 3. 运行 readiness gate，并在可执行时生成 compiled DAG
 """
 
@@ -26,6 +26,42 @@ from xagent.web.models.datamakepool_flow_draft_detail import (
 
 from .plan_compiler import FlowDraftPlanCompiler
 from .readiness_gate import FlowDraftReadinessGate
+
+
+def build_effective_fact_snapshot(
+    draft: DataMakepoolFlowDraft | None,
+    *,
+    fallback: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """把 FlowDraft 恢复成当前轮次的有效事实快照。
+
+    这是 data_generation 链路里的共享真相读取 helper。
+    所有“只读事实”的地方都应尽量复用这一份逻辑，
+    避免 response / probe / conversation service 各自维护一套拼装规则。
+    """
+
+    merged = dict(fallback or {})
+    if draft is None:
+        return merged
+
+    for row in list(getattr(draft, "param_rows", []) or []):
+        if str(getattr(row, "status", "") or "") == "blocked":
+            continue
+        payload = getattr(row, "value_payload", None)
+        if isinstance(payload, dict) and "value" in payload:
+            value = payload.get("value")
+        else:
+            value = payload
+        if value not in (None, "", [], {}):
+            merged[str(getattr(row, "param_key", ""))] = value
+
+    if getattr(draft, "source_candidate_id", None):
+        merged["selected_candidate_id"] = str(draft.source_candidate_id)
+    if getattr(draft, "source_candidate_type", None):
+        merged["selected_source_type"] = str(draft.source_candidate_type)
+    if getattr(draft, "system_short", None) and not merged.get("target_system"):
+        merged["target_system"] = str(draft.system_short)
+    return merged
 
 
 class FlowDraftService:
@@ -153,29 +189,7 @@ class FlowDraftService:
         - 让 ReAct / execution_context 优先读取 draft 的中间真相，而不是直接依赖 session.fact_snapshot
         - 对仍未迁移的旧字段保留 fallback，避免一次性打断现有链路
         """
-
-        merged = dict(fallback or {})
-        if draft is None:
-            return merged
-
-        for row in list(getattr(draft, "param_rows", []) or []):
-            if str(row.status or "") == "blocked":
-                continue
-            payload = row.value_payload
-            if isinstance(payload, dict) and "value" in payload:
-                value = payload.get("value")
-            else:
-                value = payload
-            if value not in (None, "", [], {}):
-                merged[str(row.param_key)] = value
-
-        if getattr(draft, "source_candidate_id", None):
-            merged["selected_candidate_id"] = str(draft.source_candidate_id)
-        if getattr(draft, "source_candidate_type", None):
-            merged["selected_source_type"] = str(draft.source_candidate_type)
-        if getattr(draft, "system_short", None) and not merged.get("target_system"):
-            merged["target_system"] = str(draft.system_short)
-        return merged
+        return build_effective_fact_snapshot(draft, fallback=fallback)
 
     def mark_probe_pending(self, draft_id: int) -> DataMakepoolFlowDraft | None:
         """兼容旧接口：当前同步 probe 不再有 pending，中间态统一记为 probe_ready。"""

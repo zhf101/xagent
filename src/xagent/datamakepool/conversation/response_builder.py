@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .flow_draft_service import build_effective_fact_snapshot
+
 
 class ConversationResponseBuilder:
     """构造智能造数平台会话响应。"""
@@ -102,12 +104,16 @@ class ConversationResponseBuilder:
     def _conversation_metadata(session: Any | None) -> dict[str, Any]:
         if session is None:
             return {}
-        return {
+        effective_facts = ConversationResponseBuilder._effective_fact_snapshot(session)
+        legacy_facts = dict(getattr(session, "fact_snapshot", None) or {})
+        metadata = {
             "conversation_state": getattr(session, "state", None),
-            "fact_snapshot": dict(getattr(session, "fact_snapshot", None) or {}),
+            "fact_snapshot": effective_facts,
+            "effective_fact_snapshot": effective_facts,
             "latest_summary": getattr(session, "latest_summary", None),
             "active_decision_frame_id": getattr(session, "active_decision_frame_id", None),
             "active_execution_run_id": getattr(session, "active_execution_run_id", None),
+            "active_flow_draft_id": getattr(session, "active_flow_draft_id", None),
             "decision_rationale": getattr(
                 getattr(session, "active_decision_frame", None), "rationale", None
             ),
@@ -117,3 +123,14 @@ class ConversationResponseBuilder:
                 None,
             ),
         }
+        if legacy_facts and legacy_facts != effective_facts:
+            metadata["legacy_fact_snapshot"] = legacy_facts
+        return metadata
+
+    @staticmethod
+    def _effective_fact_snapshot(session: Any) -> dict[str, Any]:
+        """优先从 active FlowDraft 导出有效事实，旧 session 快照只做兜底。"""
+        return build_effective_fact_snapshot(
+            getattr(session, "active_flow_draft", None),
+            fallback=dict(getattr(session, "fact_snapshot", None) or {}),
+        )

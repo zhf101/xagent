@@ -38,7 +38,7 @@ class DataMakepoolDecisionFrame(Base):  # type: ignore
 
 
 class DataMakepoolConversationExecutionRun(Base):  # type: ignore
-    """统一记录会话中的 probe / direct execute / planned execute。"""
+    """统一记录会话中的 probe / direct execute / runtime execute。"""
 
     __tablename__ = "datamakepool_conversation_execution_runs"
 

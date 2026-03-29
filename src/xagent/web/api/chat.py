@@ -2420,6 +2420,13 @@ async def get_task(
                 "small_fast_model_name": task.small_fast_model_name,
                 "visual_model_name": task.visual_model_name,
                 "compact_model_name": task.compact_model_name,
+                "vibe_mode": task.vibe_mode,
+                "domain_mode": (
+                    task.agent_config.get("domain_mode")
+                    if isinstance(task.agent_config, dict)
+                    else None
+                ),
+                "agent_id": task.agent_id,
                 "dag_data": dag_data,
                 "input_tokens": task.input_tokens or 0,
                 "output_tokens": task.output_tokens or 0,

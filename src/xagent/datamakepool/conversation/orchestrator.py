@@ -109,7 +109,6 @@ class DataGenerationConversationOrchestrator:
                 "debug": dict(entry_recall.debug or {}),
             },
             "datamakepool_match_type": match_result.match_type,
-            "datamakepool_execution_plan": planning_decision.execution_plan,
             "datamakepool_template_match": {
                 "match_type": match_result.match_type,
                 "coverage_score": match_result.coverage_score,
@@ -122,6 +121,9 @@ class DataGenerationConversationOrchestrator:
                 "stage_results": match_result.stage_results,
             },
         }
+        reuse_hints = self._build_reuse_hints(planning_decision.execution_plan)
+        if reuse_hints:
+            context["datamakepool_reuse_hints"] = reuse_hints
         if match_result.matched_template:
             context["datamakepool_template_match"]["matched_template"] = {
                 "template_id": match_result.matched_template.template_id,
@@ -199,7 +201,7 @@ class DataGenerationConversationOrchestrator:
                     "direct_execute"
                     if execution_context.get("datamakepool_execution_choice")
                     == "direct_execute"
-                    else "planned_execute"
+                    else "runtime_execute"
                 ),
                 linked_draft_id=execution_context.get("datamakepool_active_flow_draft_id"),
                 trigger_event_type=trigger_event_type,
@@ -431,8 +433,8 @@ class DataGenerationConversationOrchestrator:
             "模板命中但当前不能安全直跑，已自动回退 orchestrator。"
             f"原因：{direct_support.reason}"
         )
-        if isinstance(task_context.get("datamakepool_execution_plan"), dict):
-            task_context["datamakepool_execution_plan"][
+        if isinstance(task_context.get("datamakepool_reuse_hints"), dict):
+            task_context["datamakepool_reuse_hints"][
                 "template_direct_fallback"
             ] = direct_support.to_dict()
         task_context["datamakepool_template_direct_fallback"] = direct_support.to_dict()
@@ -549,6 +551,42 @@ class DataGenerationConversationOrchestrator:
                     "metadata": runtime_result.metadata or {},
                 },
             )
+
+        if bool(runtime_result.success) and not getattr(runtime_result, "paused", False):
+            try:
+                from xagent.datamakepool.extractors import TemplateDraftExtractor
+
+                TemplateDraftExtractor(self._db).extract_and_save(
+                    task_description=str(task.description or ""),
+                    result={
+                        "success": bool(runtime_result.success),
+                        "output": runtime_result.output,
+                        "metadata": dict(runtime_result.metadata or {}),
+                    },
+                    task_id=int(task_id),
+                    system_short=str(compiled_dag_payload.get("system_short") or "").strip()
+                    or None,
+                    created_by=int(user.id),
+                    compiled_dag_payload=dict(compiled_dag_payload or {}),
+                    params=dict(compiled_dag_payload.get("params") or {}),
+                    match_type=str(
+                        (
+                            (compiled_dag_payload.get("source_candidate") or {}).get(
+                                "type"
+                            )
+                        )
+                        or task_context.get("datamakepool_selected_source_type")
+                        or "runtime_execute"
+                    ),
+                )
+            except Exception as extract_exc:
+                # 模板草稿沉淀失败不应影响本次 runtime 执行结果，只记录告警。
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    "runtime execute succeeded but template draft extraction failed",
+                    exc_info=extract_exc,
+                )
 
         if getattr(runtime_result, "paused", False):
             approval = (
@@ -739,6 +777,38 @@ class DataGenerationConversationOrchestrator:
             },
         )
         return ApprovalPauseResult(True, response_payload=payload)
+
+    @staticmethod
+    def _build_reuse_hints(execution_plan: Any) -> dict[str, Any]:
+        """把旧 execution_plan 压缩成给 ReAct 主脑看的轻量提示。"""
+
+        if not isinstance(execution_plan, dict):
+            return {}
+        reused_steps = list(execution_plan.get("reused_steps") or [])
+        generated_steps = list(execution_plan.get("generated_steps") or [])
+        approval_items = list(execution_plan.get("approval_items") or [])
+        hints: dict[str, Any] = {
+            "plan_type": execution_plan.get("plan_type"),
+            "reused_step_count": len(reused_steps),
+            "generated_step_count": len(generated_steps),
+            "approval_item_count": len(approval_items),
+        }
+        if reused_steps:
+            hints["reused_step_names"] = [
+                str(step.get("name") or step.get("step_name") or "?")
+                for step in reused_steps[:5]
+                if isinstance(step, dict)
+            ]
+        if generated_steps:
+            hints["generated_requirements"] = [
+                str(step.get("requirement") or step.get("name") or "?")
+                for step in generated_steps[:5]
+                if isinstance(step, dict)
+            ]
+        output_contract = execution_plan.get("output_contract")
+        if isinstance(output_contract, dict) and output_contract:
+            hints["output_contract"] = dict(output_contract)
+        return hints
 
     def _build_selected_candidate_guidance(self, entry_recall: Any) -> str:
         selected_candidate = entry_recall.selected_candidate

@@ -3741,6 +3741,9 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
     if (!state.taskId) {
       // Create a new task via API
       try {
+        // 新任务创建阶段就先进入 processing，避免首页提交后完全没有过渡反馈。
+        dispatch({ type: "SET_PROCESSING", payload: true })
+
         const apiUrl = getApiUrl()
 
         // Build internal model identifiers from config
@@ -3799,10 +3802,6 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
             taskData: taskData,
             status: taskData.status
           })
-
-          console.log('🎯 About to call setTaskId with payload:', newTaskId)
-          setTaskId(newTaskId)
-          console.log('🎯 setTaskId completed')
 
           // Create a new task from response
           const newTask: Task = {
@@ -3869,12 +3868,18 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
               }
             })
           }
+
+          console.log('🎯 About to call setTaskId with payload:', newTaskId)
+          setTaskId(newTaskId)
+          console.log('🎯 setTaskId completed')
         } else {
           console.error('Failed to create task:', response.statusText)
+          dispatch({ type: "SET_PROCESSING", payload: false })
           return
         }
       } catch (error) {
         console.error('Error creating task:', error)
+        dispatch({ type: "SET_PROCESSING", payload: false })
         return
       }
     }
@@ -4011,7 +4016,9 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
       // Clear existing data immediately when switching tasks to prevent stale data display
       // This fixes the issue where messages from the previous task might be cleared
       // by the connection effect AFTER the new task's history has already arrived.
-      dispatch({ type: "CLEAR_MESSAGES" })
+      const keepMessageId =
+        stateRef.current.taskId == null ? pendingOptimisticMessageId.current : null
+      dispatch({ type: "CLEAR_MESSAGES", payload: { keepMessageId } })
       dispatch({ type: "SET_TRACE_EVENTS", payload: [] })
       dispatch({ type: "SET_STEPS", payload: [] })
     }

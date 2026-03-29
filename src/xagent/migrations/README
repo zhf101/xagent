@@ -1,1 +1,18 @@
-Generic single-database configuration.
+Xagent 数据库迁移目录说明
+==========================
+
+当前仓库的关系型数据库迁移策略已经收敛为**单一破坏性基线**：
+
+- 基线迁移：`versions/20260329_destructive_baseline_schema.py`
+- 迁移入口：`xagent.db.try_upgrade_db()`
+- Web 启动初始化：`xagent.web.models.database.init_db()`
+
+详细说明文档见：
+
+- `docs/database-destructive-baseline.md`
+
+说明：
+
+- `versions/` 目录只保留当前有效基线迁移。
+- 历史 revision 的数据库在启动时会被识别并执行**破坏性重建**，然后重新落到当前 head。
+- `lancedb/` 目录仍用于 LanceDB 侧的数据结构迁移，不属于 SQLAlchemy/Alembic 的关系型库基线链。

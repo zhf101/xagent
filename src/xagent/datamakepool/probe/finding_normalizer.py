@@ -9,6 +9,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from xagent.datamakepool.conversation.flow_draft_service import (
+    build_effective_fact_snapshot,
+)
+
 from .planner import PlannedProbe
 
 
@@ -137,7 +141,7 @@ class ProbeFindingNormalizer:
         session: Any,
         step_key: str | None,
     ) -> None:
-        fact_snapshot = dict(getattr(session, "fact_snapshot", {}) or {})
+        fact_snapshot = ProbeFindingNormalizer._effective_fact_snapshot(session)
         for key, value in fact_snapshot.items():
             if value in (None, "", [], {}):
                 continue
@@ -168,3 +172,11 @@ class ProbeFindingNormalizer:
                     "blocking_reason": None,
                 }
             )
+
+    @staticmethod
+    def _effective_fact_snapshot(session: Any) -> dict[str, Any]:
+        """优先读取 active FlowDraft 的参数状态，避免 probe 又退回旧会话快照。"""
+        return build_effective_fact_snapshot(
+            getattr(session, "active_flow_draft", None),
+            fallback=dict(getattr(session, "fact_snapshot", {}) or {}),
+        )

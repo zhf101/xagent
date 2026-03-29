@@ -30,6 +30,7 @@ class DatamakepoolSpecialistAgentTool(AgentTool):
     }
     _FORBIDDEN_GLOBAL_KEYS = {
         "datamakepool_execution_plan",
+        "datamakepool_reuse_hints",
         "datamakepool_compiled_dag",
         "datamakepool_runtime_contract",
         "datamakepool_conversation_ready",
@@ -173,8 +174,8 @@ class DatamakepoolAgentProfile:
 - partial_match 进入你时，说明已有模板覆盖部分需求；你必须优先保留并复用这些步骤
 - no_match 进入你时，说明需要全量动态规划
 - 你应优先产生清晰、可审计、可沉淀为模板的执行步骤
-- 如果上下文中存在 datamakepool_execution_plan / datamakepool_template_match 信息，
-  应把 reusable_steps 视为已知可复用骨架，只对 missing_requirements 做补充规划
+- 如果上下文中存在 datamakepool_reuse_hints / datamakepool_template_match 信息，
+  应把其中的复用骨架视为已知前提，只对 missing_requirements 做补充规划
 - SQL / HTTP / Dubbo / http2mcp 子 agent 只是 step-level 专家，不负责全局会话决策
 - 不得把“是否继续澄清、是否 probe、是否 compile、是否 execute”的主顺序外包给子 agent
 

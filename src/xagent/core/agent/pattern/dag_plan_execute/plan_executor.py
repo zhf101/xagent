@@ -688,6 +688,7 @@ class PlanExecutor:
     def _sanitize_datamakepool_contract_payload(payload: Any) -> Any:
         forbidden_keys = {
             "datamakepool_execution_plan",
+            "datamakepool_reuse_hints",
             "datamakepool_compiled_dag",
             "datamakepool_runtime_contract",
             "datamakepool_conversation_ready",

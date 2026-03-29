@@ -2,6 +2,7 @@ import logging
 from typing import Any, cast
 
 from alembic import command
+from alembic.util.exc import CommandError
 from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
 from alembic.script.revision import ResolutionError
@@ -31,7 +32,7 @@ def revision_exists(alembic_cfg: Any, revision: str) -> bool:
     script = ScriptDirectory.from_config(alembic_cfg)
     try:
         return script.get_revision(revision) is not None
-    except ResolutionError:
+    except (ResolutionError, CommandError):
         return False
 
 

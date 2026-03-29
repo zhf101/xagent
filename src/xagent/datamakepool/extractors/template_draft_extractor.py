@@ -1,9 +1,14 @@
 """模板草稿提取器。
 
-当前版本实现的是 v3 所需的最小闭环：
-1. 从执行前的 execution_plan 骨架中提取步骤
-2. 从参数快照中提取最小 parameter schema
-3. 在执行成功后写入 datamakepool_template_drafts
+当前实现优先消费 runtime 主链冻结出来的 `compiled_dag_payload`，
+把一次成功执行沉淀成可复用的模板草稿；旧 `execution_plan` 仅作为兼容
+入口保留，避免历史链路在迁移期间彻底断裂。
+
+当前边界：
+1. 优先从 compiled DAG 提取步骤、输出契约、来源候选与审批摘要
+2. 兼容从旧 execution_plan 骨架提取步骤
+3. 从参数快照提取最小 parameter schema
+4. 在执行成功后写入 datamakepool_template_drafts
 
 注意：
 - 当前不做完整 trace 级资产回放解析
@@ -31,6 +36,7 @@ class TemplateDraftExtractor:
         task_id: int,
         system_short: str | None,
         created_by: int,
+        compiled_dag_payload: dict[str, Any] | None = None,
         execution_plan: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
         match_type: str | None = None,
@@ -42,11 +48,16 @@ class TemplateDraftExtractor:
         if not result.get("success", False):
             return None
 
-        step_spec = self._build_step_spec(execution_plan)
+        step_spec = self._build_step_spec(
+            execution_plan=execution_plan,
+            compiled_dag_payload=compiled_dag_payload,
+        )
         step_spec = self._augment_step_spec_with_execution_result(step_spec, result)
         param_schema = self._build_param_schema(params or {})
         name = self._build_draft_name(task_description, task_id)
         tags = ["auto_extracted", "orchestrator_success"]
+        if compiled_dag_payload:
+            tags.append("runtime_contract_success")
         if match_type:
             tags.append(match_type)
 
@@ -55,10 +66,10 @@ class TemplateDraftExtractor:
                 """
                 INSERT INTO datamakepool_template_drafts
                     (template_id, name, system_short, status, description,
-                     tags, applicable_systems, step_spec, param_schema, created_by)
+                     tags, applicable_systems, step_spec, param_schema, source_task_id, created_by)
                 VALUES
                     (:template_id, :name, :system_short, :status, :description,
-                     :tags, :applicable_systems, :step_spec, :param_schema, :created_by)
+                     :tags, :applicable_systems, :step_spec, :param_schema, :source_task_id, :created_by)
                 """
             ),
             {
@@ -74,6 +85,7 @@ class TemplateDraftExtractor:
                 ),
                 "step_spec": json.dumps(step_spec, ensure_ascii=False),
                 "param_schema": json.dumps(param_schema, ensure_ascii=False),
+                "source_task_id": task_id,
                 "created_by": created_by,
             },
         )
@@ -87,7 +99,14 @@ class TemplateDraftExtractor:
             summary = f"{summary[:77]}..."
         return f"AutoDraft Task {task_id}: {summary}"
 
-    def _build_step_spec(self, execution_plan: dict[str, Any] | None) -> dict[str, Any]:
+    def _build_step_spec(
+        self,
+        *,
+        compiled_dag_payload: dict[str, Any] | None = None,
+        execution_plan: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if compiled_dag_payload:
+            return self._build_step_spec_from_compiled_dag(compiled_dag_payload)
         if not execution_plan:
             return {"steps": []}
 
@@ -125,6 +144,60 @@ class TemplateDraftExtractor:
             "steps": steps,
             "output_contract": execution_plan.get("output_contract", {}),
         }
+
+    def _build_step_spec_from_compiled_dag(
+        self,
+        compiled_dag_payload: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        compiled = dict(compiled_dag_payload or {})
+        compiled_steps = list(compiled.get("steps") or [])
+        source_candidate = dict(compiled.get("source_candidate") or {})
+        steps: list[dict[str, Any]] = []
+        for index, step in enumerate(compiled_steps, start=1):
+            if not isinstance(step, dict):
+                continue
+            step_kind = str(step.get("kind") or "unknown")
+            steps.append(
+                {
+                    "index": index,
+                    "name": step.get("name") or step.get("step_key") or f"步骤 {index}",
+                    "source": "runtime_compiled_dag",
+                    "executor_type": step_kind,
+                    "step_key": step.get("step_key"),
+                    "target_ref": step.get("target_ref"),
+                    "requirement": step.get("target_ref") or step.get("name"),
+                    "dependencies": list(step.get("dependencies") or []),
+                    "params": dict(step.get("input_data") or {}),
+                    "config": dict(step.get("config") or {}),
+                    "output_contract": dict(step.get("output_contract") or {}),
+                }
+            )
+        return {
+            "plan_type": "runtime_compiled_dag",
+            "draft_id": compiled.get("draft_id"),
+            "draft_version": compiled.get("version"),
+            "source_candidate": source_candidate,
+            "approval_summary": dict(compiled.get("approval_summary") or {}),
+            "steps": steps,
+            "output_contract": self._build_compiled_output_contract(compiled_steps, compiled),
+        }
+
+    @staticmethod
+    def _build_compiled_output_contract(
+        compiled_steps: list[Any],
+        compiled: dict[str, Any],
+    ) -> dict[str, Any]:
+        explicit = compiled.get("output_contract")
+        if isinstance(explicit, dict):
+            return dict(explicit)
+
+        for step in reversed(compiled_steps):
+            if not isinstance(step, dict):
+                continue
+            output_contract = step.get("output_contract")
+            if isinstance(output_contract, dict) and output_contract:
+                return dict(output_contract)
+        return {}
 
     def _augment_step_spec_with_execution_result(
         self,
