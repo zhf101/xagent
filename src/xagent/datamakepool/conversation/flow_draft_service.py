@@ -60,7 +60,7 @@ class FlowDraftService:
         "auto": "自动选择执行路径",
     }
 
-    ACTIVE_STATUSES = {"drafting", "blocked", "probe_ready", "execute_ready"}
+    ACTIVE_STATUSES = {"drafting", "blocked", "probe_ready", "compile_ready", "execute_ready"}
 
     def __init__(self, db: Session):
         self._db = db
@@ -140,6 +140,42 @@ class FlowDraftService:
             .filter(DataMakepoolFlowDraft.id == draft_id)
             .first()
         )
+
+    def export_fact_snapshot(
+        self,
+        draft: DataMakepoolFlowDraft | None,
+        *,
+        fallback: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """把 FlowDraft 子表还原成当前轮次可消费的稳定事实快照。
+
+        设计目的：
+        - 让 ReAct / execution_context 优先读取 draft 的中间真相，而不是直接依赖 session.fact_snapshot
+        - 对仍未迁移的旧字段保留 fallback，避免一次性打断现有链路
+        """
+
+        merged = dict(fallback or {})
+        if draft is None:
+            return merged
+
+        for row in list(getattr(draft, "param_rows", []) or []):
+            if str(row.status or "") == "blocked":
+                continue
+            payload = row.value_payload
+            if isinstance(payload, dict) and "value" in payload:
+                value = payload.get("value")
+            else:
+                value = payload
+            if value not in (None, "", [], {}):
+                merged[str(row.param_key)] = value
+
+        if getattr(draft, "source_candidate_id", None):
+            merged["selected_candidate_id"] = str(draft.source_candidate_id)
+        if getattr(draft, "source_candidate_type", None):
+            merged["selected_source_type"] = str(draft.source_candidate_type)
+        if getattr(draft, "system_short", None) and not merged.get("target_system"):
+            merged["target_system"] = str(draft.system_short)
+        return merged
 
     def mark_probe_pending(self, draft_id: int) -> DataMakepoolFlowDraft | None:
         """兼容旧接口：当前同步 probe 不再有 pending，中间态统一记为 probe_ready。"""
@@ -269,10 +305,16 @@ class FlowDraftService:
             else None
         )
         draft.blocking_reasons = blockers
-        draft.status = str(verdict.get("status") or ("execute_ready" if verdict.get("ready") else "blocked"))
-        draft.compiled_dag_payload = (
-            self._compiler.compile(draft) if bool(verdict.get("ready")) else None
+        draft.status = str(
+            verdict.get("status")
+            or ("execute_ready" if verdict.get("ready") else "blocked")
         )
+        if bool(verdict.get("compile_ready")):
+            draft.compiled_dag_payload = draft.compiled_dag_payload or self._compiler.compile(
+                draft
+            )
+        else:
+            draft.compiled_dag_payload = None
         self._db.add(draft)
         self._db.commit()
         self._db.refresh(draft)

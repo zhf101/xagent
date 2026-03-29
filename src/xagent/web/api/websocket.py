@@ -1248,9 +1248,7 @@ async def handle_chat_message(
             from .chat import get_agent_manager
             from ...datamakepool.conversation import (
                 DataGenerationConversationOrchestrator,
-                ConversationRuntimeService,
                 ConversationResponseBuilder,
-                DataGenerationConversationService,
                 ProbeService,
             )
             from ...datamakepool.gateway import DatamakepoolTaskModeGateway
@@ -2078,6 +2076,8 @@ async def handle_execute_task(
                         requester_id=int(user.id),
                         domain_mode=mode_decision.domain_mode,
                         system_short=generation_system_short,
+                        runtime_contract=task_context.get("datamakepool_runtime_contract"),
+                        execution_run_id=task_context.get("datamakepool_execution_run_id"),
                     )
                     if approval_pause.requires_pause:
                         await agent_service.pause_execution()
@@ -2088,6 +2088,33 @@ async def handle_execute_task(
                             },
                             task_id,
                         )
+                        return
+
+                    runtime_result = await conversation_orchestrator.handle_runtime_contract_execute(
+                        task=task,
+                        task_id=int(task_id),
+                        user=user,
+                        task_context=task_context,
+                        session=session,
+                        event_callback=lambda message: manager.broadcast_to_task(
+                            message,
+                            task_id,
+                        ),
+                    )
+                    if runtime_result.refresh_prompt_recommendation:
+                        schedule_user_task_prompt_refresh(int(user.id), force=True)
+                    if runtime_result.should_return and runtime_result.response_payload:
+                        await manager.broadcast_to_task(
+                            {
+                                **runtime_result.response_payload,
+                                "timestamp": datetime.now(timezone.utc).timestamp(),
+                            },
+                            task_id,
+                        )
+                        return
+                    raise RuntimeError(
+                        "data_generation 执行入口未产出 runtime contract 结果，旧 agent 回退已被禁用"
+                    )
 
                 # Execute task with automatic token tracking
                 result = await agent_manager.execute_task(
@@ -2674,10 +2701,19 @@ async def handle_execute_direct(
             fact_snapshot = dict(session.fact_snapshot or {})
             fact_snapshot["reuse_strategy"] = "direct_execute"
             fact_snapshot["selected_candidate_id"] = candidate_id
+            if strategy == "template_direct":
+                fact_snapshot["selected_source_type"] = "template"
+            elif strategy == "legacy_direct":
+                fact_snapshot["selected_source_type"] = "legacy_scenario"
             session.fact_snapshot = fact_snapshot
             session.state = "direct_executing"
             db.add(session)
             db.commit()
+            conversation_service._sync_flow_draft(  # type: ignore[attr-defined]
+                session=session,
+                fact_snapshot=fact_snapshot,
+                reasoning_result=None,
+            )
             execution_run = runtime_service.create_execution_run(
                 session=session,
                 task_id=int(task.id),

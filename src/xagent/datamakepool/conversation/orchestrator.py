@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from xagent.core.workspace import TaskWorkspace
+from xagent.datamakepool.approvals import ApprovalService
 from xagent.datamakepool.interceptors import ApprovalGate
 from xagent.datamakepool.orchestration import TemplateRunExecutor
 from xagent.web.config import UPLOADS_DIR
@@ -52,6 +53,13 @@ class TemplateDirectHandlingResult:
 
 
 @dataclass
+class RuntimeContractHandlingResult:
+    should_return: bool
+    response_payload: dict[str, Any] | None = None
+    refresh_prompt_recommendation: bool = False
+
+
+@dataclass
 class ApprovalPauseResult:
     requires_pause: bool
     response_payload: dict[str, Any] | None = None
@@ -64,6 +72,7 @@ class DataGenerationConversationOrchestrator:
         self._db = db
         self._service = DataGenerationConversationService(db, user_id=user_id)
         self._runtime = ConversationRuntimeService(db)
+        self._approval_service = ApprovalService(db)
 
     @property
     def service(self) -> DataGenerationConversationService:
@@ -200,6 +209,7 @@ class DataGenerationConversationOrchestrator:
                 or None,
                 input_payload={
                     "compiled_dag": execution_context.get("datamakepool_compiled_dag"),
+                    "runtime_contract": execution_context.get("datamakepool_runtime_contract"),
                     "facts": dict(
                         execution_context.get("datamakepool_conversation_facts") or {}
                     ),
@@ -431,6 +441,190 @@ class DataGenerationConversationOrchestrator:
         ).strip()
         return TemplateDirectHandlingResult(False)
 
+    async def handle_runtime_contract_execute(
+        self,
+        *,
+        task: Task,
+        task_id: int,
+        user: Any,
+        task_context: dict[str, Any],
+        session: Any,
+        event_callback: Any,
+    ) -> RuntimeContractHandlingResult:
+        """当 compiled DAG 已闭合时，优先走 runtime contract 真执行链。"""
+
+        compiled_dag_payload = task_context.get("datamakepool_compiled_dag")
+        runtime_contract = task_context.get("datamakepool_runtime_contract")
+        execution_run_id = task_context.get("datamakepool_execution_run_id")
+        if not isinstance(compiled_dag_payload, dict) or not isinstance(runtime_contract, dict):
+            return self._build_runtime_execute_blocked_result(
+                task=task,
+                session=session,
+                message="当前 FlowDraft 还没有生成可执行的 compiled_dag/runtime_contract，不能进入正式执行。",
+                execution_run_id=execution_run_id,
+            )
+        if list(runtime_contract.get("unresolved_mappings") or []):
+            return self._build_runtime_execute_blocked_result(
+                task=task,
+                session=session,
+                message="当前 FlowDraft 仍存在未闭合的步骤映射，系统不会回退到旧 agent 规划执行。",
+                execution_run_id=execution_run_id,
+            )
+
+        class RuntimeContractRequest:
+            def __init__(self, user_id: int, is_admin: bool):
+                self.user: Any = type(
+                    "obj",
+                    (),
+                    {"id": user_id, "is_admin": is_admin},
+                )()
+                self.credentials: Any = None
+
+        workspace = TaskWorkspace(
+            id=f"web_task_{task_id}",
+            base_dir=str(UPLOADS_DIR / f"user_{user.id}"),
+        )
+        runtime_tool_config = WebToolConfig(
+            db=self._db,
+            request=RuntimeContractRequest(int(user.id), bool(user.is_admin)),
+            user_id=int(user.id),
+            is_admin=bool(user.is_admin),
+            include_mcp_tools=False,
+            task_id=str(task_id),
+            browser_tools_enabled=False,
+        )
+        template_executor = TemplateRunExecutor(
+            self._db,
+            workspace=workspace,
+            mcp_configs=runtime_tool_config.get_mcp_server_configs(),
+            user_id=int(user.id),
+            event_callback=event_callback,
+        )
+        runtime_support = template_executor.analyze_compiled_plan(compiled_dag_payload)
+        task_context["datamakepool_runtime_contract_support"] = runtime_support.to_dict()
+        if not runtime_support.executable:
+            return self._build_runtime_execute_blocked_result(
+                task=task,
+                session=session,
+                message=(
+                    "FlowDraft runtime contract 当前还不能直连 runtime executor。"
+                    f"原因：{runtime_support.reason}"
+                ),
+                execution_run_id=execution_run_id,
+                metadata={
+                    "runtime_contract_support": runtime_support.to_dict(),
+                },
+            )
+
+        runtime_result = await template_executor.execute_compiled_plan(
+            task_id=int(task_id),
+            created_by=int(user.id),
+            compiled_dag_payload=compiled_dag_payload,
+        )
+        if getattr(runtime_result, "paused", False):
+            task.status = task.status.__class__.PAUSED
+        else:
+            task.status = (
+                task.status.__class__.COMPLETED
+                if runtime_result.success
+                else task.status.__class__.FAILED
+            )
+        self._db.add(task)
+        self._db.commit()
+
+        if execution_run_id:
+            self._runtime.finish_execution_run(
+                run_id=int(execution_run_id),
+                status=(
+                    "paused"
+                    if getattr(runtime_result, "paused", False)
+                    else "completed"
+                    if runtime_result.success
+                    else "failed"
+                ),
+                summary=str(runtime_result.output or ""),
+                result_payload={
+                    "success": bool(runtime_result.success),
+                    "output": runtime_result.output,
+                    "metadata": runtime_result.metadata or {},
+                },
+            )
+
+        if getattr(runtime_result, "paused", False):
+            approval = (
+                runtime_result.metadata.get("approval")
+                if isinstance(runtime_result.metadata, dict)
+                else None
+            )
+            payload = ConversationResponseBuilder.build_task_paused_payload(
+                task=task,
+                session=session,
+                message=str(runtime_result.output or ""),
+                approval=approval,
+                metadata=runtime_result.metadata or {},
+            )
+        else:
+            runtime_metadata = dict(runtime_result.metadata or {})
+            runtime_metadata.pop("execution_type", None)
+            payload = ConversationResponseBuilder.build_task_completed_payload(
+                task=task,
+                session=session,
+                success=bool(runtime_result.success),
+                result_text=str(runtime_result.output or ""),
+                execution_type="datamakepool_runtime_contract_execute",
+                extra_metadata=runtime_metadata,
+            )
+        return RuntimeContractHandlingResult(
+            should_return=True,
+            response_payload=payload,
+            refresh_prompt_recommendation=bool(runtime_result.success),
+        )
+
+    def _build_runtime_execute_blocked_result(
+        self,
+        *,
+        task: Task,
+        session: Any,
+        message: str,
+        execution_run_id: int | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> RuntimeContractHandlingResult:
+        """执行入口严格只认 runtime contract，条件不满足时直接阻断，不再回退旧 agent。"""
+
+        task.status = task.status.__class__.PENDING
+        self._db.add(task)
+        session.state = "clarifying"
+        session.latest_summary = str(message)
+        self._db.add(session)
+        self._db.commit()
+        if execution_run_id:
+            self._runtime.finish_execution_run(
+                run_id=int(execution_run_id),
+                status="blocked",
+                summary=str(message),
+                result_payload={
+                    "success": False,
+                    "metadata": {
+                        "execution_type": "datamakepool_runtime_execute_blocked",
+                        **dict(metadata or {}),
+                    },
+                },
+            )
+        payload = ConversationResponseBuilder.build_task_paused_payload(
+            task=task,
+            session=session,
+            message=message,
+            metadata={
+                "execution_type": "datamakepool_runtime_execute_blocked",
+                **dict(metadata or {}),
+            },
+        )
+        return RuntimeContractHandlingResult(
+            should_return=True,
+            response_payload=payload,
+            refresh_prompt_recommendation=False,
+        )
+
     def evaluate_runtime_approval(
         self,
         *,
@@ -440,8 +634,53 @@ class DataGenerationConversationOrchestrator:
         domain_mode: str,
         system_short: str | None = None,
         execution_kind: str | None = None,
+        runtime_contract: dict[str, Any] | None = None,
+        execution_run_id: int | None = None,
     ) -> ApprovalPauseResult:
         """评估运行时审批，并构造暂停响应。"""
+
+        runtime_summary = dict((runtime_contract or {}).get("approval_summary") or {})
+        pending_items = list(runtime_summary.get("pending_items") or [])
+        if pending_items:
+            item = dict(pending_items[0] or {})
+            required_role = str(item.get("required_role") or "system_admin")
+            if not self._approval_service.user_has_approval_role(
+                user_id=int(requester_id),
+                required_role=required_role,
+                system_short=system_short or runtime_summary.get("system_short"),
+            ):
+                approval = self._approval_service.create_approval(
+                    approval_type="conversation_execution_approval",
+                    target_type=(
+                        "conversation_execution_run"
+                        if execution_run_id is not None
+                        else "task"
+                    ),
+                    target_id=int(execution_run_id or task_id),
+                    system_short=str(
+                        system_short or runtime_summary.get("system_short") or ""
+                    )
+                    or None,
+                    required_role=required_role,
+                    requester_id=int(requester_id),
+                    context_data={
+                        "task_description": str(task.description or ""),
+                        "runtime_contract": dict(runtime_contract or {}),
+                        "approval_item": item,
+                    },
+                )
+                self._db.commit()
+                return self._build_approval_pause_result(
+                    task=task,
+                    requester_id=requester_id,
+                    reason=str(item.get("reason") or "runtime_contract_requires_approval"),
+                    ticket_id=int(approval.id),
+                    required_role=required_role,
+                    system_short=str(
+                        system_short or runtime_summary.get("system_short") or ""
+                    )
+                    or None,
+                )
 
         decision = ApprovalGate(self._db).evaluate(
             task_id=int(task_id),
@@ -454,13 +693,32 @@ class DataGenerationConversationOrchestrator:
         if not decision.requires_approval:
             return ApprovalPauseResult(False)
 
+        return self._build_approval_pause_result(
+            task=task,
+            requester_id=requester_id,
+            reason=str(decision.reason),
+            ticket_id=int(decision.ticket_id) if decision.ticket_id is not None else None,
+            required_role=decision.required_role,
+            system_short=system_short,
+        )
+
+    def _build_approval_pause_result(
+        self,
+        *,
+        task: Task,
+        requester_id: int,
+        reason: str,
+        ticket_id: int | None,
+        required_role: str | None,
+        system_short: str | None,
+    ) -> ApprovalPauseResult:
         session = self._service.get_or_create_session(
             task=task,
             user_id=int(requester_id),
             goal=str(task.description or ""),
         )
         session.state = "paused_for_user"
-        session.latest_summary = str(decision.reason)
+        session.latest_summary = str(reason)
         self._db.add(session)
         task.status = task.status.__class__.PAUSED
         self._db.add(task)
@@ -471,9 +729,9 @@ class DataGenerationConversationOrchestrator:
             session=session,
             message="Task paused for approval",
             approval={
-                "ticket_id": decision.ticket_id,
-                "required_role": decision.required_role,
-                "reason": decision.reason,
+                "ticket_id": ticket_id,
+                "required_role": required_role,
+                "reason": reason,
                 "system_short": system_short,
             },
             metadata={

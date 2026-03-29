@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect as pyinspect
 import json
 import re
 from collections.abc import Awaitable, Callable
@@ -22,6 +23,9 @@ from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session
 
 from xagent.datamakepool.approvals import ApprovalService
+from xagent.datamakepool.conversation.runtime_adapter import (
+    CompiledPlanRuntimeAdapter,
+)
 from xagent.core.workspace import TaskWorkspace
 from xagent.datamakepool.interpreter.template_matcher import MatchedTemplate
 from xagent.datamakepool.runtime import (
@@ -231,6 +235,160 @@ class TemplateRunExecutor:
             run_id=run_id,
             existing_steps={},
             resumed=False,
+            increment_template_usage=True,
+        )
+
+    def analyze_compiled_plan(
+        self,
+        compiled_dag_payload: dict[str, Any] | None,
+    ) -> TemplateDirectExecutionSupport:
+        """评估 compiled DAG 是否已经具备 runtime 真执行条件。"""
+
+        contract = CompiledPlanRuntimeAdapter().adapt(compiled_dag_payload)
+        unresolved = list(contract.get("unresolved_mappings") or [])
+        if unresolved:
+            return TemplateDirectExecutionSupport(
+                executable=False,
+                reason="compiled_plan_has_unresolved_mappings",
+                step_count=len(list(contract.get("steps") or [])),
+                unsupported_steps=[
+                    {
+                        "step_order": 0,
+                        "step_name": "runtime_contract",
+                        "reason": "compiled_plan_has_unresolved_mappings",
+                    }
+                ],
+            )
+
+        runtime_context = self._build_runtime_context(dict(contract.get("params") or {}))
+        runtime_steps: list[TemplateRuntimeStep] = []
+        unsupported_steps: list[dict[str, Any]] = []
+        for index, item in enumerate(list(contract.get("steps") or []), start=1):
+            try:
+                runtime_step = self._build_runtime_step_from_compiled_item(item, index=index)
+                if not self._registry.has(runtime_step.kind):
+                    raise ValueError(self._unsupported_reason(runtime_step.kind))
+                self._registry.validate(runtime_step, runtime_context)
+                runtime_steps.append(runtime_step)
+            except Exception as exc:
+                unsupported_steps.append(
+                    {
+                        "step_order": int(item.get("order") or index),
+                        "step_name": str(
+                            item.get("name") or item.get("step_key") or f"step_{index}"
+                        ),
+                        "reason": str(exc),
+                    }
+                )
+
+        if not runtime_steps and not unsupported_steps:
+            unsupported_steps.append(
+                {
+                    "step_order": 0,
+                    "step_name": "runtime_contract",
+                    "reason": "compiled_plan_has_no_executable_steps",
+                }
+            )
+
+        if not unsupported_steps:
+            try:
+                runtime_steps = self._scheduler.order_steps(runtime_steps)
+            except Exception as exc:
+                unsupported_steps.append(
+                    {
+                        "step_order": 0,
+                        "step_name": "runtime_contract",
+                        "reason": str(exc),
+                    }
+                )
+
+        return TemplateDirectExecutionSupport(
+            executable=not unsupported_steps,
+            reason=(unsupported_steps[0]["reason"] if unsupported_steps else "ok"),
+            step_count=len(list(contract.get("steps") or [])),
+            unsupported_steps=unsupported_steps,
+            prepared_steps=runtime_steps,
+        )
+
+    async def execute_compiled_plan(
+        self,
+        *,
+        task_id: int,
+        created_by: int,
+        compiled_dag_payload: dict[str, Any] | None,
+    ) -> TemplateRunExecutionResult:
+        """按 compiled DAG / runtime contract 直接走 runtime executor。"""
+
+        contract = CompiledPlanRuntimeAdapter().adapt(compiled_dag_payload)
+        support = self.analyze_compiled_plan(compiled_dag_payload)
+        if not support.executable:
+            return TemplateRunExecutionResult(
+                success=False,
+                run_id=None,
+                template_id=int(contract.get("draft_id") or 0),
+                version=int(contract.get("version") or 1),
+                step_count=support.step_count,
+                output=(
+                    "FlowDraft runtime contract 当前还不能直接执行："
+                    f"{support.reason}"
+                ),
+                metadata={
+                    "execution_type": "datamakepool_runtime_contract_run",
+                    "draft_id": contract.get("draft_id"),
+                    "draft_version": contract.get("version"),
+                    "run_type": RunType.AGENT_GENERATED_RUN.value,
+                    "unsupported_steps": support.unsupported_steps,
+                },
+            )
+
+        params = dict(contract.get("params") or {})
+        runtime_context = self._build_runtime_context(params)
+        run_id = self._create_generated_run(
+            task_id=task_id,
+            created_by=created_by,
+            contract=contract,
+            compiled_dag_payload=compiled_dag_payload,
+        )
+        runtime_context.set_run_id(run_id)
+        draft_id = self._coerce_int(contract.get("draft_id")) or 0
+        matched = MatchedTemplate(
+            template_id=draft_id,
+            template_name=str(
+                contract.get("goal_summary")
+                or f"flow_draft_{draft_id or 'runtime_contract'}"
+            ),
+            confidence=1.0,
+            version=int(contract.get("version") or 1),
+            system_short=str(contract.get("system_short") or "").strip() or None,
+        )
+        result = await self._continue_run(
+            task_id=task_id,
+            actor_id=created_by,
+            matched=matched,
+            params=params,
+            support=support,
+            runtime_context=runtime_context,
+            run_id=run_id,
+            existing_steps={},
+            resumed=False,
+            increment_template_usage=False,
+        )
+        metadata = {
+            **dict(result.metadata or {}),
+            "execution_type": "datamakepool_runtime_contract_run",
+            "draft_id": contract.get("draft_id"),
+            "draft_version": contract.get("version"),
+            "run_type": RunType.AGENT_GENERATED_RUN.value,
+        }
+        return TemplateRunExecutionResult(
+            success=result.success,
+            run_id=result.run_id,
+            template_id=draft_id,
+            version=int(contract.get("version") or result.version or 1),
+            step_count=result.step_count,
+            output=result.output,
+            metadata=metadata,
+            paused=result.paused,
         )
 
     async def resume_latest_run(
@@ -335,6 +493,7 @@ class TemplateRunExecutor:
             run_id=int(run.id),
             existing_steps=existing_steps,
             resumed=True,
+            increment_template_usage=True,
         )
 
     async def _continue_run(
@@ -349,6 +508,7 @@ class TemplateRunExecutor:
         run_id: int | None,
         existing_steps: dict[tuple[int, str], DataMakepoolRunStep],
         resumed: bool,
+        increment_template_usage: bool = True,
     ) -> TemplateRunExecutionResult:
         ordered_steps = self._scheduler.order_steps(list(support.prepared_steps))
         step_results = self._build_existing_step_summaries(existing_steps, ordered_steps)
@@ -645,7 +805,7 @@ class TemplateRunExecutor:
             f"模板「{matched.template_name}」已完成 {len(ordered_steps)} 个执行步骤。",
             None,
         )
-        if not resumed:
+        if not resumed and increment_template_usage:
             self._increment_used_count(matched.template_id)
         await self._emit_runtime_event(
             "datamakepool_template_run_completed",
@@ -1016,6 +1176,105 @@ class TemplateRunExecutor:
             ),
         )
 
+    def _build_runtime_step_from_compiled_item(
+        self,
+        item: dict[str, Any],
+        *,
+        index: int,
+    ) -> TemplateRuntimeStep:
+        config_payload = self._normalize_runtime_refs(dict(item.get("config") or {}))
+        input_snapshot = self._normalize_runtime_refs(
+            dict(item.get("input_snapshot") or {})
+        )
+        kind = str(item.get("kind") or "").strip().lower()
+        raw_step: dict[str, Any] = {
+            "order": int(item.get("order") or index),
+            "name": str(item.get("name") or item.get("step_key") or f"step_{index}"),
+            "kind": kind,
+            "dependencies": list(item.get("dependencies") or []),
+            "approval_policy": str(item.get("approval_policy") or "none"),
+            "required_approval_role": item.get("required_approval_role"),
+            "target_ref": item.get("target_ref"),
+            **config_payload,
+        }
+        asset_id = self._coerce_int(config_payload.get("asset_id")) or self._asset_id_from_target_ref(
+            kind=kind,
+            target_ref=item.get("target_ref"),
+        )
+        if asset_id is not None:
+            raw_step["asset_id"] = asset_id
+
+        if kind == "sql":
+            if "sql" in input_snapshot:
+                raw_step.setdefault("sql", input_snapshot.get("sql"))
+            if "datasource_asset_id" in input_snapshot:
+                raw_step.setdefault(
+                    "datasource_asset_id", input_snapshot.get("datasource_asset_id")
+                )
+        elif kind == "http":
+            if isinstance(input_snapshot.get("request_spec"), dict):
+                raw_step.setdefault("request_spec", input_snapshot.get("request_spec"))
+            else:
+                for field in (
+                    "url",
+                    "method",
+                    "headers",
+                    "query_params",
+                    "json_body",
+                    "form_fields",
+                    "raw_body",
+                    "file_parts",
+                    "auth_type",
+                    "auth_token",
+                    "api_key_param",
+                    "timeout",
+                    "retry_count",
+                    "allow_redirects",
+                    "download",
+                    "response_extract",
+                ):
+                    if field in input_snapshot:
+                        raw_step.setdefault(field, input_snapshot.get(field))
+        elif kind == "mcp":
+            if "server_name" in input_snapshot:
+                raw_step.setdefault("server_name", input_snapshot.get("server_name"))
+            if "tool_name" in input_snapshot:
+                raw_step.setdefault("tool_name", input_snapshot.get("tool_name"))
+            if "tool_args" in input_snapshot:
+                raw_step.setdefault("tool_args", input_snapshot.get("tool_args"))
+            elif input_snapshot:
+                raw_step.setdefault("tool_args", input_snapshot)
+        elif kind == "dubbo" and input_snapshot:
+            raw_step.setdefault("parameter_values", input_snapshot)
+
+        return self._build_runtime_step(raw_step)
+
+    @staticmethod
+    def build_runtime_steps_from_compiled_plan(
+        compiled_dag_payload: dict[str, Any] | None,
+    ) -> list[TemplateRuntimeStep]:
+        """把 compiled plan 转成 runtime step 契约。"""
+
+        contract = CompiledPlanRuntimeAdapter().adapt(compiled_dag_payload)
+        steps: list[TemplateRuntimeStep] = []
+        for item in list(contract.get("steps") or []):
+            steps.append(
+                TemplateRuntimeStep(
+                    order=int(item.get("order") or len(steps) + 1),
+                    name=str(item.get("name") or item.get("step_key") or "step"),
+                    kind=str(item.get("kind") or ""),
+                    raw_step=dict(item),
+                    approval_policy=str(item.get("approval_policy") or "none"),
+                    input_data=dict(item.get("input_snapshot") or {}),
+                    config=dict(item.get("config") or {}),
+                    dependencies=list(item.get("dependencies") or []),
+                    required_approval_role=(
+                        str(item.get("required_approval_role") or "").strip() or None
+                    ),
+                )
+            )
+        return steps
+
     def _resolve_asset(self, asset_id: Any) -> DataMakepoolAsset | None:
         normalized = self._coerce_int(asset_id)
         if normalized is None:
@@ -1055,16 +1314,60 @@ class TemplateRunExecutor:
         matched: MatchedTemplate,
         params: dict[str, Any],
     ) -> int | None:
+        return self._create_run_record(
+            task_id=task_id,
+            created_by=created_by,
+            run_type=RunType.TEMPLATE_RUN.value,
+            system_short=matched.system_short or params.get("system_short"),
+            input_params=params,
+            template_id=matched.template_id,
+            template_version=matched.version,
+        )
+
+    def _create_generated_run(
+        self,
+        *,
+        task_id: int,
+        created_by: int,
+        contract: dict[str, Any],
+        compiled_dag_payload: dict[str, Any] | None,
+    ) -> int | None:
+        return self._create_run_record(
+            task_id=task_id,
+            created_by=created_by,
+            run_type=RunType.AGENT_GENERATED_RUN.value,
+            system_short=contract.get("system_short"),
+            input_params={
+                "draft_id": contract.get("draft_id"),
+                "draft_version": contract.get("version"),
+                "params": dict(contract.get("params") or {}),
+                "compiled_dag_payload": self._json_safe(compiled_dag_payload or {}),
+            },
+            template_id=None,
+            template_version=None,
+        )
+
+    def _create_run_record(
+        self,
+        *,
+        task_id: int,
+        created_by: int,
+        run_type: str,
+        system_short: Any,
+        input_params: dict[str, Any],
+        template_id: int | None,
+        template_version: int | None,
+    ) -> int | None:
         if not self._ledger_available():
             return None
         run = DataMakepoolRun(
             task_id=task_id,
-            run_type=RunType.TEMPLATE_RUN.value,
+            run_type=run_type,
             status=RunStatus.RUNNING.value,
-            system_short=matched.system_short or params.get("system_short"),
-            template_id=matched.template_id,
-            template_version=matched.version,
-            input_params=self._json_safe(params),
+            system_short=str(system_short or "").strip() or None,
+            template_id=template_id,
+            template_version=template_version,
+            input_params=self._json_safe(input_params),
             created_by=created_by,
             started_at=datetime.now(timezone.utc),
         )
@@ -1291,7 +1594,7 @@ class TemplateRunExecutor:
             "data": data,
         }
         result = self._event_callback(payload)
-        if inspect.isawaitable(result):
+        if pyinspect.isawaitable(result):
             await result
 
     @staticmethod
@@ -1335,6 +1638,35 @@ class TemplateRunExecutor:
         if normalized in {"manual_review", "required", "always"}:
             return "system_admin"
         return None
+
+    def _asset_id_from_target_ref(self, *, kind: str, target_ref: Any) -> int | None:
+        text = str(target_ref or "").strip()
+        if not text:
+            return None
+        direct = self._coerce_int(text)
+        if direct is not None:
+            return direct
+        if ":" not in text:
+            return None
+        prefix, raw_id = text.split(":", 1)
+        normalized_prefix = prefix.strip().lower()
+        if normalized_prefix not in {kind, "asset"}:
+            return None
+        return self._coerce_int(raw_id.strip())
+
+    def _normalize_runtime_refs(self, value: Any) -> Any:
+        if isinstance(value, dict):
+            if set(value.keys()) == {"$ref"} and isinstance(value.get("$ref"), str):
+                ref = str(value.get("$ref") or "").strip()
+                if ref.startswith("steps."):
+                    return f"{{{{{ref}}}}}"
+            return {
+                key: self._normalize_runtime_refs(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [self._normalize_runtime_refs(item) for item in value]
+        return value
 
     @staticmethod
     def _coerce_int(value: Any) -> int | None:

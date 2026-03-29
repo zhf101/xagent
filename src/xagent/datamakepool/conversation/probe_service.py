@@ -9,6 +9,11 @@ from sqlalchemy.orm import Session
 
 from xagent.datamakepool.sql_brain.execution_probe import SqlExecutionProbe
 from xagent.datamakepool.sql_brain.models import SqlExecutionProbeTarget
+from xagent.datamakepool.probe import (
+    FlowDraftProbeDraftApplier,
+    FlowDraftProbePlanner,
+    ProbeFindingNormalizer,
+)
 from xagent.datamakepool.templates import TemplateService
 from xagent.web.models.datamakepool_asset import DataMakepoolAsset
 from xagent.web.models.datamakepool_conversation import DataMakepoolConversationSession
@@ -35,18 +40,51 @@ class ProbeService:
         self._template_service = TemplateService(db)
         self._runtime = ConversationRuntimeService(db)
         self._flow_draft_service = FlowDraftService(db)
+        self._planner = FlowDraftProbePlanner()
+        self._normalizer = ProbeFindingNormalizer()
+        self._draft_applier = FlowDraftProbeDraftApplier(self._flow_draft_service)
 
     def run_probe(
         self,
         *,
         session: DataMakepoolConversationSession,
-        probe_type: str,
-        target_ref: str,
+        probe_type: str | None,
+        target_ref: str | None,
         payload: dict[str, Any] | None = None,
         mode: str = "preview",
     ) -> dict[str, Any]:
         payload = dict(payload or {})
-        probe_type = str(probe_type).strip().lower()
+        active_draft = None
+        if getattr(session, "active_flow_draft_id", None) is not None:
+            active_draft = self._flow_draft_service.get_draft_by_id(
+                int(session.active_flow_draft_id)
+            )
+        planned_probe = self._planner.plan(
+            draft=active_draft,
+            preferred_probe_type=probe_type,
+            preferred_target_ref=target_ref,
+            mode=mode,
+        )
+        if planned_probe is None:
+            return {
+                "success": False,
+                "summary": "当前没有可执行的 probe 目标",
+                "message": "当前草稿里还没有可执行的 probe 目标，请先完成候选选择或补齐关键参数。",
+                "raw_result": {
+                    "requested_probe_type": probe_type,
+                    "requested_target_ref": target_ref,
+                },
+                "ui": {
+                    "type": "probe_result",
+                    "message": "当前草稿里还没有可执行的 probe 目标，请先完成候选选择或补齐关键参数。",
+                    "data": {
+                        "probe_type": probe_type,
+                        "target_ref": target_ref,
+                    },
+                },
+            }
+        probe_type = str(planned_probe.probe_type).strip().lower()
+        target_ref = str(planned_probe.target_ref)
         run = self._runtime.create_execution_run(
             session=session,
             task_id=int(session.task_id),
@@ -60,7 +98,7 @@ class ProbeService:
             target_ref=target_ref,
             input_payload={
                 "probe_type": probe_type,
-                "mode": mode,
+                "mode": planned_probe.mode,
                 "payload": payload,
             },
         )
@@ -96,10 +134,9 @@ class ProbeService:
         self._db.commit()
         self._db.refresh(row)
 
-        draft_findings, param_updates, mapping_updates, step_updates = self._build_draft_feedback(
+        feedback = self._normalizer.normalize(
             session=session,
-            probe_type=probe_type,
-            target_ref=target_ref,
+            planned_probe=planned_probe,
             result=result,
             probe_run_id=int(row.id),
         )
@@ -108,28 +145,8 @@ class ProbeService:
             if getattr(session, "active_flow_draft_id", None) is not None
             else None
         )
-        if active_draft_id is not None:
-            self._flow_draft_service.apply_probe_findings(
-                active_draft_id,
-                findings=draft_findings,
-                param_updates=param_updates,
-                mapping_updates=mapping_updates,
-                step_updates=step_updates,
-            )
+        self._draft_applier.apply(draft_id=active_draft_id, feedback=feedback)
 
-        fact_snapshot = dict(session.fact_snapshot or {})
-        probe_findings = list(fact_snapshot.get("probe_findings") or [])
-        probe_findings.append(
-            {
-                "probe_run_id": int(row.id),
-                "probe_type": probe_type,
-                "target_ref": target_ref,
-                "success": bool(result.get("success")),
-                "summary": result.get("summary"),
-            }
-        )
-        fact_snapshot["probe_findings"] = probe_findings[-20:]
-        session.fact_snapshot = fact_snapshot
         session.state = "clarifying"
         session.latest_summary = str(result.get("summary") or "")
         self._db.add(session)
@@ -160,146 +177,13 @@ class ProbeService:
                     "probe_run_id": int(row.id),
                     "probe_type": probe_type,
                     "target_ref": target_ref,
+                    "reason": planned_probe.reason,
                     "summary": result.get("summary"),
                     "raw_result": result.get("raw_result"),
                     "findings": result.get("findings") or [],
                 },
             },
         }
-
-    def _build_draft_feedback(
-        self,
-        *,
-        session: DataMakepoolConversationSession,
-        probe_type: str,
-        target_ref: str,
-        result: dict[str, Any],
-        probe_run_id: int,
-    ) -> tuple[
-        list[dict[str, Any]],
-        list[dict[str, Any]],
-        list[dict[str, Any]],
-        list[dict[str, Any]],
-    ]:
-        """把 probe 结果转成 FlowDraft 可消费的结构化补丁。"""
-
-        active_draft = None
-        if getattr(session, "active_flow_draft_id", None) is not None:
-            active_draft = self._flow_draft_service.get_draft_by_id(int(session.active_flow_draft_id))
-
-        step_key = self._match_step_key(
-            draft=active_draft,
-            probe_type=probe_type,
-            target_ref=target_ref,
-        )
-        success = bool(result.get("success"))
-        summary = str(result.get("summary") or "")
-        raw_findings = list(result.get("findings") or [])
-
-        normalized_findings = [
-            {
-                "probe_run_id": probe_run_id,
-                "step_key": step_key,
-                "step_name": step_key,
-                "probe_type": probe_type,
-                "target_ref": target_ref,
-                "verdict": "passed" if success else "blocker",
-                "severity": "info" if success else "error",
-                "detail": summary,
-                "raw_findings": raw_findings,
-            }
-        ]
-
-        param_updates: list[dict[str, Any]] = []
-        mapping_updates: list[dict[str, Any]] = []
-        step_updates: list[dict[str, Any]] = []
-
-        if step_key:
-            step_updates.append(
-                {
-                    "step_key": step_key,
-                    "status": "probe_ready" if success else "blocked",
-                    "blocking_reason": None if success else summary,
-                }
-            )
-
-        if not success:
-            for finding in raw_findings:
-                if isinstance(finding, str):
-                    param_key = str(finding).strip()
-                    if not param_key:
-                        continue
-                    param_updates.append(
-                        {
-                            "param_key": param_key,
-                            "status": "blocked",
-                            "blocking_reason": f"probe 缺少参数：{param_key}",
-                        }
-                    )
-                    if step_key:
-                        mapping_updates.append(
-                            {
-                                "target_step_key": step_key,
-                                "target_field": param_key,
-                                "status": "blocked",
-                                "blocking_reason": f"{step_key}.{param_key} 缺少可用输入",
-                            }
-                        )
-        else:
-            fact_snapshot = dict(session.fact_snapshot or {})
-            for key, value in fact_snapshot.items():
-                if value in (None, "", [], {}):
-                    continue
-                param_updates.append(
-                    {
-                        "param_key": str(key),
-                        "value": value,
-                        "status": "ready",
-                        "blocking_reason": None,
-                    }
-                )
-            if step_key:
-                for target_field in (
-                    "target_system",
-                    "target_entity",
-                    "target_environment",
-                    "execution_method",
-                    "data_count",
-                    "field_constraints",
-                    "data_dependencies",
-                ):
-                    mapping_updates.append(
-                        {
-                            "target_step_key": step_key,
-                            "target_field": target_field,
-                            "status": "ready",
-                            "blocking_reason": None,
-                        }
-                    )
-
-        return normalized_findings, param_updates, mapping_updates, step_updates
-
-    @staticmethod
-    def _match_step_key(
-        *,
-        draft: Any,
-        probe_type: str,
-        target_ref: str,
-    ) -> str | None:
-        if draft is None:
-            return None
-        executor_alias = {
-            "sql_asset": "sql",
-            "http_asset": "http",
-            "template": "template",
-        }.get(probe_type, probe_type)
-        for step in list(getattr(draft, "step_rows", []) or []):
-            if str(step.target_ref or "") == str(target_ref):
-                return str(step.step_key)
-        for step in list(getattr(draft, "step_rows", []) or []):
-            if str(step.executor_type or "") == executor_alias:
-                return str(step.step_key)
-        return None
 
     def _probe_sql_asset(
         self,

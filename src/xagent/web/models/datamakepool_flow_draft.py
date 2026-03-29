@@ -26,6 +26,7 @@ class DataMakepoolFlowDraft(Base):  # type: ignore
         drafting       草稿仍在收敛，结构已建立但尚未达到 probe/execute 就绪
         blocked        已发现明确阻塞项，必须修订参数/映射/候选
         probe_ready    结构完整，允许进入 probe
+        compile_ready  probe 关键前提已满足，允许冻结 compiled plan
         execute_ready  readiness gate 判定通过，可正式执行
         archived       被同一会话的新 draft 取代
     """
@@ -62,7 +63,7 @@ class DataMakepoolFlowDraft(Base):  # type: ignore
     # 最新 probe 发现汇总：[{probe_run_id, step_name, verdict, detail}]
     probe_findings = Column(JSON, nullable=True)
 
-    # readiness gate 最新判定：{ready, blockers, score}
+    # readiness gate 最新判定：{probe_ready, compile_ready, execute_ready, blockers, score}
     readiness_verdict = Column(JSON, nullable=True)
 
     # readiness score 拆成单列，方便排序与审计

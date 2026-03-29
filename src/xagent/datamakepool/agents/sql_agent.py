@@ -22,6 +22,8 @@ class SqlExecutorAgent(VerticalAgent):
             "你是 SQL 造数专家。"
             "你的职责是处理 SQL 相关的造数步骤，优先检查已治理 SQL 资产，"
             "在需要时生成安全、可审计的 SQL 执行方案。"
+            "你只负责单个 step 的 SQL 求解 / probe / 映射解释，"
+            "不负责决定全局会话是否继续澄清、是否 compile、是否 execute。"
         )
 
     def _get_domain_tools(self, **kwargs: Any) -> Sequence[Tool]:

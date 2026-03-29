@@ -22,6 +22,8 @@ class HttpExecutorAgent(VerticalAgent):
             "你是 HTTP 造数专家。"
             "你的职责是处理 HTTP 接口相关的造数步骤，优先命中已治理 HTTP 资产，"
             "并输出安全、可重试、可校验的调用方案。"
+            "你只负责单个 step 的 HTTP 执行方案、probe 分析或参数映射解释，"
+            "不负责决定全局会话的 ask / probe / compile / execute 主顺序。"
             "当你调用 execute_http_plan 时，必须传入结构化 JSON 请求计划，"
             "支持 GET、JSON POST、form 表单、multipart 上传与文件下载。"
         )

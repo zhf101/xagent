@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import List
+from copy import deepcopy
+from typing import Any, List
 
 from xagent.core.agent.tools.agent_tool import AgentTool
 from xagent.core.tools.adapters.vibe import Tool
@@ -11,6 +12,130 @@ from .dubbo_agent import DubboExecutorAgent
 from .http2mcp_agent import Http2McpExecutorAgent
 from .http_agent import HttpExecutorAgent
 from .sql_agent import SqlExecutorAgent
+
+
+class DatamakepoolSpecialistAgentTool(AgentTool):
+    """对 datamakepool 专业子 agent 增加结构化 contract 约束。
+
+    目标：
+    - 子 agent 只能处理 step-level problem contract
+    - 不允许把全局会话编排上下文直接整包灌给子 agent
+    - 让“只做局部求解”从 prompt 约束升级为工具层硬边界
+    """
+
+    _ALLOWED_PROBLEM_TYPES = {
+        "step_execution",
+        "probe_analysis",
+        "mapping_explanation",
+    }
+    _FORBIDDEN_GLOBAL_KEYS = {
+        "datamakepool_execution_plan",
+        "datamakepool_compiled_dag",
+        "datamakepool_runtime_contract",
+        "datamakepool_conversation_ready",
+        "recommended_action",
+        "allowed_actions",
+    }
+    _EXECUTOR_BY_AGENT = {
+        "sql_executor": {"sql"},
+        "http_executor": {"http"},
+        "dubbo_executor": {"dubbo"},
+        "http2mcp_executor": {"http2mcp", "legacy_scenario"},
+    }
+
+    @classmethod
+    def validate_contract_context(
+        cls,
+        *,
+        agent_name: str,
+        context: dict[str, Any] | None,
+    ) -> None:
+        if not isinstance(context, dict):
+            raise ValueError(
+                f"{agent_name} 缺少结构化 context，必须显式传入 datamakepool_subagent_contract"
+            )
+        forbidden = sorted(key for key in context.keys() if key in cls._FORBIDDEN_GLOBAL_KEYS)
+        if forbidden:
+            raise ValueError(
+                f"{agent_name} 不接受全局会话编排字段: {', '.join(forbidden)}"
+            )
+
+        contract = context.get("datamakepool_subagent_contract")
+        if not isinstance(contract, dict):
+            raise ValueError(
+                f"{agent_name} 缺少 datamakepool_subagent_contract"
+            )
+        if str(contract.get("contract_version") or "").strip() != "v1":
+            raise ValueError(f"{agent_name} 只接受 contract_version=v1 的子任务契约")
+
+        problem_type = str(contract.get("problem_type") or "").strip()
+        if problem_type not in cls._ALLOWED_PROBLEM_TYPES:
+            raise ValueError(
+                f"{agent_name} 收到不支持的问题类型: {problem_type or 'empty'}"
+            )
+
+        step = contract.get("step")
+        if not isinstance(step, dict):
+            raise ValueError(f"{agent_name} 缺少 step 合约")
+        step_key = str(step.get("step_key") or "").strip()
+        executor_type = str(step.get("executor_type") or "").strip().lower()
+        if not step_key:
+            raise ValueError(f"{agent_name} 的 step 合约缺少 step_key")
+        if not executor_type:
+            raise ValueError(f"{agent_name} 的 step 合约缺少 executor_type")
+
+        allowed_executors = cls._EXECUTOR_BY_AGENT.get(agent_name, set())
+        if allowed_executors and executor_type not in allowed_executors:
+            raise ValueError(
+                f"{agent_name} 只能处理 {sorted(allowed_executors)}，但收到 {executor_type}"
+            )
+
+    async def run_json_async(self, args: dict[str, Any]) -> dict[str, Any]:
+        task_args = self.args_type()(**args)
+        self.validate_contract_context(
+            agent_name=str(self.agent.name),
+            context=task_args.context,
+        )
+        return await self._execute_agent(task_args)
+
+    def with_bound_contract(self, contract: dict[str, Any]) -> "DatamakepoolSpecialistAgentTool":
+        """返回一个已绑定 step contract 的 tool 代理。
+
+        作用：
+        - 把 step/problem contract 固化在工具层，而不是让 step 内的 LLM 自行拼接
+        - 即使上游只传 task 文本，也会自动补齐 datamakepool_subagent_contract
+        """
+
+        return _BoundDatamakepoolSpecialistAgentTool(self, contract)
+
+
+class _BoundDatamakepoolSpecialistAgentTool(DatamakepoolSpecialistAgentTool):
+    """为单个 DAG step 绑定 contract 的轻量代理。"""
+
+    def __init__(
+        self,
+        base_tool: DatamakepoolSpecialistAgentTool,
+        contract: dict[str, Any],
+    ) -> None:
+        super().__init__(
+            base_tool.agent,
+            compact_mode=base_tool.compact_mode,
+            custom_description=base_tool.description,
+        )
+        self._base_tool = base_tool
+        self._bound_contract = deepcopy(dict(contract or {}))
+        self._name = base_tool.name
+        self._description = base_tool.description
+        self._visibility = getattr(base_tool, "_visibility", self._visibility)
+
+    async def run_json_async(self, args: dict[str, Any]) -> dict[str, Any]:
+        merged_args = dict(args or {})
+        merged_context = dict(merged_args.get("context") or {})
+        merged_context["datamakepool_subagent_contract"] = deepcopy(
+            self._bound_contract
+        )
+        merged_args["context"] = merged_context
+        return await self._base_tool.run_json_async(merged_args)
 
 
 class DatamakepoolAgentProfile:
@@ -36,10 +161,11 @@ class DatamakepoolAgentProfile:
 你是智能造数平台的编排代理。
 
 你的职责是：
-1. 理解用户的造数需求
-2. 在模板部分命中或未命中的情况下，把需求拆成可执行步骤
-3. 当存在模板可复用步骤时，优先复用模板骨架，再补齐缺失步骤
-4. 通过专业子 agent 完成 SQL / HTTP / Dubbo / MCP 执行
+1. 作为全局 ReAct 主脑，决定 ask / probe / compile / approval / execute 的主顺序
+2. 理解用户的造数需求
+3. 在模板部分命中或未命中的情况下，把需求拆成可执行步骤
+4. 当存在模板可复用步骤时，优先复用模板骨架，再补齐缺失步骤
+5. 通过专业子 agent 完成 SQL / HTTP / Dubbo / MCP 执行
 
 当前阶段：
 - 你已经处于 data_generation 模式
@@ -49,6 +175,8 @@ class DatamakepoolAgentProfile:
 - 你应优先产生清晰、可审计、可沉淀为模板的执行步骤
 - 如果上下文中存在 datamakepool_execution_plan / datamakepool_template_match 信息，
   应把 reusable_steps 视为已知可复用骨架，只对 missing_requirements 做补充规划
+- SQL / HTTP / Dubbo / http2mcp 子 agent 只是 step-level 专家，不负责全局会话决策
+- 不得把“是否继续澄清、是否 probe、是否 compile、是否 execute”的主顺序外包给子 agent
 
 ## 🚫 绝对禁止：用代码生成假数据
 
@@ -111,11 +239,32 @@ class DatamakepoolAgentProfile:
         )
 
         return [
-            AgentTool(sql_agent, custom_description="执行 SQL 造数任务"),
-            AgentTool(http_agent, custom_description="调用 HTTP 接口造数"),
-            AgentTool(dubbo_agent, custom_description="调用 Dubbo 服务造数"),
-            AgentTool(
+            DatamakepoolSpecialistAgentTool(
+                sql_agent,
+                custom_description=(
+                    "执行 SQL 造数步骤。必须传入 context.datamakepool_subagent_contract，"
+                    "problem_type 只能是 step_execution/probe_analysis/mapping_explanation。"
+                ),
+            ),
+            DatamakepoolSpecialistAgentTool(
+                http_agent,
+                custom_description=(
+                    "执行 HTTP 造数步骤。必须传入 context.datamakepool_subagent_contract，"
+                    "不得把全局 ask/probe/compile/execute 顺序委托给该工具。"
+                ),
+            ),
+            DatamakepoolSpecialistAgentTool(
+                dubbo_agent,
+                custom_description=(
+                    "执行 Dubbo 造数步骤。必须传入 context.datamakepool_subagent_contract，"
+                    "只允许局部步骤求解，不允许全局会话编排。"
+                ),
+            ),
+            DatamakepoolSpecialistAgentTool(
                 http2mcp_agent,
-                custom_description="优先搜索存量造数场景并通过 http2mcp 网关执行，支持部分命中后将缺口步骤交给其他 executor",
+                custom_description=(
+                    "搜索并执行存量造数场景。必须传入 context.datamakepool_subagent_contract，"
+                    "只处理单个 step 的场景搜索/执行。"
+                ),
             ),
         ]

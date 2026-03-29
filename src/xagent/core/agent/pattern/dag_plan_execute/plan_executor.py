@@ -6,6 +6,7 @@ import asyncio
 import logging
 import traceback
 from collections import deque
+from copy import deepcopy
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
 
@@ -547,6 +548,168 @@ class PlanExecutor:
         self._execution_interrupted = True
         logger.info("Execution interrupted for plan modification")
 
+    def _bind_datamakepool_specialist_tools(
+        self,
+        *,
+        step: PlanStep,
+        tools: List[Tool],
+    ) -> List[Tool]:
+        """仅在 data_generation 场景下，为 specialist tool 自动绑定 step contract。"""
+
+        if not tools or not self._is_datamakepool_domain_mode():
+            return tools
+
+        try:
+            from xagent.datamakepool.agents.profile import DatamakepoolSpecialistAgentTool
+        except Exception:
+            return tools
+
+        bound_tools: list[Tool] = []
+        for tool in tools:
+            if isinstance(tool, DatamakepoolSpecialistAgentTool):
+                contract = self._build_datamakepool_subagent_contract(
+                    step=step,
+                    tool=tool,
+                )
+                bound_tools.append(tool.with_bound_contract(contract))
+                continue
+            bound_tools.append(tool)
+        return bound_tools
+
+    def _is_datamakepool_domain_mode(self) -> bool:
+        parent_context = getattr(self.parent_pattern, "_context", None)
+        state = getattr(parent_context, "state", None)
+        return isinstance(state, dict) and state.get("domain_mode") == "data_generation"
+
+    def _build_datamakepool_subagent_contract(
+        self,
+        *,
+        step: PlanStep,
+        tool: Tool,
+    ) -> dict[str, Any]:
+        """把通用 PlanStep 投影成 datamakepool specialist 可消费的局部契约。"""
+
+        executor_type = self._infer_datamakepool_executor_type(
+            tool_name=str(tool.metadata.name or ""),
+            fallback_names=list(step.tool_names or []),
+        )
+        if executor_type is None:
+            raise DAGStepError(
+                step_id=step.id,
+                step_name=step.name,
+                message=(
+                    "无法为 datamakepool specialist step 推断 executor_type，"
+                    "因此拒绝把该 step 下发给子 agent"
+                ),
+            )
+
+        parent_context = getattr(self.parent_pattern, "_context", None)
+        parent_state = (
+            dict(getattr(parent_context, "state", None) or {})
+            if parent_context is not None
+            else {}
+        )
+        original_goal = (
+            getattr(self.parent_pattern, "_original_goal", None)
+            if self.parent_pattern is not None
+            else None
+        )
+        step_context = self._sanitize_datamakepool_contract_payload(step.context)
+        dependency_context = self._build_datamakepool_dependency_context(step)
+
+        return {
+            "contract_version": "v1",
+            "problem_type": self._infer_datamakepool_problem_type(step),
+            "goal": str(original_goal or step.description or step.name),
+            "system_short": parent_state.get("generation_system_short")
+            or parent_state.get("system_short")
+            or step_context.get("target_system"),
+            "step": {
+                "step_key": step.id,
+                "name": step.name,
+                "description": step.description,
+                "executor_type": executor_type,
+                "dependencies": list(step.dependencies or []),
+                "tool_name": str(tool.metadata.name or ""),
+            },
+            "dependency_context": dependency_context,
+            "step_context": step_context,
+        }
+
+    @staticmethod
+    def _infer_datamakepool_executor_type(
+        *,
+        tool_name: str,
+        fallback_names: List[str],
+    ) -> str | None:
+        candidates = [str(tool_name or "").strip().lower()]
+        candidates.extend(str(name or "").strip().lower() for name in fallback_names)
+        for candidate in candidates:
+            if candidate in {"agent_sql_executor", "sql_executor"}:
+                return "sql"
+            if candidate in {"agent_http_executor", "http_executor"}:
+                return "http"
+            if candidate in {"agent_dubbo_executor", "dubbo_executor"}:
+                return "dubbo"
+            if candidate in {"agent_http2mcp_executor", "http2mcp_executor"}:
+                return "legacy_scenario"
+        return None
+
+    @staticmethod
+    def _infer_datamakepool_problem_type(step: PlanStep) -> str:
+        combined = " ".join(
+            part for part in (step.id, step.name, step.description) if part
+        ).lower()
+        if "probe" in combined or "试跑" in combined or "探测" in combined:
+            return "probe_analysis"
+        if "mapping" in combined or "映射" in combined:
+            return "mapping_explanation"
+        return "step_execution"
+
+    def _build_datamakepool_dependency_context(
+        self,
+        step: PlanStep,
+    ) -> dict[str, Any]:
+        dependency_results: dict[str, Any] = {}
+        for dep_id in list(step.dependencies or []):
+            result = self.step_execution_results.get(dep_id)
+            if result is None:
+                continue
+            dependency_results[dep_id] = self._sanitize_datamakepool_contract_payload(
+                deepcopy(result.final_result)
+            )
+
+        sanitized_step_context = self._sanitize_datamakepool_contract_payload(step.context)
+        if sanitized_step_context:
+            dependency_results["current_step_context"] = sanitized_step_context
+        return dependency_results
+
+    @staticmethod
+    def _sanitize_datamakepool_contract_payload(payload: Any) -> Any:
+        forbidden_keys = {
+            "datamakepool_execution_plan",
+            "datamakepool_compiled_dag",
+            "datamakepool_runtime_contract",
+            "datamakepool_conversation_ready",
+            "recommended_action",
+            "allowed_actions",
+        }
+        if isinstance(payload, dict):
+            sanitized: dict[str, Any] = {}
+            for key, value in payload.items():
+                if key in forbidden_keys:
+                    continue
+                sanitized[str(key)] = PlanExecutor._sanitize_datamakepool_contract_payload(
+                    value
+                )
+            return sanitized
+        if isinstance(payload, list):
+            return [
+                PlanExecutor._sanitize_datamakepool_contract_payload(item)
+                for item in payload
+            ]
+        return payload
+
     async def _execute_step_with_react_agent(
         self,
         step: PlanStep,
@@ -601,6 +764,11 @@ class PlanExecutor:
                             message=f"Tool '{tool_name}' not found for step {step.id}",
                         )
                     tools.append(tool)
+
+                tools = self._bind_datamakepool_specialist_tools(
+                    step=step,
+                    tools=tools,
+                )
 
                 logger.info(
                     f"Step {step.id} will use tools: {[t.metadata.name for t in tools]}"

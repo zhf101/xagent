@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .decision_engine import DraftSignals
+from .decision_engine import DataGenerationDecisionEngine, DraftSignals
 from .reasoning_packet import ReasoningPacket
 
 
@@ -32,14 +32,6 @@ class RoutedConversationAction:
 class DataGenerationActionRouter:
     """把 ReAct 推荐动作路由成稳定的会话动作。"""
 
-    _LEGACY_ACTION_MAP = {
-        "REQUEST_CLARIFICATION": "ASK_BLOCKING_INFO",
-        "RUN_PROBE": "PROBE_STEP",
-        "BUILD_PLAN": "COMPILE_PLAN",
-        "EXECUTE_READY": "EXECUTE",
-        "REQUEST_APPROVAL_RESOLUTION": "AWAIT_APPROVAL",
-    }
-
     _ACTION_STATE_MAP = {
         "SHOW_CANDIDATES": ("awaiting_choice", True),
         "EXPLAIN_BASIS": ("clarifying", True),
@@ -51,6 +43,14 @@ class DataGenerationActionRouter:
         "EXECUTE": ("executing", False),
     }
 
+    def __init__(
+        self,
+        *,
+        guard_engine: DataGenerationDecisionEngine | None = None,
+    ) -> None:
+        # 这里依赖 hard guard，而不是语义决策器。
+        self._guard_engine = guard_engine or DataGenerationDecisionEngine()
+
     def route(
         self,
         *,
@@ -58,72 +58,24 @@ class DataGenerationActionRouter:
         draft_signals: DraftSignals | None,
         missing_fields: list[str],
     ) -> RoutedConversationAction:
-        action = self._normalize_action(reasoning_packet.recommended_action)
-        action = self._apply_hard_guards(
-            action=action,
+        guard_result = self._guard_engine.apply_hard_guards(
+            action=reasoning_packet.recommended_action,
             draft_signals=draft_signals,
             missing_fields=missing_fields,
         )
         next_state, should_pause = self._ACTION_STATE_MAP.get(
-            action,
+            guard_result.recommended_action,
             ("clarifying", True),
         )
         allowed_actions = (
             list(reasoning_packet.allowed_actions)
             if reasoning_packet.allowed_actions
-            else [action]
+            else list(guard_result.allowed_actions or [guard_result.recommended_action])
         )
         return RoutedConversationAction(
-            recommended_action=action,
+            recommended_action=guard_result.recommended_action,
             next_state=next_state,
             should_pause_for_user=should_pause,
-            rationale=reasoning_packet.understanding or "ReAct 已给出下一动作建议。",
+            rationale=reasoning_packet.understanding or guard_result.rationale,
             allowed_actions=allowed_actions,
         )
-
-    def _normalize_action(self, action: str) -> str:
-        normalized = str(action or "").strip().upper()
-        if not normalized:
-            return "ASK_BLOCKING_INFO"
-        return self._LEGACY_ACTION_MAP.get(normalized, normalized)
-
-    def _apply_hard_guards(
-        self,
-        *,
-        action: str,
-        draft_signals: DraftSignals | None,
-        missing_fields: list[str],
-    ) -> str:
-        if action in {"EXPLAIN_BASIS", "SHOW_CANDIDATES", "ASK_BLOCKING_INFO", "ASK_PREFERENCE"}:
-            return action
-
-        if missing_fields and action in {"COMPILE_PLAN", "EXECUTE"}:
-            return "ASK_BLOCKING_INFO"
-
-        if draft_signals is None:
-            if action == "EXECUTE":
-                return "COMPILE_PLAN"
-            return action
-
-        if draft_signals.has_approval_blocks and action == "EXECUTE":
-            return "AWAIT_APPROVAL"
-
-        if action == "EXECUTE":
-            if draft_signals.is_ready:
-                return "EXECUTE"
-            if draft_signals.probe_has_blocker or draft_signals.draft_status == "blocked":
-                return "ASK_BLOCKING_INFO"
-            if draft_signals.draft_status == "probe_ready":
-                return "PROBE_STEP"
-            return "COMPILE_PLAN"
-
-        if action == "COMPILE_PLAN":
-            if draft_signals.is_ready:
-                return "EXECUTE"
-            if draft_signals.probe_has_blocker or draft_signals.draft_status == "blocked":
-                return "ASK_BLOCKING_INFO"
-            if draft_signals.draft_status == "probe_ready":
-                return "PROBE_STEP"
-            return "COMPILE_PLAN"
-
-        return action

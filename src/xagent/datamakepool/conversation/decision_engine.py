@@ -1,15 +1,10 @@
-"""智能造数平台会话决策引擎。
+"""会话硬约束引擎。
 
-决策优先级（从高到低）：
-  1. readiness gate 已通过 → EXECUTE_READY
-  2. 存在审批阻塞 → REQUEST_APPROVAL_RESOLUTION
-  3. probe findings 含 blocker → RUN_PROBE
-  4. draft 处于 blocked → REQUEST_CLARIFICATION
-  5. 缺关键字段 → REQUEST_CLARIFICATION
-  6. draft 处于 probe_ready → RUN_PROBE
-  7. draft 仍在 drafting → BUILD_PLAN
+这里不再负责“下一动作的主语义决策”。
+ReAct 主脑负责理解、推断和推荐动作；本模块只做两件事：
 
-当 FlowDraft 不存在时退化为原有字段门禁逻辑，保持向后兼容。
+1. 兼容旧动作名，避免存量调用方立刻崩掉
+2. 对明显非法的推进动作做硬性兜底，防止越过 probe / approval / readiness
 """
 
 from __future__ import annotations
@@ -20,188 +15,185 @@ from typing import Any
 
 @dataclass(frozen=True)
 class ConversationDecisionOutcome:
-    """会话决策输出。"""
+    """硬约束裁决结果。
+
+    该结构保留给 router / 兼容调用方使用，表达的是：
+    - 原动作经过 guard 后最终允许执行什么
+    - 如果被拦截，为什么被拦截
+    """
 
     recommended_action: str
-    next_state: str
     rationale: str
     allowed_actions: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
 class DraftSignals:
-    """从 active FlowDraft 提取的决策信号。
+    """从 active FlowDraft 提取的约束信号。
 
-    由调用方从 FlowDraftService.get_active_draft() 的结果中构造，
-    decision_engine 本身不依赖数据库，保持纯逻辑。
+    这些信号不是主脑推理结果，而是 runtime / draft 侧的客观状态。
+    router 会基于它们决定某个动作是否真的可以继续推进。
     """
 
-    draft_status: str  # drafting / blocked / probe_ready / execute_ready / archived
+    draft_status: str
     probe_findings: list[dict[str, Any]] = field(default_factory=list)
     readiness_verdict: dict[str, Any] = field(default_factory=dict)
     has_approval_blocks: bool = False
 
-    # ---
-    # 派生属性（frozen dataclass 用 property 实现）
-    # ---
-
     @property
     def is_ready(self) -> bool:
+        """只有 readiness 已明确通过时，才允许直接执行。"""
+
         return bool(self.readiness_verdict.get("ready"))
 
     @property
     def probe_has_blocker(self) -> bool:
-        """任一 finding 含 verdict=blocker 则为真。"""
+        """存在 blocker finding 时，说明 draft 仍需回到澄清或修订。"""
+
         return any(
             str(f.get("verdict", "")).lower() == "blocker"
             for f in self.probe_findings
         )
 
-    @property
-    def readiness_blockers(self) -> list[str]:
-        return list(self.readiness_verdict.get("blockers") or [])
-
 
 class DataGenerationDecisionEngine:
-    """智能造数平台的会话决策引擎。
+    """只负责 hard guard，不负责主流程决策。"""
 
-    所有方法均为纯函数，不依赖数据库；信号由调用方注入。
-    """
+    _LEGACY_ACTION_MAP = {
+        "REQUEST_CLARIFICATION": "ASK_BLOCKING_INFO",
+        "RUN_PROBE": "PROBE_STEP",
+        "BUILD_PLAN": "COMPILE_PLAN",
+        "EXECUTE_READY": "EXECUTE",
+        "REQUEST_APPROVAL_RESOLUTION": "AWAIT_APPROVAL",
+        "DIRECT_EXECUTE": "EXECUTE",
+    }
 
-    def decide_after_recall(self, *, has_candidates: bool) -> ConversationDecisionOutcome:
-        if has_candidates:
+    def normalize_action(self, action: str) -> str:
+        """把旧动作名统一折叠到新的动作集合。"""
+
+        normalized = str(action or "").strip().upper()
+        if not normalized:
+            return "ASK_BLOCKING_INFO"
+        return self._LEGACY_ACTION_MAP.get(normalized, normalized)
+
+    def apply_hard_guards(
+        self,
+        *,
+        action: str,
+        draft_signals: DraftSignals | None,
+        missing_fields: list[str],
+    ) -> ConversationDecisionOutcome:
+        """对 ReAct 推荐动作施加最小硬约束。
+
+        约束原则：
+        - 解释/展示/提问类动作默认放行
+        - 有关键缺口时，不允许 compile / execute
+        - execute 必须经过 approval / probe / readiness
+        - compile 不能跳过 blocker 或 probe_ready 阶段
+        """
+
+        normalized_action = self.normalize_action(action)
+        if "reuse_strategy" in missing_fields and normalized_action in {
+            "ASK_BLOCKING_INFO",
+            "ASK_PREFERENCE",
+            "COMPILE_PLAN",
+            "EXECUTE",
+        }:
             return ConversationDecisionOutcome(
                 recommended_action="SHOW_CANDIDATES",
-                next_state="awaiting_choice",
-                rationale="入口统一召回已命中候选，必须先等待用户确认处理方式。",
-                allowed_actions=[
-                    "DIRECT_EXECUTE",
-                    "REQUEST_CLARIFICATION",
-                    "BUILD_PLAN",
-                    "RUN_PROBE",
-                ],
+                rationale="当前已命中候选，但用户尚未确认处理方式，应先展示候选选择。",
+                allowed_actions=["SHOW_CANDIDATES", "ASK_PREFERENCE"],
             )
+
+        if normalized_action in {
+            "EXPLAIN_BASIS",
+            "SHOW_CANDIDATES",
+            "ASK_BLOCKING_INFO",
+            "ASK_PREFERENCE",
+            "PROBE_STEP",
+            "AWAIT_APPROVAL",
+        }:
+            return ConversationDecisionOutcome(
+                recommended_action=normalized_action,
+                rationale="当前动作属于解释、提问、选择或局部验证，不需要额外收缩。",
+                allowed_actions=[normalized_action],
+            )
+
+        if missing_fields and normalized_action in {"COMPILE_PLAN", "EXECUTE"}:
+            return ConversationDecisionOutcome(
+                recommended_action="ASK_BLOCKING_INFO",
+                rationale="仍有关键阻塞字段缺失，不能直接编译或执行。",
+                allowed_actions=["ASK_BLOCKING_INFO"],
+            )
+
+        if draft_signals is None:
+            fallback_action = (
+                "COMPILE_PLAN" if normalized_action == "EXECUTE" else normalized_action
+            )
+            return ConversationDecisionOutcome(
+                recommended_action=fallback_action,
+                rationale="当前还没有 active draft，最多只能推进到 compile 阶段。",
+                allowed_actions=[fallback_action],
+            )
+
+        if normalized_action == "EXECUTE":
+            if draft_signals.has_approval_blocks:
+                return ConversationDecisionOutcome(
+                    recommended_action="AWAIT_APPROVAL",
+                    rationale="当前 draft 仍有审批阻塞，不能直接执行。",
+                    allowed_actions=["AWAIT_APPROVAL"],
+                )
+            if draft_signals.is_ready:
+                return ConversationDecisionOutcome(
+                    recommended_action="EXECUTE",
+                    rationale="draft readiness 已通过，可以正式执行。",
+                    allowed_actions=["EXECUTE"],
+                )
+            if draft_signals.probe_has_blocker or draft_signals.draft_status == "blocked":
+                return ConversationDecisionOutcome(
+                    recommended_action="ASK_BLOCKING_INFO",
+                    rationale="probe 或 draft 仍存在 blocker，需要先澄清或修订。",
+                    allowed_actions=["ASK_BLOCKING_INFO", "PROBE_STEP"],
+                )
+            if draft_signals.draft_status == "probe_ready":
+                return ConversationDecisionOutcome(
+                    recommended_action="PROBE_STEP",
+                    rationale="draft 只达到 probe_ready，仍需先做局部试跑。",
+                    allowed_actions=["PROBE_STEP"],
+                )
+            return ConversationDecisionOutcome(
+                recommended_action="COMPILE_PLAN",
+                rationale="draft 尚未冻结为可执行快照，需先编译计划。",
+                allowed_actions=["COMPILE_PLAN"],
+            )
+
+        if normalized_action == "COMPILE_PLAN":
+            if draft_signals.probe_has_blocker or draft_signals.draft_status == "blocked":
+                return ConversationDecisionOutcome(
+                    recommended_action="ASK_BLOCKING_INFO",
+                    rationale="draft 当前仍被 blocker 卡住，不能继续 compile。",
+                    allowed_actions=["ASK_BLOCKING_INFO", "PROBE_STEP"],
+                )
+            if draft_signals.draft_status == "probe_ready":
+                return ConversationDecisionOutcome(
+                    recommended_action="PROBE_STEP",
+                    rationale="draft 仅 probe_ready，需先 probe 再 compile。",
+                    allowed_actions=["PROBE_STEP"],
+                )
+            if draft_signals.is_ready:
+                return ConversationDecisionOutcome(
+                    recommended_action="EXECUTE",
+                    rationale="draft 已满足 execute readiness，无需重复 compile。",
+                    allowed_actions=["EXECUTE"],
+                )
+            return ConversationDecisionOutcome(
+                recommended_action="COMPILE_PLAN",
+                rationale="当前 draft 允许继续编译。",
+                allowed_actions=["COMPILE_PLAN"],
+            )
+
         return ConversationDecisionOutcome(
-            recommended_action="REQUEST_CLARIFICATION",
-            next_state="clarifying",
-            rationale="入口统一召回未命中可直接复用候选，必须先补齐关键业务信息。",
-            allowed_actions=["REQUEST_CLARIFICATION"],
-        )
-
-    def decide_from_draft(
-        self,
-        *,
-        draft_signals: DraftSignals,
-        missing_fields: list[str],
-    ) -> ConversationDecisionOutcome:
-        """基于 FlowDraft 信号的优先级决策，实现 ReAct 反思层。
-
-        调用方在 draft 存在时应优先使用此方法，而非 decide_after_user_message。
-        """
-
-        # 1. readiness gate 已通过
-        if draft_signals.is_ready:
-            return ConversationDecisionOutcome(
-                recommended_action="EXECUTE_READY",
-                next_state="executing",
-                rationale="FlowDraft readiness gate 判定通过，可直接进入正式执行。",
-                allowed_actions=["DIRECT_EXECUTE"],
-            )
-
-        # 2. 审批阻塞
-        if draft_signals.has_approval_blocks:
-            return ConversationDecisionOutcome(
-                recommended_action="REQUEST_APPROVAL_RESOLUTION",
-                next_state="awaiting_approval",
-                rationale="当前 draft 含有未解除的审批阻塞，必须先处理审批。",
-                allowed_actions=["REQUEST_APPROVAL_RESOLUTION"],
-            )
-
-        # 3. probe findings 含 blocker
-        if draft_signals.probe_has_blocker:
-            blocker_steps = [
-                f.get("step_name", "unknown")
-                for f in draft_signals.probe_findings
-                if str(f.get("verdict", "")).lower() == "blocker"
-            ]
-            return ConversationDecisionOutcome(
-                recommended_action="RUN_PROBE",
-                next_state="probe_pending",
-                rationale=(
-                    f"Probe findings 在以下步骤发现 blocker：{blocker_steps}，"
-                    "需要重新 probe 或由用户确认修正方向。"
-                ),
-                allowed_actions=["RUN_PROBE", "REQUEST_CLARIFICATION"],
-            )
-
-        # 4. draft 已经明确 blocked
-        if draft_signals.draft_status == "blocked":
-            blockers = draft_signals.readiness_blockers or ["草稿存在未消除的阻塞项"]
-            return ConversationDecisionOutcome(
-                recommended_action="REQUEST_CLARIFICATION",
-                next_state="clarifying",
-                rationale="当前 FlowDraft 仍被阻塞：" + "；".join(blockers),
-                allowed_actions=["REQUEST_CLARIFICATION", "RUN_PROBE"],
-            )
-
-        # 5. 仍有缺失字段
-        if missing_fields:
-            return ConversationDecisionOutcome(
-                recommended_action="REQUEST_CLARIFICATION",
-                next_state="clarifying",
-                rationale=(
-                    f"FlowDraft 已存在，但关键字段尚未齐全：{missing_fields}，"
-                    "无法推进 probe 或执行。"
-                ),
-                allowed_actions=["REQUEST_CLARIFICATION", "RUN_PROBE"],
-            )
-
-        # 6. draft 已形成 probe-ready 结构，推进 probe
-        if draft_signals.draft_status == "probe_ready":
-            return ConversationDecisionOutcome(
-                recommended_action="RUN_PROBE",
-                next_state="probe_pending",
-                rationale="FlowDraft 结构已闭合，下一步应通过 probe 验证步骤与参数。",
-                allowed_actions=["RUN_PROBE", "BUILD_PLAN"],
-            )
-
-        # 7. drafting 且字段齐全 → 先收敛成可 probe 的草稿
-        return ConversationDecisionOutcome(
-            recommended_action="BUILD_PLAN",
-            next_state="reflecting",
-            rationale="FlowDraft 已存在，但仍处于 drafting，需先补齐结构再进入 probe。",
-            allowed_actions=["BUILD_PLAN", "RUN_PROBE"],
-        )
-
-    def decide_after_user_message(
-        self,
-        *,
-        missing_fields: list[str],
-        draft_signals: DraftSignals | None = None,
-    ) -> ConversationDecisionOutcome:
-        """用户回复后的决策。
-
-        若 draft_signals 存在则委托给 decide_from_draft，
-        否则退化为原有字段门禁逻辑。
-        """
-
-        if draft_signals is not None:
-            return self.decide_from_draft(
-                draft_signals=draft_signals,
-                missing_fields=missing_fields,
-            )
-
-        # --- 向后兼容：无 draft 时的原有逻辑 ---
-        if missing_fields:
-            return ConversationDecisionOutcome(
-                recommended_action="REQUEST_CLARIFICATION",
-                next_state="clarifying",
-                rationale="用户虽补充了部分信息，但关键字段尚未齐全，不能进入正式执行。",
-                allowed_actions=["REQUEST_CLARIFICATION", "RUN_PROBE"],
-            )
-        return ConversationDecisionOutcome(
-            recommended_action="BUILD_PLAN",
-            next_state="reflecting",
-            rationale="关键业务信息已满足最小执行要求，可以进入正式执行阶段。",
-            allowed_actions=["RUN_PROBE", "DIRECT_EXECUTE", "BUILD_PLAN"],
+            recommended_action=normalized_action,
+            rationale="动作未命中额外 guard，保持原推荐。",
+            allowed_actions=[normalized_action],
         )

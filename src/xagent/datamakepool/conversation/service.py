@@ -32,10 +32,13 @@ from xagent.web.models.task import Task
 from xagent.core.model.chat.basic.base import BaseLLM
 from xagent.web.services.model_service import get_compact_model, get_default_model
 from .application_service import DataGenerationConversationApplicationService
-from .decision_engine import DataGenerationDecisionEngine, DraftSignals
+from .approval_projection import FlowDraftApprovalProjector
+from .decision_engine import DraftSignals
 from .flow_draft_service import FlowDraftService
 from .reasoning_engine import ConversationReasoningEngine, fallback_result
+from .reasoning_packet import ReasoningPacket
 from .reasoning_models import ReasoningResult
+from .runtime_adapter import CompiledPlanRuntimeAdapter
 from .runtime_service import ConversationRuntimeService
 
 DATA_GENERATION_REQUIRED_FIELDS = (
@@ -89,8 +92,9 @@ class DataGenerationConversationService:
     def __init__(self, db: Session, *, user_id: int | None = None):
         self._db = db
         self._runtime = ConversationRuntimeService(db)
-        self._decision_engine = DataGenerationDecisionEngine()
         self._application = DataGenerationConversationApplicationService()
+        self._approval_projector = FlowDraftApprovalProjector()
+        self._runtime_adapter = CompiledPlanRuntimeAdapter()
         self._flow_draft_service = FlowDraftService(db)
         llm = self._resolve_llm(user_id=user_id)
         self._reasoning_engine: ConversationReasoningEngine | None = (
@@ -161,70 +165,65 @@ class DataGenerationConversationService:
         session.fact_snapshot = merged_fact_snapshot
 
         has_candidates = self._has_any_candidates(entry_recall)
-        decision = self._decision_engine.decide_after_recall(
-            has_candidates=has_candidates
-        )
+        session.active_recall_snapshot_id = int(snapshot.id)
         state_before = str(session.state)
-        if has_candidates:
-            session.state = decision.next_state
-            session.active_recall_snapshot_id = int(snapshot.id)
-            session.latest_summary = "入口召回已命中候选，等待用户确认处理方式"
+        initial_missing_fields = self._compute_initial_missing_fields(
+            entry_recall=entry_recall,
+            fact_snapshot=merged_fact_snapshot,
+        )
+        reasoning = self._build_initial_reasoning_packet(
+            session=session,
+            entry_recall=entry_recall,
+            has_candidates=has_candidates,
+            missing_fields=initial_missing_fields,
+        )
+        self._sync_flow_draft(
+            session=session,
+            fact_snapshot=merged_fact_snapshot,
+            reasoning_result=reasoning if not has_candidates else None,
+        )
+        draft_signals = self._load_draft_signals(session)
+        routed_action = self._application.select_action(
+            reasoning_packet=reasoning,
+            missing_fields=initial_missing_fields,
+            draft_signals=draft_signals,
+        )
+        if str(routed_action.recommended_action) == "SHOW_CANDIDATES":
+            session.state = str(routed_action.next_state)
+            session.latest_summary = (
+                reasoning.understanding or "入口召回已命中候选，等待用户确认处理方式"
+            )
             self._db.add(session)
             self._db.commit()
             self._runtime.record_decision(
                 session=session,
                 state_before=state_before,
                 input_event_type="RECALL_FINISHED",
-                recommended_action=decision.recommended_action,
+                recommended_action=str(routed_action.recommended_action),
                 state_after=session.state,
-                allowed_actions=decision.allowed_actions,
-                rationale=decision.rationale,
+                allowed_actions=list(routed_action.allowed_actions or []),
+                rationale=reasoning.understanding or str(routed_action.rationale or ""),
             )
+            chat_response = self._build_candidate_chat_response(entry_recall)
+            if reasoning.understanding:
+                chat_response["message"] = (
+                    f"{reasoning.understanding}\n\n{chat_response['message']}"
+                )
+            ui = self._build_candidate_ui(entry_recall)
+            ui["message"] = str(chat_response["message"])
             return DataGenerationConversationDecision(
                 should_pause_for_user=True,
                 state=session.state,
-                chat_response=self._build_candidate_chat_response(entry_recall),
-                ui=self._build_candidate_ui(entry_recall),
+                chat_response=chat_response,
+                ui=ui,
             )
 
-        session.state = decision.next_state
-        session.active_recall_snapshot_id = int(snapshot.id)
-        initial_missing_fields = self._compute_initial_missing_fields(
-            entry_recall=entry_recall,
-            fact_snapshot=merged_fact_snapshot,
-        )
-        self._sync_flow_draft(
-            session=session,
-            fact_snapshot=merged_fact_snapshot,
-            reasoning_result=None,
-        )
-        session.latest_summary = (
-            "未命中可直接复用候选，系统先给出判断依据与建议补充项"
-        )
-        self._db.add(session)
-        self._db.commit()
-        self._runtime.record_decision(
+        return self._finalize_reasoning_action(
             session=session,
             state_before=state_before,
             input_event_type="RECALL_FINISHED",
-            recommended_action=decision.recommended_action,
-            state_after=session.state,
-            allowed_actions=decision.allowed_actions,
-            rationale=decision.rationale,
-        )
-        return DataGenerationConversationDecision(
-            should_pause_for_user=True,
-            state=session.state,
-            chat_response=self._build_clarification_chat_response(
-                entry_recall=entry_recall,
-                fact_snapshot=merged_fact_snapshot,
-                missing_fields=initial_missing_fields,
-                inferred_facts=inferred_facts,
-            ),
-            ui=self._build_clarification_ui(
-                fact_snapshot=merged_fact_snapshot,
-                missing_fields=initial_missing_fields,
-            ),
+            reasoning=reasoning,
+            routed_action=routed_action,
         )
 
     def consume_user_message(
@@ -242,7 +241,7 @@ class DataGenerationConversationService:
             goal=str(task.description or user_message),
         )
         state_before = str(session.state)
-        fact_snapshot = dict(session.fact_snapshot or {})
+        fact_snapshot = self._get_effective_fact_snapshot(session)
         parsed = self._parse_user_message(user_message)
         if not parsed:
             # 执行入口可能直接复用已补齐的 fact_snapshot，此时 user_message 为空是正常情况。
@@ -291,7 +290,7 @@ class DataGenerationConversationService:
             goal=str(task.description or ""),
         )
         state_before = str(session.state)
-        fact_snapshot = dict(session.fact_snapshot or {})
+        fact_snapshot = self._get_effective_fact_snapshot(session)
         for key, value in dict(updates or {}).items():
             if value in (None, ""):
                 fact_snapshot.pop(str(key), None)
@@ -331,7 +330,7 @@ class DataGenerationConversationService:
             user_id=user_id,
             goal=str(task.description or user_message),
         )
-        fact_snapshot = dict(session.fact_snapshot or {})
+        fact_snapshot = self._get_effective_fact_snapshot(session)
         selected_candidate_id = str(fact_snapshot.get("selected_candidate_id") or "").strip()
         selected_source_type = str(fact_snapshot.get("selected_source_type") or "").strip()
 
@@ -444,6 +443,7 @@ class DataGenerationConversationService:
         if latest_snapshot is None:
             return None
 
+        state_before = str(session.state)
         template_count = len(list(latest_snapshot.template_candidates or []))
         sql_count = len(list(latest_snapshot.sql_asset_candidates or []))
         http_count = len(list(latest_snapshot.http_asset_candidates or []))
@@ -475,11 +475,11 @@ class DataGenerationConversationService:
         self._db.commit()
         self._runtime.record_decision(
             session=session,
-            state_before=str(session.state),
+            state_before=state_before,
             input_event_type="USER_FREE_TEXT",
-            recommended_action="REQUEST_CLARIFICATION",
+            recommended_action="EXPLAIN_BASIS",
             state_after=session.state,
-            allowed_actions=["REQUEST_CLARIFICATION", "RUN_PROBE"],
+            allowed_actions=["EXPLAIN_BASIS", "ASK_BLOCKING_INFO"],
             rationale="用户在追问入口召回结果，应先回答召回情况，再决定是否继续补信息。",
         )
 
@@ -504,28 +504,28 @@ class DataGenerationConversationService:
             .first()
         )
         payload = {
-            "selected_strategy": entry_recall.selected_strategy,
+            "selected_strategy": getattr(entry_recall, "selected_strategy", None),
             "selected_candidate": self._serialize_candidate(
-                entry_recall.selected_candidate
+                getattr(entry_recall, "selected_candidate", None)
             ),
             "template_candidates": [
                 self._serialize_candidate(item)
-                for item in entry_recall.template_candidates
+                for item in list(getattr(entry_recall, "template_candidates", []) or [])
             ],
             "sql_asset_candidates": [
                 self._serialize_candidate(item)
-                for item in entry_recall.sql_asset_candidates
+                for item in list(getattr(entry_recall, "sql_asset_candidates", []) or [])
             ],
             "http_asset_candidates": [
                 self._serialize_candidate(item)
-                for item in entry_recall.http_asset_candidates
+                for item in list(getattr(entry_recall, "http_asset_candidates", []) or [])
             ],
             "legacy_candidates": [
                 self._serialize_candidate(item)
-                for item in entry_recall.legacy_candidates
+                for item in list(getattr(entry_recall, "legacy_candidates", []) or [])
             ],
-            "missing_params": list(entry_recall.missing_params or []),
-            "debug_info": dict(entry_recall.debug or {}),
+            "missing_params": list(getattr(entry_recall, "missing_params", []) or []),
+            "debug_info": dict(getattr(entry_recall, "debug", {}) or {}),
         }
 
         if snapshot is None:
@@ -872,14 +872,19 @@ class DataGenerationConversationService:
         *,
         session: DataMakepoolConversationSession,
     ) -> dict[str, Any]:
-        fact_snapshot = dict(session.fact_snapshot or {})
         draft = self._flow_draft_service.get_active_draft(int(session.id))
+        fact_snapshot = self._get_effective_fact_snapshot(session, draft=draft)
         selected_candidate_id = fact_snapshot.get("selected_candidate_id")
         selected_source_type = fact_snapshot.get("selected_source_type")
         reuse_strategy = fact_snapshot.get("reuse_strategy")
         compiled_dag = (
             dict(draft.compiled_dag_payload or {})
             if draft is not None and draft.compiled_dag_payload
+            else None
+        )
+        runtime_contract = (
+            self._runtime_adapter.adapt(compiled_dag)
+            if compiled_dag
             else None
         )
 
@@ -918,6 +923,10 @@ class DataGenerationConversationService:
                     f"(kind={step.get('kind')}, target_ref={step.get('target_ref')}, "
                     f"deps={step.get('dependencies') or []})"
                 )
+        if runtime_contract:
+            lines.append(
+                f"- 已投影为 runtime contract，步骤数: {len(list(runtime_contract.get('steps') or []))}"
+            )
 
         execution_goal = (
             f"{draft.goal_summary if draft and draft.goal_summary else session.goal}\n\n用户补充与确认信息：\n"
@@ -941,6 +950,7 @@ class DataGenerationConversationService:
                 else fact_snapshot
             ),
             "datamakepool_compiled_dag": compiled_dag,
+            "datamakepool_runtime_contract": runtime_contract,
             "datamakepool_execution_goal": execution_goal,
             "system_prompt": "\n".join(lines),
         }
@@ -962,7 +972,7 @@ class DataGenerationConversationService:
         目标不是继续机械地重复“请补字段”，而是先说明当前判断依据和阻塞点。
         """
 
-        fact_snapshot = dict(session.fact_snapshot or {})
+        fact_snapshot = self._get_effective_fact_snapshot(session)
         latest_snapshot = self._get_active_recall_snapshot(session)
         missing_fields = self._compute_missing_fields(
             has_candidates=latest_snapshot is not None
@@ -1084,6 +1094,37 @@ class DataGenerationConversationService:
             return "本轮召回未命中任何候选。"
         return "本轮召回命中：" + "，".join(lines)
 
+    def _build_initial_reasoning_packet(
+        self,
+        *,
+        session: DataMakepoolConversationSession,
+        entry_recall: Any,
+        has_candidates: bool,
+        missing_fields: list[str],
+    ) -> ReasoningPacket:
+        """构造首轮 ReAct 决策包。
+
+        首轮也尽量走 ReAct 主脑，但要兼容两类现实约束：
+        1. LLM 可能不可用，此时仍要稳定给出候选选择入口
+        2. 首轮候选卡片 UI 已被前端消费，不能因为主脑化而直接打碎现有交互
+        """
+
+        if has_candidates and self._reasoning_engine is None:
+            return ReasoningPacket(
+                understanding="入口召回已命中可复用候选，建议先确认处理方式。",
+                evidence=[self._build_recall_summary(session, entry_recall)],
+                blockers=["当前还未确认复用方式"],
+                recommended_action="SHOW_CANDIDATES",
+                allowed_actions=["SHOW_CANDIDATES", "ASK_PREFERENCE"],
+                parse_ok=False,
+            )
+        return self._reason(
+            session=session,
+            current_message="",
+            missing_fields=missing_fields,
+            entry_recall=entry_recall,
+        )
+
     def _reason(
         self,
         *,
@@ -1096,15 +1137,40 @@ class DataGenerationConversationService:
         if self._reasoning_engine is None:
             return fallback_result(missing_fields=missing_fields)
         draft = self._flow_draft_service.get_active_draft(int(session.id))
+        effective_facts = self._get_effective_fact_snapshot(session, draft=draft)
         return self._reasoning_engine.reason(
             goal=str(session.goal or ""),
             history_summary=str(session.latest_summary or ""),
-            fact_snapshot=dict(session.fact_snapshot or {}),
+            fact_snapshot=effective_facts,
             recall_summary=self._build_recall_summary(session, entry_recall),
             current_message=current_message,
             probe_findings=list((draft.probe_findings if draft else None) or []),
             draft_status=str(draft.status) if draft else None,
+            approval_summary=(
+                dict(self._approval_projector.project(draft).summary)
+                if draft is not None
+                else {}
+            ),
             missing_fields=missing_fields,
+        )
+
+    def _get_effective_fact_snapshot(
+        self,
+        session: DataMakepoolConversationSession,
+        *,
+        draft: Any | None = None,
+    ) -> dict[str, Any]:
+        """统一返回会话当前有效事实。
+
+        优先级：
+        1. active FlowDraft 导出的结构化事实
+        2. session.fact_snapshot 作为兼容兜底
+        """
+
+        current_draft = draft or self._flow_draft_service.get_active_draft(int(session.id))
+        return self._flow_draft_service.export_fact_snapshot(
+            current_draft,
+            fallback=dict(session.fact_snapshot or {}),
         )
 
     def _load_draft_signals(
@@ -1114,11 +1180,12 @@ class DataGenerationConversationService:
         draft = self._flow_draft_service.get_active_draft(int(session.id))
         if draft is None:
             return None
+        approval_projection = self._approval_projector.project(draft)
         return DraftSignals(
             draft_status=str(draft.status or "drafting"),
             probe_findings=list(draft.probe_findings or []),
             readiness_verdict=dict(draft.readiness_verdict or {}),
-            has_approval_blocks=False,  # approval 接入在后续 phase 完成
+            has_approval_blocks=approval_projection.has_blocking_approval,
         )
 
     def _sync_flow_draft(

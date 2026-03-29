@@ -30,9 +30,9 @@ _SYSTEM_PROMPT = """\
 1. 只有当某个信息真正阻止了后续执行时，才把它列入 blockers
 2. 如果已经能推断出意图，不要要求补充非阻塞信息
 3. 不要重复问用户已经在历史消息中回答过的问题
-4. 第二轮以后，如果信息足够推断目标系统和执行路径，应推进到 BUILD_PLAN 或 RUN_PROBE，而不是继续澄清
-5. suggested_interactions 只在 recommended_action 为 REQUEST_CLARIFICATION 或 ASK_BLOCKING_INFO 时才填写
-6. 如果 blockers 为空，recommended_action 不能是 REQUEST_CLARIFICATION
+4. 第二轮以后，如果信息足够推断目标系统和执行路径，应推进到 COMPILE_PLAN 或 PROBE_STEP，而不是继续澄清
+5. ui_hint.interactions 只在 recommended_action 为 ASK_BLOCKING_INFO、ASK_PREFERENCE 或 SHOW_CANDIDATES 时才填写
+6. 如果 blockers 为空，recommended_action 不应是 ASK_BLOCKING_INFO，除非你明确要用户补某个真正阻塞的信息
 
 你只输出 JSON，不输出任何其他内容。JSON 结构如下：
 {
@@ -79,6 +79,7 @@ def _build_user_prompt(
     current_message: str,
     probe_findings: list[dict[str, Any]],
     draft_status: str | None,
+    approval_summary: dict[str, Any],
 ) -> str:
     parts = []
     parts.append(f"## 用户的原始造数目标\n{goal}")
@@ -110,6 +111,12 @@ def _build_user_prompt(
 
     if draft_status:
         parts.append(f"## 当前 FlowDraft 状态\n{draft_status}")
+
+    if approval_summary:
+        parts.append(
+            "## 当前审批与治理摘要\n"
+            + json.dumps(approval_summary, ensure_ascii=False, indent=2)
+        )
 
     parts.append(
         "## 你的任务\n"
@@ -224,6 +231,7 @@ class ConversationReasoningEngine:
         current_message: str = "",
         probe_findings: list[dict[str, Any]] | None = None,
         draft_status: str | None = None,
+        approval_summary: dict[str, Any] | None = None,
         missing_fields: list[str] | None = None,
     ) -> ReasoningPacket:
         """同步调用 LLM 进行 ReAct 推断，失败时降级。"""
@@ -237,6 +245,7 @@ class ConversationReasoningEngine:
             current_message=current_message,
             probe_findings=list(probe_findings or []),
             draft_status=draft_status,
+            approval_summary=dict(approval_summary or {}),
         )
         messages = [
             {"role": "system", "content": _SYSTEM_PROMPT},

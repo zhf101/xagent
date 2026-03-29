@@ -725,8 +725,9 @@ class PlanGenerator:
         state = context.state
         entry_recall = state.get("entry_recall_result")
         conversation_ready = bool(state.get("datamakepool_conversation_ready"))
-        fact_snapshot = state.get("datamakepool_conversation_facts")
+        effective_facts = state.get("datamakepool_conversation_facts")
         compiled_dag = state.get("datamakepool_compiled_dag")
+        runtime_contract = state.get("datamakepool_runtime_contract")
 
         if not entry_recall and not conversation_ready:
             return ""
@@ -735,7 +736,7 @@ class PlanGenerator:
 
         if conversation_ready:
             lines.append("- 会话门控状态: 已完成，当前轮次不得再重复通用澄清问卷")
-            if isinstance(fact_snapshot, dict):
+            if isinstance(effective_facts, dict):
                 for field, label in [
                     ("target_system", "目标系统"),
                     ("target_entity", "目标表名或接口"),
@@ -744,7 +745,7 @@ class PlanGenerator:
                     ("data_count", "数据量"),
                     ("field_constraints", "字段约束 / 业务规则"),
                 ]:
-                    value = fact_snapshot.get(field)
+                    value = effective_facts.get(field)
                     if value not in (None, "", []):
                         lines.append(f"- 已确认{label}: {value}")
             if isinstance(compiled_dag, dict):
@@ -759,6 +760,11 @@ class PlanGenerator:
                         f"(kind={step.get('kind')}, target_ref={step.get('target_ref')}, "
                         f"deps={step.get('dependencies') or []})"
                     )
+            if isinstance(runtime_contract, dict):
+                lines.append(
+                    f"- 已存在 runtime contract: steps={len(list(runtime_contract.get('steps') or []))}, "
+                    f"unresolved_mappings={len(list(runtime_contract.get('unresolved_mappings') or []))}"
+                )
         else:
             lines.append("- 会话门控状态: 未完成，只允许补当前最关键的缺口，不要重复整套固定问卷")
 

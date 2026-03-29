@@ -17,11 +17,21 @@ from __future__ import annotations
 
 from typing import Any
 
+from .approval_projection import FlowDraftApprovalProjector
+
 
 class FlowDraftPlanCompiler:
     """把结构化草稿编译成统一 DAG 载荷。"""
 
+    def __init__(
+        self,
+        *,
+        approval_projector: FlowDraftApprovalProjector | None = None,
+    ) -> None:
+        self._approval_projector = approval_projector or FlowDraftApprovalProjector()
+
     def compile(self, draft: Any) -> dict[str, Any]:
+        approval_projection = self._approval_projector.project(draft)
         params = {str(row.param_key): row for row in list(getattr(draft, "param_rows", []) or [])}
         mappings = list(getattr(draft, "mapping_rows", []) or [])
         mapping_by_step: dict[str, list[Any]] = {}
@@ -58,6 +68,14 @@ class FlowDraftPlanCompiler:
                     "config": dict(step.config_payload or {}),
                     "input_data": input_data,
                     "output_contract": dict(step.output_contract or {}),
+                    "approval": next(
+                        (
+                            item
+                            for item in list(approval_projection.summary.get("items") or [])
+                            if str(item.get("step_key") or "") == str(step.step_key)
+                        ),
+                        None,
+                    ),
                 }
             )
 
@@ -81,6 +99,7 @@ class FlowDraftPlanCompiler:
                 "type": getattr(draft, "source_candidate_type", None),
                 "id": getattr(draft, "source_candidate_id", None),
             },
+            "approval_summary": dict(approval_projection.summary or {}),
             "params": param_snapshot,
             "steps": compiled_steps,
             "unresolved_mappings": unresolved,
