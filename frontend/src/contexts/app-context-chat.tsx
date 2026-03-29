@@ -9,6 +9,7 @@ import { ReplayScheduler } from '@/lib/replay-scheduler'
 import { CollapsibleSection } from "@/components/collapsible-section"
 import { Badge } from "@/components/ui/badge"
 import { ClarificationForm } from "@/components/chat/clarification-form"
+import { CandidateChoiceCard } from "@/components/chat/candidate-choice-card"
 
 interface WebSocketMessage {
   type: string
@@ -291,6 +292,7 @@ interface Task {
   visualModelName?: string
   compactModelName?: string
   vibeMode?: "task" | "process"
+  domainMode?: "data_generation" | "data_consultation" | "general"
   isDag?: boolean
   agentId?: number
 }
@@ -1036,6 +1038,54 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
         }
         break
 
+      case "chat_history_message":
+        const historyData = (message.data as any) || {}
+        const historyRole = historyData.role === "assistant" ? "assistant" : "user"
+        const historyContent = historyData.content || ""
+        const historyInteractions = normalizeInteractions(historyData.interactions)
+
+        if (historyRole === "assistant" && historyInteractions.length > 0) {
+          const msgId = generateMessageId("msg-history-clarification")
+          dispatch({
+            type: "ADD_MESSAGE",
+            payload: {
+              id: msgId,
+              role: "assistant",
+              content: (
+                <div className="space-y-2">
+                  <MarkdownRenderer content={historyContent} />
+                  <ClarificationForm
+                    interactions={historyInteractions}
+                    messageId={msgId}
+                  />
+                </div>
+              ),
+              rawContent: historyContent,
+              timestamp: message.timestamp,
+              status: "completed",
+              isResult: true,
+              interactions: historyInteractions,
+            }
+          })
+          break
+        }
+
+        if (!isDuplicateMessage(historyContent, `history-${historyRole}`, false, false)) {
+          dispatch({
+            type: "ADD_MESSAGE",
+            payload: {
+              id: generateMessageId(`msg-history-${historyRole}`),
+              role: historyRole,
+              content: historyContent,
+              rawContent: historyContent,
+              timestamp: message.timestamp,
+              status: "completed",
+              isResult: historyRole === "assistant",
+            }
+          })
+        }
+        break
+
       case "trace_event":
         const traceEventData = message.data as any
 
@@ -1089,6 +1139,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                 visualModelName: taskData.visual_model_name,
                 compactModelName: taskData.compact_model_name,
                 vibeMode: taskData.vibe_mode,
+                domainMode: taskData.domain_mode,
                 isDag: taskData.is_dag,
                 agentId: taskData.agent_id,
               }
@@ -3376,53 +3427,50 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
         }
 
         const structuredUi = extractStructuredUi(message.data)
+        const clarification = extractClarificationMessage(message.data)
+        if (
+          structuredUi?.type === "clarification_form" &&
+          clarification
+        ) {
+          const msgId = generateMessageId("msg-clarification-task-completed")
+          const clarificationMessage =
+            (typeof taskData.result === "string" ? taskData.result : "") ||
+            structuredUi.message ||
+            "请继续补充关键信息"
+          dispatch({
+            type: "ADD_MESSAGE",
+            payload: {
+              id: msgId,
+              role: "assistant",
+              content: (
+                <div className="space-y-2">
+                  <MarkdownRenderer content={clarificationMessage} />
+                  <ClarificationForm
+                    interactions={clarification.interactions}
+                    messageId={msgId}
+                  />
+                </div>
+              ),
+              timestamp: message.timestamp,
+              status: "completed",
+              isResult: true,
+              interactions: clarification.interactions,
+            }
+          })
+          break
+        }
         if (structuredUi?.type === "candidate_choice_card") {
-          const clarification = extractClarificationMessage(message.data)
           const candidateData = Array.isArray(structuredUi.data?.candidates)
             ? structuredUi.data.candidates
             : []
           const msgId = generateMessageId("msg-candidate-choice")
           const candidateContent = (
-            <div className="space-y-3">
-              <div className="text-sm leading-6">{structuredUi.message || "平台已检索到可复用候选"}</div>
-              {candidateData.length > 0 ? (
-                <div className="grid gap-2">
-                  {candidateData.map((candidate: any, index: number) => (
-                    <div key={`${candidate.candidate_id || index}`} className="rounded-lg border border-border/60 bg-card/60 px-3 py-3">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="text-sm font-medium">{candidate.display_name || "未命名候选"}</span>
-                        {candidate.source_type ? (
-                          <Badge variant="secondary">{candidate.source_type}</Badge>
-                        ) : null}
-                        {candidate.score != null ? (
-                          <Badge variant="outline">score {String(candidate.score)}</Badge>
-                        ) : null}
-                      </div>
-                      {candidate.summary ? (
-                        <div className="mt-2 text-xs text-muted-foreground leading-5">
-                          {candidate.summary}
-                        </div>
-                      ) : null}
-                      {Array.isArray(candidate.matched_signals) && candidate.matched_signals.length > 0 ? (
-                        <div className="mt-2 flex flex-wrap gap-1">
-                          {candidate.matched_signals.map((signal: string) => (
-                            <Badge key={signal} variant="outline" className="text-[10px]">
-                              {signal}
-                            </Badge>
-                          ))}
-                        </div>
-                      ) : null}
-                    </div>
-                  ))}
-                </div>
-              ) : null}
-              {clarification ? (
-                <ClarificationForm
-                  interactions={clarification.interactions}
-                  messageId={msgId}
-                />
-              ) : null}
-            </div>
+            <CandidateChoiceCard
+              message={structuredUi.message || "平台已检索到可复用候选"}
+              candidates={candidateData}
+              interactions={clarification?.interactions}
+              messageId={msgId}
+            />
           )
           dispatch({
             type: "ADD_MESSAGE",
@@ -3773,6 +3821,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
             visualModelName: taskData.visual_model_name || taskData.visual_model_name,
             compactModelName: taskData.compact_model_name || taskData.compact_model_name,
             vibeMode: taskData.vibe_mode,
+            domainMode: taskData.domain_mode || config?.agentConfig?.domain_mode,
             isDag: taskData.is_dag,
             agentId: taskData.agent_id,
           }

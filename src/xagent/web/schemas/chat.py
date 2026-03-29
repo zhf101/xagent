@@ -96,6 +96,7 @@ class TaskCreateResponse(BaseModel):
     visual_model_name: Optional[str] = None
     compact_model_name: Optional[str] = None
     vibe_mode: Optional[str] = None
+    domain_mode: Optional[str] = None
 
 
 class ExecutionStatus(BaseModel):

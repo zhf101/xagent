@@ -22,6 +22,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from xagent.datamakepool.interpreter import extract_parameters
 from xagent.web.models.datamakepool_conversation import (
     DataMakepoolCandidateChoice,
     DataMakepoolConversationSession,
@@ -127,6 +128,16 @@ class DataGenerationConversationService:
         session = self.get_or_create_session(task=task, user_id=user_id, goal=goal)
         snapshot = self._upsert_recall_snapshot(session, entry_recall)
         self._sync_candidate_choices(session, entry_recall)
+        inferred_facts = self._infer_facts_from_goal(goal=goal)
+        merged_fact_snapshot = dict(session.fact_snapshot or {})
+        merged_fact_snapshot.update(
+            {
+                key: value
+                for key, value in inferred_facts.items()
+                if value not in (None, "", [])
+            }
+        )
+        session.fact_snapshot = merged_fact_snapshot
 
         has_candidates = self._has_any_candidates(entry_recall)
         decision = self._decision_engine.decide_after_recall(
@@ -157,7 +168,13 @@ class DataGenerationConversationService:
 
         session.state = decision.next_state
         session.active_recall_snapshot_id = int(snapshot.id)
-        session.latest_summary = "未命中可直接复用候选，等待用户补齐业务信息"
+        initial_missing_fields = self._compute_initial_missing_fields(
+            entry_recall=entry_recall,
+            fact_snapshot=merged_fact_snapshot,
+        )
+        session.latest_summary = (
+            "未命中可直接复用候选，系统先给出判断依据与建议补充项"
+        )
         self._db.add(session)
         self._db.commit()
         self._runtime.record_decision(
@@ -174,12 +191,13 @@ class DataGenerationConversationService:
             state=session.state,
             chat_response=self._build_clarification_chat_response(
                 entry_recall=entry_recall,
-                fact_snapshot=session.fact_snapshot or {},
+                fact_snapshot=merged_fact_snapshot,
+                missing_fields=initial_missing_fields,
+                inferred_facts=inferred_facts,
             ),
             ui=self._build_clarification_ui(
-                fact_snapshot=session.fact_snapshot or {},
-                missing_fields=list(DATA_GENERATION_REQUIRED_FIELDS)
-                + ["field_constraints"],
+                fact_snapshot=merged_fact_snapshot,
+                missing_fields=initial_missing_fields,
             ),
         )
 
@@ -200,6 +218,12 @@ class DataGenerationConversationService:
         state_before = str(session.state)
         fact_snapshot = dict(session.fact_snapshot or {})
         parsed = self._parse_user_message(user_message)
+        if not parsed:
+            return self._build_no_progress_decision(
+                session=session,
+                state_before=state_before,
+                user_message=user_message,
+            )
         fact_snapshot.update(parsed)
         return self._decide_with_updated_facts(
             session=session,
@@ -331,6 +355,99 @@ class DataGenerationConversationService:
                     "mode": "preview",
                 }
         return None
+
+    def resolve_meta_question_response(
+        self,
+        *,
+        task: Task,
+        user_id: int,
+        user_message: str,
+    ) -> DataGenerationConversationDecision | None:
+        """识别用户对召回结果/历史场景本身的追问。
+
+        这类问题不应该被机械地当作字段补充，否则会一直重复要求补齐目标系统/执行方式。
+        当前先覆盖最常见的一类：用户追问“是不是没有历史场景/存量场景”。
+        """
+
+        message = str(user_message or "").strip()
+        if not message:
+            return None
+
+        normalized = message.lower()
+        recall_keywords = (
+            "历史场景",
+            "存量场景",
+            "历史模板",
+            "历史骨架",
+            "复用场景",
+            "旧的造数场景",
+            "旧场景",
+            "以前的造数",
+            "老场景",
+            "没有历史",
+            "没历史",
+            "没命中",
+            "确定没有",
+        )
+        if not any(keyword in message or keyword in normalized for keyword in recall_keywords):
+            return None
+
+        session = self.get_or_create_session(
+            task=task,
+            user_id=user_id,
+            goal=str(task.description or user_message),
+        )
+        latest_snapshot = self._get_active_recall_snapshot(session)
+        if latest_snapshot is None:
+            return None
+
+        template_count = len(list(latest_snapshot.template_candidates or []))
+        sql_count = len(list(latest_snapshot.sql_asset_candidates or []))
+        http_count = len(list(latest_snapshot.http_asset_candidates or []))
+        legacy_count = len(list(latest_snapshot.legacy_candidates or []))
+
+        if template_count == 0 and sql_count == 0 and http_count == 0 and legacy_count == 0:
+            answer = (
+                "当前这轮入口统一召回里，确实没有检索到可直接复用的历史候选。"
+                f"\n- 模板候选：{template_count} 条"
+                f"\n- SQL 资产候选：{sql_count} 条"
+                f"\n- HTTP 资产候选：{http_count} 条"
+                f"\n- 存量场景候选：{legacy_count} 条"
+                "\n\n如果你判断历史上应该存在相关场景，说明当前检索关键词还不够准。"
+                "你可以继续补充更具体的业务锚点，例如：系统简称、场景名、接口名、表名、产品名。"
+            )
+        else:
+            answer = (
+                "当前这轮入口统一召回并不是完全没有历史候选，命中情况如下："
+                f"\n- 模板候选：{template_count} 条"
+                f"\n- SQL 资产候选：{sql_count} 条"
+                f"\n- HTTP 资产候选：{http_count} 条"
+                f"\n- 存量场景候选：{legacy_count} 条"
+                "\n\n你可以继续选择复用某个候选，或者补充更具体信息让我重新判断。"
+            )
+
+        session.state = "clarifying"
+        session.latest_summary = "用户追问历史/存量场景命中情况，系统已返回召回解释"
+        self._db.add(session)
+        self._db.commit()
+        self._runtime.record_decision(
+            session=session,
+            state_before=str(session.state),
+            input_event_type="USER_FREE_TEXT",
+            recommended_action="REQUEST_CLARIFICATION",
+            state_after=session.state,
+            allowed_actions=["REQUEST_CLARIFICATION", "RUN_PROBE"],
+            rationale="用户在追问入口召回结果，应先回答召回情况，再决定是否继续补信息。",
+        )
+
+        return DataGenerationConversationDecision(
+            should_pause_for_user=True,
+            state=session.state,
+            chat_response={
+                "message": answer,
+            },
+            ui=None,
+        )
 
     def _upsert_recall_snapshot(
         self,
@@ -577,17 +694,31 @@ class DataGenerationConversationService:
         *,
         entry_recall: Any,
         fact_snapshot: dict[str, Any],
+        missing_fields: list[str],
+        inferred_facts: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        del entry_recall
+        inferred_summary = self._format_inferred_facts(
+            fact_snapshot=fact_snapshot,
+            inferred_facts=inferred_facts or {},
+        )
+        message = (
+            "当前未命中可直接复用的历史候选，我先把判断依据说清楚："
+            f"\n{self._format_recall_basis(entry_recall=entry_recall)}"
+        )
+        if inferred_summary:
+            message += f"\n\n从你的原始需求里，系统已经先推断出：\n{inferred_summary}"
+        if missing_fields:
+            message += (
+                "\n\n要继续往下执行，当前最建议补充的是："
+                f"\n{self._format_missing_fields(missing_fields=missing_fields)}"
+                "\n\n这不是固定问卷，而是基于当前需求、已推断信息和召回结果，"
+                "动态判断出来的最小缺口。"
+            )
         return {
-            "message": (
-                "平台未找到可直接复用的历史模板或资产，需要从零规划造数链路。"
-                "为了生成准确的测试数据，请先补充关键业务信息："
-            ),
+            "message": message,
             "interactions": self._build_missing_field_interactions(
                 fact_snapshot=fact_snapshot,
-                missing_fields=list(DATA_GENERATION_REQUIRED_FIELDS)
-                + ["field_constraints"],
+                missing_fields=missing_fields,
             ),
         }
 
@@ -596,9 +727,21 @@ class DataGenerationConversationService:
         *,
         fact_snapshot: dict[str, Any],
         missing_fields: list[str],
+        latest_snapshot: DataMakepoolRecallSnapshot | None = None,
     ) -> dict[str, Any]:
+        known_facts = self._format_known_facts(fact_snapshot=fact_snapshot)
+        recall_basis = self._format_snapshot_basis(latest_snapshot=latest_snapshot)
         return {
-            "message": "我已经收到你的部分补充信息，但还缺以下关键项，补齐后才能进入正式执行：",
+            "message": (
+                "我已经收到你的部分补充信息，但当前还不能进入正式执行。"
+                f"\n\n已识别到的信息：\n{known_facts}"
+                f"\n\n仍然缺少：\n{self._format_missing_fields(missing_fields=missing_fields)}"
+                "\n\n原因：这些字段决定了召回范围和执行路径。"
+                "如果缺少目标系统/目标实体，系统无法确认该往哪一类资产上靠；"
+                "如果缺少执行方式或目标环境，系统也无法安全决定后续执行链路。"
+                f"{recall_basis}"
+                "\n\n我这轮只保留最关键的缺口，不会再把首轮那套通用问题整包重复给你。"
+            ),
             "interactions": self._build_missing_field_interactions(
                 fact_snapshot=fact_snapshot,
                 missing_fields=missing_fields,
@@ -617,7 +760,6 @@ class DataGenerationConversationService:
         )
         return {
             "type": "clarification_form",
-            "message": "请继续补充关键信息",
             "interactions": interactions,
         }
 
@@ -732,6 +874,73 @@ class DataGenerationConversationService:
             "system_prompt": "\n".join(lines),
         }
 
+    def _build_no_progress_decision(
+        self,
+        *,
+        session: DataMakepoolConversationSession,
+        state_before: str,
+        user_message: str,
+    ) -> DataGenerationConversationDecision:
+        """处理未能从自由文本中提取出可落库事实的场景。
+
+        这类消息常见于：
+        - 用户在追问系统为什么没命中历史场景
+        - 用户在确认判断依据，而不是补字段
+        - 用户给了模糊自然语言，但没有形成可解析的 key/value
+
+        目标不是继续机械地重复“请补字段”，而是先说明当前判断依据和阻塞点。
+        """
+
+        fact_snapshot = dict(session.fact_snapshot or {})
+        latest_snapshot = self._get_active_recall_snapshot(session)
+        missing_fields = self._compute_missing_fields(
+            has_candidates=latest_snapshot is not None
+            and self._snapshot_has_candidates(latest_snapshot),
+            fact_snapshot=fact_snapshot,
+        )
+        prompted_missing_fields = self._select_followup_prompt_fields(
+            missing_fields=missing_fields,
+            fact_snapshot=fact_snapshot,
+        )
+        decision = self._decision_engine.decide_after_user_message(
+            missing_fields=missing_fields
+        )
+
+        session.state = decision.next_state
+        session.latest_summary = "当前消息未提供新的关键字段，系统先返回判断依据与缺口说明"
+        self._db.add(session)
+        self._db.commit()
+        self._runtime.record_decision(
+            session=session,
+            state_before=state_before,
+            input_event_type="USER_FREE_TEXT",
+            recommended_action=decision.recommended_action,
+            state_after=session.state,
+            allowed_actions=decision.allowed_actions,
+            rationale=(
+                "用户本轮输入未能解析出新的结构化关键字段，"
+                "应先解释当前判断依据和仍缺失的信息，避免重复机械追问。"
+            ),
+        )
+
+        chat_response = {
+            "message": (
+                "这条消息目前没有提供可直接写入会话状态的关键字段，所以系统暂时不能推进到正式执行。"
+                f"\n\n你的原话是：{user_message.strip()}"
+                f"\n\n当前已识别的信息：\n{self._format_known_facts(fact_snapshot=fact_snapshot)}"
+                f"\n\n仍然缺少：\n{self._format_missing_fields(missing_fields=missing_fields)}"
+                f"{self._format_snapshot_basis(latest_snapshot=latest_snapshot)}"
+                "\n\n如果你是在确认系统为什么判断未命中历史场景，我已经把依据写在上面；"
+                "如果你暂时不想补字段，也不需要重复回答首轮那套问题。"
+            ),
+        }
+        return DataGenerationConversationDecision(
+            should_pause_for_user=True,
+            state=session.state,
+            chat_response=chat_response,
+            ui=None,
+        )
+
     def _decide_with_updated_facts(
         self,
         *,
@@ -788,11 +997,12 @@ class DataGenerationConversationService:
                 state=session.state,
                 chat_response=self._build_followup_clarification_response(
                     fact_snapshot=fact_snapshot,
-                    missing_fields=missing_fields,
+                    missing_fields=prompted_missing_fields,
+                    latest_snapshot=latest_snapshot,
                 ),
                 ui=self._build_clarification_ui(
                     fact_snapshot=fact_snapshot,
-                    missing_fields=missing_fields,
+                    missing_fields=prompted_missing_fields,
                 ),
             )
 
@@ -846,9 +1056,217 @@ class DataGenerationConversationService:
             result[field] = normalized_value
 
         if not result and message.strip():
+            if self._looks_like_question(message.strip()):
+                return result
             # 自由文本场景先归档为字段约束补充说明，避免信息彻底丢失。
             result["field_constraints"] = message.strip()
         return result
+
+    @staticmethod
+    def _looks_like_question(message: str) -> bool:
+        return any(token in message for token in ("？", "?", "吗", "为什么", "为啥", "怎么", "是否", "有没有", "确定"))
+
+    @staticmethod
+    def _field_label(field: str) -> str:
+        return {
+            "target_system": "目标系统",
+            "target_entity": "目标表名或接口",
+            "execution_method": "执行方式",
+            "target_environment": "目标环境",
+            "data_count": "数据量",
+            "field_constraints": "字段约束 / 业务规则",
+            "data_dependencies": "数据依赖",
+            "reuse_strategy": "处理方式",
+        }.get(field, field)
+
+    def _format_missing_fields(self, *, missing_fields: list[str]) -> str:
+        if not missing_fields:
+            return "- 无"
+        return "\n".join(f"- {self._field_label(field)}" for field in missing_fields)
+
+    def _format_known_facts(self, *, fact_snapshot: dict[str, Any]) -> str:
+        lines: list[str] = []
+        for field in (
+            "target_system",
+            "target_entity",
+            "execution_method",
+            "target_environment",
+            "data_count",
+            "field_constraints",
+        ):
+            value = fact_snapshot.get(field)
+            if value not in (None, "", []):
+                lines.append(f"- {self._field_label(field)}：{value}")
+        if not lines:
+            return "- 暂无"
+        return "\n".join(lines)
+
+    def _format_recall_basis(self, *, entry_recall: Any) -> str:
+        return "\n".join(
+            [
+                f"- 模板候选：{len(list(getattr(entry_recall, 'template_candidates', []) or []))} 条",
+                f"- SQL 资产候选：{len(list(getattr(entry_recall, 'sql_asset_candidates', []) or []))} 条",
+                f"- HTTP 资产候选：{len(list(getattr(entry_recall, 'http_asset_candidates', []) or []))} 条",
+                f"- 存量场景候选：{len(list(getattr(entry_recall, 'legacy_candidates', []) or []))} 条",
+            ]
+        )
+
+    def _format_snapshot_basis(
+        self,
+        *,
+        latest_snapshot: DataMakepoolRecallSnapshot | None,
+    ) -> str:
+        if latest_snapshot is None:
+            return ""
+        return (
+            "\n\n当前召回依据："
+            f"\n- 模板候选：{len(list(latest_snapshot.template_candidates or []))} 条"
+            f"\n- SQL 资产候选：{len(list(latest_snapshot.sql_asset_candidates or []))} 条"
+            f"\n- HTTP 资产候选：{len(list(latest_snapshot.http_asset_candidates or []))} 条"
+            f"\n- 存量场景候选：{len(list(latest_snapshot.legacy_candidates or []))} 条"
+        )
+
+    def _infer_facts_from_goal(self, *, goal: str) -> dict[str, Any]:
+        """从首轮用户目标里做尽力而为的弱推断。
+
+        这里不追求“推断一定正确”，只提供首轮动态澄清所需的弱信号：
+        - 能推断出来的先写入 fact_snapshot，减少首轮机械问卷
+        - 推断不出来就保持缺失，交给后续澄清
+        """
+
+        text = str(goal or "").strip()
+        if not text:
+            return {}
+
+        inferred: dict[str, Any] = {}
+        params = extract_parameters(text)
+
+        environment_match = re.search(
+            r"([A-Za-z]{1,8}\d{1,4})环境",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if environment_match:
+            inferred["target_environment"] = environment_match.group(1).upper()
+
+        system_short = str(params.get("system_short") or "").strip()
+        if system_short:
+            inferred["target_system"] = system_short.upper()
+
+        entity_type = str(params.get("entity_type") or "").strip()
+        if entity_type == "card":
+            inferred["target_entity"] = "借记卡 / 卡BIN"
+        elif entity_type == "order":
+            inferred["target_entity"] = "订单"
+        elif entity_type == "return_order":
+            inferred["target_entity"] = "退货单"
+        elif entity_type == "user":
+            inferred["target_entity"] = "用户"
+
+        count = params.get("count")
+        if isinstance(count, int) and count > 0:
+            inferred["data_count"] = count
+
+        if any(keyword in text.lower() for keyword in ("sql", "insert", "update")):
+            inferred["execution_method"] = "sql"
+        elif "http" in text.lower() or "接口" in text:
+            inferred["execution_method"] = "http"
+        elif "dubbo" in text.lower():
+            inferred["execution_method"] = "dubbo"
+
+        return inferred
+
+    def _compute_initial_missing_fields(
+        self,
+        *,
+        entry_recall: Any,
+        fact_snapshot: dict[str, Any],
+    ) -> list[str]:
+        """首轮动态决定要向用户补哪些字段。
+
+        原则：
+        - 优先复用入口召回给出的 missing_params
+        - 只展示当前最关键的 1-3 个缺口，不再首轮直接摊整套固定问卷
+        - `field_constraints` 不是默认首轮问题，除非核心信息都齐了
+        """
+
+        normalized_missing: list[str] = []
+        for item in list(getattr(entry_recall, "missing_params", []) or []):
+            field_name = str(item.get("field") or "").strip()
+            if not field_name:
+                continue
+            normalized_missing.append(_FIELD_LABEL_MAP.get(field_name, field_name))
+
+        if not normalized_missing:
+            normalized_missing = self._compute_missing_fields(
+                has_candidates=self._has_any_candidates(entry_recall),
+                fact_snapshot=fact_snapshot,
+            )
+
+        return self._select_prompt_fields(
+            missing_fields=normalized_missing,
+            fact_snapshot=fact_snapshot,
+            include_field_constraints=False,
+        )
+
+    def _select_followup_prompt_fields(
+        self,
+        *,
+        missing_fields: list[str],
+        fact_snapshot: dict[str, Any],
+    ) -> list[str]:
+        """后续轮次只问剩余关键缺口，不重复首轮全量问法。"""
+
+        return self._select_prompt_fields(
+            missing_fields=missing_fields,
+            fact_snapshot=fact_snapshot,
+            include_field_constraints=False,
+        )
+
+    def _select_prompt_fields(
+        self,
+        *,
+        missing_fields: list[str],
+        fact_snapshot: dict[str, Any],
+        include_field_constraints: bool,
+    ) -> list[str]:
+        priority = [
+            "target_system",
+            "target_entity",
+            "target_environment",
+            "execution_method",
+            "data_count",
+            "field_constraints",
+        ]
+        missing_set = {field for field in missing_fields if field}
+        selected: list[str] = []
+        for field in priority:
+            if field not in missing_set:
+                continue
+            if field == "field_constraints" and not include_field_constraints:
+                continue
+            selected.append(field)
+
+        if not selected and include_field_constraints and "field_constraints" in missing_set:
+            selected.append("field_constraints")
+
+        # 首轮/续轮都最多给 3 个最关键缺口，避免再次变成固定长问卷。
+        return selected[:3]
+
+    def _format_inferred_facts(
+        self,
+        *,
+        fact_snapshot: dict[str, Any],
+        inferred_facts: dict[str, Any],
+    ) -> str:
+        if not inferred_facts:
+            return ""
+        lines: list[str] = []
+        for field, value in inferred_facts.items():
+            if value in (None, "", []):
+                continue
+            lines.append(f"- {self._field_label(field)}：{fact_snapshot.get(field, value)}")
+        return "\n".join(lines)
 
     def _compute_missing_fields(
         self,

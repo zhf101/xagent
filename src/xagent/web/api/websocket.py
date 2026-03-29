@@ -1364,6 +1364,11 @@ async def handle_chat_message(
                                 "visual_model_name": task.visual_model_name,
                                 "compact_model_name": task.compact_model_name,
                                 "vibe_mode": task.vibe_mode,
+                                "domain_mode": (
+                                    task.agent_config.get("domain_mode")
+                                    if isinstance(task.agent_config, dict)
+                                    else None
+                                ),
                                 "agent_id": task.agent_id,
                                 "is_dag": is_dag,
                                 "created_at": safe_timestamp_to_unix(task.created_at)
@@ -1470,6 +1475,40 @@ async def handle_chat_message(
                                         "probe_run_id": probe_result.get("probe_run_id"),
                                         "execution_run_id": probe_result.get("execution_run_id"),
                                     },
+                                ),
+                                "timestamp": datetime.now(timezone.utc).timestamp(),
+                            },
+                            task_id,
+                        )
+                        return
+
+                    meta_question = conversation_service.resolve_meta_question_response(
+                        task=task,
+                        user_id=int(user.id),
+                        user_message=user_message,
+                    )
+                    if meta_question is not None and meta_question.chat_response:
+                        task.status = TaskStatus.PENDING
+                        db.add(task)
+                        db.commit()
+                        persist_assistant_message(
+                            db,
+                            task_id=task_id,
+                            user_id=int(user.id),
+                            content=str(meta_question.chat_response.get("message") or ""),
+                            message_type="chat_response",
+                            interactions=meta_question.chat_response.get("interactions"),
+                        )
+                        await manager.broadcast_to_task(
+                            {
+                                **ConversationResponseBuilder.build_task_completed_payload(
+                                    task=task,
+                                    session=session,
+                                    success=True,
+                                    result_text=str(meta_question.chat_response.get("message") or ""),
+                                    execution_type="datamakepool_conversation_gate",
+                                    chat_response=meta_question.chat_response,
+                                    ui=meta_question.ui,
                                 ),
                                 "timestamp": datetime.now(timezone.utc).timestamp(),
                             },
@@ -1712,6 +1751,11 @@ async def handle_chat_message(
                                 "visual_model_name": task.visual_model_name,
                                 "compact_model_name": task.compact_model_name,
                                 "vibe_mode": task.vibe_mode,
+                                "domain_mode": (
+                                    task.agent_config.get("domain_mode")
+                                    if isinstance(task.agent_config, dict)
+                                    else None
+                                ),
                                 "agent_id": task.agent_id,
                                 "is_dag": is_dag,
                                 "created_at": safe_timestamp_to_unix(task.created_at)
@@ -1900,16 +1944,12 @@ async def handle_execute_task(
             # Get execution gateway dependencies
             from .chat import get_agent_manager
             from ...datamakepool.gateway import DatamakepoolTaskModeGateway
-            from ...datamakepool.interceptors import ApprovalGate
             from ...datamakepool.conversation import (
                 DataGenerationConversationOrchestrator,
-                ConversationRuntimeService,
                 ConversationResponseBuilder,
-                DataGenerationConversationService,
             )
             from ...datamakepool.orchestration import (
                 EntryRecallCoordinator,
-                TemplateRunExecutor,
             )
             from ..services.chat_history_service import persist_assistant_message
             from ..services.task_prompt_recommendation_refresh import (
@@ -1917,12 +1957,12 @@ async def handle_execute_task(
             )
 
             agent_manager = get_agent_manager()
+            session = None
 
             # Set up user context
             with UserContext(user.id):
                 # Build context with vibe mode information if available
                 task_context = {}
-                runtime_service = ConversationRuntimeService(db)
                 if hasattr(task, "vibe_mode") and task.vibe_mode:
                     task_context["vibe_mode"] = task.vibe_mode
                 if hasattr(task, "process_description") and task.process_description:
@@ -1943,144 +1983,68 @@ async def handle_execute_task(
                         db=db,
                         user=user,
                     ).coordinate(str(task.description))
-                    planning_decision = entry_recall.template_decision
-                    params = planning_decision.params
-                    match_result = planning_decision.match_result
-                    generation_system_short = params.get("system_short")
-                    task_context["entry_recall_result"] = {
-                        "selected_strategy": entry_recall.selected_strategy,
-                        "selected_candidate": (
-                            {
-                                "source_type": entry_recall.selected_candidate.source_type,
-                                "candidate_id": entry_recall.selected_candidate.candidate_id,
-                                "display_name": entry_recall.selected_candidate.display_name,
-                                "system_short": entry_recall.selected_candidate.system_short,
-                                "score": entry_recall.selected_candidate.score,
-                                "matched_signals": entry_recall.selected_candidate.matched_signals,
-                                "payload": entry_recall.selected_candidate.payload,
-                            }
-                            if entry_recall.selected_candidate is not None
-                            else None
-                        ),
-                        "template_candidates": [
-                            candidate.payload
-                            for candidate in entry_recall.template_candidates
-                        ],
-                        "sql_asset_candidates": [
-                            candidate.payload
-                            for candidate in entry_recall.sql_asset_candidates
-                        ],
-                        "http_asset_candidates": [
-                            candidate.payload
-                            for candidate in entry_recall.http_asset_candidates
-                        ],
-                        "legacy_candidates": [
-                            candidate.payload
-                            for candidate in entry_recall.legacy_candidates
-                        ],
-                        "missing_params": entry_recall.missing_params,
-                        "debug": entry_recall.debug,
-                    }
-                    if (
-                        entry_recall.selected_candidate is not None
-                        and entry_recall.selected_strategy
-                        in {
-                            "sql_asset_direct",
-                            "http_asset_direct",
-                            "legacy_direct",
-                        }
-                    ):
-                        candidate = entry_recall.selected_candidate
-                        missing_param_labels = [
-                            item.get("label") or item.get("field")
-                            for item in entry_recall.missing_params
-                        ]
-                        guidance = (
-                            "\n\n入口统一召回已完成："
-                            f"\n- selected_strategy={entry_recall.selected_strategy}"
-                            f"\n- selected_candidate={candidate.display_name}"
-                            f"\n- matched_signals={candidate.matched_signals}"
-                        )
-                        if missing_param_labels:
-                            guidance += (
-                                "\n- 你接下来若需要向用户补参，只能优先围绕这些字段提问："
-                                + "、".join(
-                                    str(item) for item in missing_param_labels if item
-                                )
-                            )
-                        task_context["system_prompt"] = (
-                            task_context.get("system_prompt", "") + guidance
-                        )
-                    task_context["datamakepool_match_type"] = match_result.match_type
-                    task_context["datamakepool_execution_plan"] = (
-                        planning_decision.execution_plan
-                    )
-                    task_context["datamakepool_template_match"] = {
-                        "match_type": match_result.match_type,
-                        "coverage_score": match_result.coverage_score,
-                        "confidence": match_result.confidence,
-                        "covered_requirements": match_result.covered_requirements,
-                        "missing_requirements": match_result.missing_requirements,
-                        "recall_strategy": match_result.recall_strategy,
-                        "used_ann": match_result.used_ann,
-                        "used_fallback": match_result.used_fallback,
-                        "stage_results": match_result.stage_results,
-                    }
-                    if match_result.matched_template:
-                        task_context["datamakepool_template_match"][
-                            "matched_template"
-                        ] = {
-                            "template_id": match_result.matched_template.template_id,
-                            "template_name": match_result.matched_template.template_name,
-                            "version": match_result.matched_template.version,
-                            "system_short": match_result.matched_template.system_short,
-                        }
-
-                    conversation_service = DataGenerationConversationService(db)
-                    session = conversation_service.get_or_create_session(
+                    conversation_orchestrator = DataGenerationConversationOrchestrator(db)
+                    prepared = conversation_orchestrator.prepare_execution(
                         task=task,
                         user_id=int(user.id),
-                        goal=str(task.description),
+                        task_context=task_context,
+                        entry_recall=entry_recall,
+                        trigger_event_type="EXECUTE_TASK",
                     )
-                    if session.state in {"created", "awaiting_choice", "clarifying"}:
-                        conversation_orchestrator = DataGenerationConversationOrchestrator(db)
-                        gate_result = (
-                            conversation_orchestrator.evaluate_gate(
-                                task=task,
-                                user_id=int(user.id),
-                                user_message=str(task.description),
-                                entry_recall=entry_recall,
-                                trigger_event_type="EXECUTE_TASK",
-                            )
-                            if session.state == "created"
-                            else conversation_orchestrator.evaluate_gate(
-                                task=task,
-                                user_id=int(user.id),
-                                user_message="",
-                                trigger_event_type="EXECUTE_TASK",
-                            )
-                        )
+                    planning_decision = prepared.planning_decision
+                    params = prepared.params
+                    match_result = prepared.match_result
+                    generation_system_short = prepared.generation_system_short
+                    task_context = prepared.task_context
+                    session = prepared.session
 
-                        if gate_result.should_pause and gate_result.response_payload:
-                            task.status = TaskStatus.PENDING
-                            db.add(task)
-                            db.commit()
-                            persist_assistant_message(
-                                db,
-                                task_id=task_id,
-                                user_id=int(user.id),
-                                content=str(
-                                    gate_result.decision.chat_response.get("message")
-                                    or ""
-                                ),
-                                message_type="chat_response",
-                                interactions=gate_result.decision.chat_response.get(
-                                    "interactions"
-                                ),
-                            )
+                    if prepared.gate_result and prepared.gate_result.should_pause and prepared.gate_result.response_payload:
+                        task.status = TaskStatus.PENDING
+                        db.add(task)
+                        db.commit()
+                        persist_assistant_message(
+                            db,
+                            task_id=task_id,
+                            user_id=int(user.id),
+                            content=str(
+                                prepared.gate_result.decision.chat_response.get("message")
+                                or ""
+                            ),
+                            message_type="chat_response",
+                            interactions=prepared.gate_result.decision.chat_response.get(
+                                "interactions"
+                            ),
+                        )
+                        await manager.broadcast_to_task(
+                            {
+                                **prepared.gate_result.response_payload,
+                                "timestamp": datetime.now(timezone.utc).timestamp(),
+                            },
+                            task_id,
+                        )
+                        return
+
+                    if prepared.should_attempt_template_direct:
+                        direct_result = await conversation_orchestrator.handle_template_direct(
+                            task=task,
+                            task_id=int(task_id),
+                            user=user,
+                            task_context=task_context,
+                            planning_decision=planning_decision,
+                            match_result=match_result,
+                            params=params,
+                            session=session,
+                            event_callback=lambda message: manager.broadcast_to_task(
+                                message,
+                                task_id,
+                            ),
+                        )
+                        if direct_result.refresh_prompt_recommendation:
+                            schedule_user_task_prompt_refresh(int(user.id), force=True)
+                        if direct_result.should_return and direct_result.response_payload:
                             await manager.broadcast_to_task(
                                 {
-                                    **gate_result.response_payload,
+                                    **direct_result.response_payload,
                                     "timestamp": datetime.now(
                                         timezone.utc
                                     ).timestamp(),
@@ -2088,181 +2052,6 @@ async def handle_execute_task(
                                 task_id,
                             )
                             return
-
-                        if gate_result.execution_context:
-                            task_context.update(gate_result.execution_context)
-                            session = gate_result.session
-
-                    if (
-                        planning_decision.execution_path == "template_direct"
-                        and task_context.get("datamakepool_execution_choice")
-                        != "direct_execute"
-                    ):
-                        planning_decision.route_to_orchestrator = True
-                        task_context["system_prompt"] = (
-                            task_context.get("system_prompt", "")
-                            + "\n\n用户未选择模板直跑，本轮改为进入会话确认后的规划执行路径。"
-                        ).strip()
-
-                    if (
-                        planning_decision.execution_path == "template_direct"
-                        and match_result.matched_template
-                        and task_context.get("datamakepool_execution_choice")
-                        == "direct_execute"
-                    ):
-                        execution_run_id = task_context.get(
-                            "datamakepool_execution_run_id"
-                        )
-                        class TemplateDirectRequest:
-                            def __init__(self, user_id: int, is_admin: bool):
-                                self.user: Any = type(
-                                    "obj",
-                                    (),
-                                    {"id": user_id, "is_admin": is_admin},
-                                )()
-                                self.credentials: Any = None
-
-                        workspace = TaskWorkspace(
-                            id=f"web_task_{task_id}",
-                            base_dir=str(UPLOADS_DIR / f"user_{user.id}"),
-                        )
-                        direct_tool_config = WebToolConfig(
-                            db=db,
-                            request=TemplateDirectRequest(
-                                int(user.id),
-                                bool(user.is_admin),
-                            ),
-                            user_id=int(user.id),
-                            is_admin=bool(user.is_admin),
-                            include_mcp_tools=False,
-                            task_id=str(task_id),
-                            browser_tools_enabled=False,
-                        )
-                        template_executor = TemplateRunExecutor(
-                            db,
-                            workspace=workspace,
-                            mcp_configs=direct_tool_config.get_mcp_server_configs(),
-                            user_id=int(user.id),
-                            event_callback=lambda message: manager.broadcast_to_task(
-                                message,
-                                task_id,
-                            ),
-                        )
-                        direct_support = template_executor.analyze_match(
-                            match_result.matched_template,
-                            params,
-                        )
-                        task_context["datamakepool_template_direct_support"] = (
-                            direct_support.to_dict()
-                        )
-                        task_context["datamakepool_template_match"][
-                            "direct_execution_supported"
-                        ] = direct_support.executable
-                        task_context["datamakepool_template_match"][
-                            "direct_execution_reason"
-                        ] = direct_support.reason
-
-                        if direct_support.executable:
-                            template_result = await template_executor.execute_match(
-                                task_id=int(task_id),
-                                created_by=int(user.id),
-                                matched=match_result.matched_template,
-                                params=params,
-                            )
-                            if getattr(template_result, "paused", False):
-                                task.status = TaskStatus.PAUSED
-                            else:
-                                task.status = (
-                                    TaskStatus.COMPLETED
-                                    if template_result.success
-                                    else TaskStatus.FAILED
-                                )
-                            db.add(task)
-                            db.commit()
-                            if execution_run_id:
-                                runtime_service.finish_execution_run(
-                                    run_id=int(execution_run_id),
-                                    status=(
-                                        "paused"
-                                        if getattr(template_result, "paused", False)
-                                        else "completed"
-                                        if template_result.success
-                                        else "failed"
-                                    ),
-                                    summary=str(template_result.output or ""),
-                                    result_payload={
-                                        "success": bool(template_result.success),
-                                        "metadata": template_result.metadata or {},
-                                    },
-                                )
-                            if template_result.success:
-                                schedule_user_task_prompt_refresh(
-                                    int(user.id), force=True
-                                )
-
-                            if getattr(template_result, "paused", False):
-                                await manager.broadcast_to_task(
-                                    {
-                                        "type": "task_paused",
-                                        "task": {
-                                            "id": task.id,
-                                            "title": task.title,
-                                            "status": task.status.value,
-                                            "description": task.description,
-                                        },
-                                        "success": False,
-                                        "message": template_result.output,
-                                        "output": template_result.output,
-                                        "metadata": template_result.metadata,
-                                        "approval": template_result.metadata.get(
-                                            "approval"
-                                        ),
-                                        "timestamp": datetime.now(
-                                            timezone.utc
-                                        ).timestamp(),
-                                    },
-                                    task_id,
-                                )
-                            else:
-                                await manager.broadcast_to_task(
-                                    {
-                                        **ConversationResponseBuilder.build_task_completed_payload(
-                                            task=task,
-                                            session=session,
-                                            success=bool(template_result.success),
-                                            result_text=str(template_result.output or ""),
-                                            execution_type="datamakepool_direct_execute",
-                                            extra_metadata=template_result.metadata
-                                            or {},
-                                        ),
-                                        "timestamp": datetime.now(
-                                            timezone.utc
-                                        ).timestamp(),
-                                    },
-                                    task_id,
-                                )
-                            return
-
-                        planning_decision.route_to_orchestrator = True
-                        fallback_summary = (
-                            "模板命中但当前不能安全直跑，已自动回退 orchestrator。"
-                            f"原因：{direct_support.reason}"
-                        )
-                        if isinstance(
-                            task_context.get("datamakepool_execution_plan"),
-                            dict,
-                        ):
-                            task_context["datamakepool_execution_plan"][
-                                "template_direct_fallback"
-                            ] = direct_support.to_dict()
-                        task_context["datamakepool_template_direct_fallback"] = (
-                            direct_support.to_dict()
-                        )
-                        task_context["system_prompt"] = (
-                            task_context.get("system_prompt", "")
-                            + "\n\n"
-                            + fallback_summary
-                        ).strip()
 
                     if planning_decision.route_to_orchestrator:
                         task.agent_type_enum = AgentType.DATAMAKEPOOL_ORCHESTRATOR
@@ -2283,29 +2072,18 @@ async def handle_execute_task(
 
                 # data_generation 且模板未命中时，进入全局审批闸门。
                 if mode_decision.domain_mode == "data_generation":
-                    approval_decision = ApprovalGate(db).evaluate(
+                    approval_pause = conversation_orchestrator.evaluate_runtime_approval(
+                        task=task,
                         task_id=int(task_id),
-                        task_description=str(task.description),
-                        domain_mode=mode_decision.domain_mode,
                         requester_id=int(user.id),
+                        domain_mode=mode_decision.domain_mode,
                         system_short=generation_system_short,
                     )
-                    if approval_decision.requires_approval:
+                    if approval_pause.requires_pause:
                         await agent_service.pause_execution()
-                        task.status = TaskStatus.PAUSED
-                        db.commit()
-
                         await manager.broadcast_to_task(
                             {
-                                "type": "task_paused",
-                                "task_id": task_id,
-                                "message": "Task paused for approval",
-                                "approval": {
-                                    "ticket_id": approval_decision.ticket_id,
-                                    "required_role": approval_decision.required_role,
-                                    "reason": approval_decision.reason,
-                                    "system_short": generation_system_short,
-                                },
+                                **approval_pause.response_payload,
                                 "timestamp": datetime.now(timezone.utc).isoformat(),
                             },
                             task_id,
@@ -2329,7 +2107,7 @@ async def handle_execute_task(
                 db.commit()
                 execution_run_id = task_context.get("datamakepool_execution_run_id")
                 if execution_run_id:
-                    runtime_service.finish_execution_run(
+                    conversation_orchestrator._runtime.finish_execution_run(
                         run_id=int(execution_run_id),
                         status="completed" if result.get("success", False) else "failed",
                         summary=str(result.get("output") or ""),
@@ -2384,7 +2162,21 @@ async def handle_execute_task(
                 path_to_file_id,
             )
 
-            # Send task completion event (don't duplicate result as trace system already sent)
+                # Send task completion event (don't duplicate result as trace system already sent)
+            final_execution_type = (
+                "datamakepool_planned_execute"
+                if mode_decision.domain_mode == "data_generation"
+                else str(result.get("metadata", {}).get("execution_type") or "task_execution")
+            )
+            final_metadata = (
+                ConversationResponseBuilder.merge_execution_result_metadata(
+                    session=session,
+                    execution_type=final_execution_type,
+                    base_metadata=result.get("metadata", {}),
+                )
+                if mode_decision.domain_mode == "data_generation"
+                else result.get("metadata", {})
+            )
             await manager.broadcast_to_task(
                 {
                     "type": "task_completed",
@@ -2398,8 +2190,8 @@ async def handle_execute_task(
                     "result": result.get("output", ""),
                     "output": result.get("output", ""),
                     "chat_response": result.get("chat_response"),
-                    "metadata": result.get("metadata", {}),
-                    "conversation": result.get("metadata", {}).get("conversation"),
+                    "metadata": final_metadata,
+                    "conversation": final_metadata.get("conversation"),
                     "file_outputs": file_outputs,  # Add file output info
                     "timestamp": datetime.now(timezone.utc).timestamp(),
                 },
@@ -2444,6 +2236,7 @@ async def send_historical_data_as_stream(
     try:
         # Load historical data directly from database
         from ..models.agent import Agent
+        from ..models.chat_message import TaskChatMessage
         from ..models.database import get_db
         from ..models.task import Task, TraceEvent
 
@@ -2522,6 +2315,12 @@ async def send_historical_data_as_stream(
                     TraceEvent.build_id.is_(None),  # ← Only get VIBE events
                 )
                 .order_by(TraceEvent.timestamp)
+                .all()
+            )
+            chat_messages = (
+                db.query(TaskChatMessage)
+                .filter(TaskChatMessage.task_id == task_id)
+                .order_by(TaskChatMessage.created_at.asc(), TaskChatMessage.id.asc())
                 .all()
             )
 
@@ -2621,6 +2420,22 @@ async def send_historical_data_as_stream(
                 other_events.append(latest_plan_event)
 
             # Send sorted historical events
+            for chat_message in chat_messages:
+                await manager.send_personal_message(
+                    {
+                        "type": "chat_history_message",
+                        "task_id": task_id,
+                        "role": str(chat_message.role),
+                        "content": str(chat_message.content),
+                        "message_type": str(chat_message.message_type),
+                        "interactions": list(chat_message.interactions or []),
+                        "timestamp": safe_timestamp_to_unix(chat_message.created_at)
+                        if chat_message.created_at
+                        else datetime.now(timezone.utc).timestamp(),
+                    },
+                    websocket,
+                )
+
             for event in other_events:
                 if event["type"] == "trace_event":
                     # For trace events, send directly in unified format
@@ -2883,6 +2698,11 @@ async def handle_execute_direct(
                     "title": task.title,
                     "status": "running",
                     "description": task.description,
+                    "domain_mode": (
+                        task.agent_config.get("domain_mode")
+                        if isinstance(task.agent_config, dict)
+                        else None
+                    ),
                 },
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             },

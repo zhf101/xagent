@@ -60,6 +60,7 @@ interface ChatInputProps {
   onDomainModeChange?: (
     mode: "data_generation" | "data_consultation" | "general"
   ) => void;
+  lockDomainMode?: boolean;
 }
 
 export function ChatInput({
@@ -67,6 +68,7 @@ export function ChatInput({
   isLoading,
   files = [],
   onFilesChange,
+  showModeToggle = false,
   inputValue,
   onInputChange,
   taskStatus,
@@ -77,6 +79,7 @@ export function ChatInput({
   readOnlyConfig = false,
   domainMode = "general",
   onDomainModeChange,
+  lockDomainMode = false,
 }: ChatInputProps) {
   const router = useRouter();
   const [internalMessage, setInternalMessage] = useState("");
@@ -761,7 +764,7 @@ export function ChatInput({
             >
               <Paperclip className="h-4 w-4" />
             </Button>
-            {onDomainModeChange && (
+            {(showModeToggle || lockDomainMode) && (
               <TooltipProvider>
               <div className="flex flex-wrap items-center gap-2">
                 {[
@@ -782,18 +785,26 @@ export function ChatInput({
                   },
                 ].map((item) => {
                   const isActive = domainMode === item.value;
+                  const isDisabled = lockDomainMode && !isActive;
                   return (
                     <Tooltip key={item.value} delayDuration={250}>
                       <TooltipTrigger asChild>
                         <button
                           type="button"
-                          onClick={() => onDomainModeChange(item.value as typeof domainMode)}
+                          onClick={() => {
+                            if (!lockDomainMode) {
+                              onDomainModeChange?.(item.value as typeof domainMode)
+                            }
+                          }}
                           aria-label={item.label}
+                          disabled={lockDomainMode}
                           className={cn(
                             "flex h-9 w-9 items-center justify-center rounded-full transition-colors",
                             isActive
                               ? "bg-primary/10 text-primary ring-1 ring-primary/20"
-                              : "text-muted-foreground hover:bg-primary/5 hover:text-foreground"
+                              : isDisabled
+                                ? "text-muted-foreground/40 bg-muted/30 cursor-not-allowed"
+                                : "text-muted-foreground hover:bg-primary/5 hover:text-foreground"
                           )}
                         >
                           <item.icon className="h-4 w-4" />

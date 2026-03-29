@@ -53,6 +53,52 @@ class ConversationResponseBuilder:
         return payload
 
     @staticmethod
+    def build_task_paused_payload(
+        *,
+        task: Any,
+        session: Any | None,
+        message: str,
+        approval: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "type": "task_paused",
+            "task": {
+                "id": task.id,
+                "title": task.title,
+                "status": task.status.value,
+                "description": task.description,
+            },
+            "success": False,
+            "message": message,
+            "output": message,
+            "metadata": {
+                **ConversationResponseBuilder._conversation_metadata(session),
+                **(metadata or {}),
+            },
+        }
+        if approval is not None:
+            payload["approval"] = approval
+        return payload
+
+    @staticmethod
+    def merge_execution_result_metadata(
+        *,
+        session: Any | None,
+        execution_type: str,
+        base_metadata: dict[str, Any] | None = None,
+        extra_metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """把会话元数据与执行结果元数据合并成稳定输出。"""
+
+        return {
+            **(base_metadata or {}),
+            "execution_type": execution_type,
+            **ConversationResponseBuilder._conversation_metadata(session),
+            **(extra_metadata or {}),
+        }
+
+    @staticmethod
     def _conversation_metadata(session: Any | None) -> dict[str, Any]:
         if session is None:
             return {}
@@ -62,4 +108,12 @@ class ConversationResponseBuilder:
             "latest_summary": getattr(session, "latest_summary", None),
             "active_decision_frame_id": getattr(session, "active_decision_frame_id", None),
             "active_execution_run_id": getattr(session, "active_execution_run_id", None),
+            "decision_rationale": getattr(
+                getattr(session, "active_decision_frame", None), "rationale", None
+            ),
+            "decision_recommended_action": getattr(
+                getattr(session, "active_decision_frame", None),
+                "recommended_action",
+                None,
+            ),
         }

@@ -2180,6 +2180,7 @@ async def create_task(
             visual_model_name=task.visual_model_name,
             compact_model_name=task.compact_model_name,
             vibe_mode=task.vibe_mode,
+            domain_mode=task_agent_config.get("domain_mode"),
         )
 
     except Exception as e:
