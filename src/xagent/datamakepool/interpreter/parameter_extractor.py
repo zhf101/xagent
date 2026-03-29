@@ -28,6 +28,29 @@ _ENTITY_KEYWORDS = {
     "return_order": ("退货单", "退货", "return"),
     "card": ("借记卡", "卡bin", "卡", "card", "bin"),
 }
+_COUNT_PATTERNS = (
+    re.compile(r"(?<![A-Za-z])(\d+)\s*(个|条|张|笔|套|份|行|批)(?![A-Za-z])"),
+    re.compile(r"(?:生成|造|创建|新增|插入|准备|产出|做)\s*(\d+)(?![A-Za-z0-9])"),
+)
+
+
+def _extract_count(text: str) -> int | None:
+    """提取数量信息。
+
+    约束：
+    - 不能把 `YD03`、`UAT01` 这类环境编码里的数字误判成数量
+    - 优先识别“数字 + 量词”或“动词 + 数字”这两类更稳定的数量表达
+    """
+
+    for pattern in _COUNT_PATTERNS:
+        match = pattern.search(text)
+        if not match:
+            continue
+        try:
+            return int(match.group(1))
+        except ValueError:
+            continue
+    return None
 
 
 def extract_parameters(text: str) -> Dict[str, Any]:
@@ -50,13 +73,10 @@ def extract_parameters(text: str) -> Dict[str, Any]:
             result["system_short"] = system
             break
 
-    # 数量字段供模板参数注入使用，当前只取第一处显式数字。
-    count_match = re.search(r"(\d+)\s*(个|条|张|笔|套)?", normalized)
-    if count_match:
-        try:
-            result["count"] = int(count_match.group(1))
-        except ValueError:
-            pass
+    # 数量字段供模板参数注入使用，但不能误伤环境编码、系统编号等业务标识。
+    count = _extract_count(normalized)
+    if count is not None:
+        result["count"] = count
 
     # entity_type 主要影响模板召回和 SQL / HTTP 资产语义对齐。
     for entity_type, keywords in _ENTITY_KEYWORDS.items():

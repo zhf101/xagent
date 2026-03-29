@@ -24,22 +24,22 @@ logger = logging.getLogger(__name__)
 
 _SYSTEM_PROMPT = """\
 你是一个智能造数平台的会话推断助手。
-你的职责是每轮分析用户意图，输出结构化的推断结果。
+你的职责是每轮分析用户意图，判断当前信息是否足够，并输出结构化的推断结果。
 
 你必须严格遵守以下原则：
 1. 只有当某个信息真正阻止了后续执行时，才把它列入 blockers
 2. 如果已经能推断出意图，不要要求补充非阻塞信息
 3. 不要重复问用户已经在历史消息中回答过的问题
-4. 第二轮以后，如果信息足够推断目标系统和执行路径，应推进到 COMPILE_PLAN 或 PROBE_STEP，而不是继续澄清
-5. ui_hint.interactions 只在 recommended_action 为 ASK_BLOCKING_INFO、ASK_PREFERENCE 或 SHOW_CANDIDATES 时才填写
-6. 如果 blockers 为空，recommended_action 不应是 ASK_BLOCKING_INFO，除非你明确要用户补某个真正阻塞的信息
+4. ui_hint.interactions 只在 recommended_action 为 ASK_BLOCKING_INFO、ASK_PREFERENCE 或 SHOW_CANDIDATES 时才填写
+5. 如果 blockers 为空，recommended_action 不应是 ASK_BLOCKING_INFO，除非你明确要用户补某个真正阻塞的信息
+6. 你只负责语义层判断（信息是否齐全、用户意图是什么），不负责决定执行流程走哪条路径。流程推进（COMPILE_PLAN、PROBE_STEP、EXECUTE）由系统根据你的 blockers 和 draft_patch 自动决定。
 
 你只输出 JSON，不输出任何其他内容。JSON 结构如下：
 {
   "understanding": "...",
   "evidence": ["...", "..."],
   "blockers": ["..."],
-  "recommended_action": "EXPLAIN_BASIS | SHOW_CANDIDATES | ASK_BLOCKING_INFO | ASK_PREFERENCE | PROBE_STEP | COMPILE_PLAN | AWAIT_APPROVAL | EXECUTE",
+  "recommended_action": "EXPLAIN_BASIS | SHOW_CANDIDATES | ASK_BLOCKING_INFO | ASK_PREFERENCE | READY_TO_PROCEED",
   "allowed_actions": ["...", "..."],
   "question": "...",
   "ui_hint": {
@@ -52,15 +52,12 @@ _SYSTEM_PROMPT = """\
   "draft_patch": {}
 }
 
-recommended_action 可选值：
+recommended_action 可选值（仅语义层动作）：
 - EXPLAIN_BASIS: 先解释当前判断依据，不推进下一阶段
 - SHOW_CANDIDATES: 已有召回候选，需要用户确认选择
 - ASK_BLOCKING_INFO: 有阻塞信息缺口，需要用户补充
 - ASK_PREFERENCE: 信息基本够了，但需要用户做偏好选择
-- PROBE_STEP: 应该对某个候选或步骤做局部试跑
-- COMPILE_PLAN: 信息足够，应该编译执行草稿
-- AWAIT_APPROVAL: 当前需先等待审批
-- EXECUTE: FlowDraft 已就绪，可以正式执行
+- READY_TO_PROCEED: 语义层信息已足够，可以推进（具体走 PROBE_STEP / COMPILE_PLAN / EXECUTE 由系统决定）
 
 ui_hint.interactions 中 type 可选：
 - text_input: 单行文本
@@ -79,6 +76,8 @@ def _build_user_prompt(
     current_message: str,
     probe_findings: list[dict[str, Any]],
     draft_status: str | None,
+    has_probe_target: bool,
+    probe_target_summary: str,
     approval_summary: dict[str, Any],
 ) -> str:
     parts = []
@@ -111,6 +110,12 @@ def _build_user_prompt(
 
     if draft_status:
         parts.append(f"## 当前 FlowDraft 状态\n{draft_status}")
+
+    parts.append(
+        "## 当前 Probe 能力\n"
+        f"- has_probe_target: {'yes' if has_probe_target else 'no'}"
+        + (f"\n- detail: {probe_target_summary}" if probe_target_summary else "")
+    )
 
     if approval_summary:
         parts.append(
@@ -187,9 +192,24 @@ def _parse_llm_response(raw: str) -> ReasoningPacket:
     )
 
 
-def fallback_result(*, missing_fields: list[str]) -> ReasoningPacket:
+def fallback_result(
+    *,
+    missing_fields: list[str],
+    draft_status: str | None = None,
+    has_probe_target: bool = False,
+) -> ReasoningPacket:
     """LLM 不可用时的保守降级结果。"""
     if not missing_fields:
+        if draft_status == "probe_ready" and not has_probe_target:
+            return ReasoningPacket(
+                understanding="当前草稿已达到 probe_ready，但还没有形成可执行的 probe 目标。",
+                evidence=["当前还没有选定可试跑候选，或执行路径尚未映射到可探测资产。"],
+                blockers=["缺少可执行的 probe 目标"],
+                recommended_action="ASK_BLOCKING_INFO",
+                allowed_actions=["EXPLAIN_BASIS", "ASK_BLOCKING_INFO"],
+                question="请先选择要复用的候选，或补充更明确的执行路径后再继续。",
+                parse_ok=False,
+            )
         return ReasoningPacket(
             understanding="信息已足够，准备构建执行计划。",
             evidence=["关键字段已全部填写"],
@@ -231,6 +251,8 @@ class ConversationReasoningEngine:
         current_message: str = "",
         probe_findings: list[dict[str, Any]] | None = None,
         draft_status: str | None = None,
+        has_probe_target: bool = False,
+        probe_target_summary: str = "",
         approval_summary: dict[str, Any] | None = None,
         missing_fields: list[str] | None = None,
     ) -> ReasoningPacket:
@@ -248,6 +270,8 @@ class ConversationReasoningEngine:
             current_message=current_message,
             probe_findings=list(probe_findings or []),
             draft_status=draft_status,
+            has_probe_target=has_probe_target,
+            probe_target_summary=probe_target_summary,
             approval_summary=dict(approval_summary or {}),
         )
         messages = [
@@ -264,4 +288,8 @@ class ConversationReasoningEngine:
             return _parse_llm_response(raw)
         except Exception as exc:
             logger.warning("ReAct reasoning engine failed: %s", exc)
-            return fallback_result(missing_fields=list(missing_fields or []))
+            return fallback_result(
+                missing_fields=list(missing_fields or []),
+                draft_status=draft_status,
+                has_probe_target=has_probe_target,
+            )

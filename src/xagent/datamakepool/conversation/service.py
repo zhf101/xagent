@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 import re
 from typing import Any
 
@@ -30,7 +31,8 @@ from xagent.web.models.datamakepool_conversation import (
 )
 from xagent.web.models.task import Task
 from xagent.core.model.chat.basic.base import BaseLLM
-from xagent.web.services.model_service import get_compact_model, get_default_model
+from xagent.datamakepool.probe import FlowDraftProbePlanner
+from xagent.web.services.llm_utils import get_llm_by_name, resolve_llms_for_user
 from .application_service import DataGenerationConversationApplicationService
 from .approval_projection import FlowDraftApprovalProjector
 from .decision_engine import DraftSignals
@@ -61,6 +63,17 @@ _FIELD_LABEL_MAP = {
     "操作方式": "reuse_strategy",
 }
 
+_USER_FACING_FIELD_LABELS = {
+    "target_system": "目标系统",
+    "target_entity": "生成对象",
+    "execution_method": "执行方式",
+    "target_environment": "环境",
+    "data_count": "数量",
+    "field_constraints": "补充要求",
+    "data_dependencies": "依赖信息",
+    "reuse_strategy": "处理方式",
+}
+
 _EXECUTION_METHOD_LABEL_TO_VALUE = {
     "SQL 直接写入": "sql",
     "HTTP 接口调用": "http",
@@ -68,6 +81,13 @@ _EXECUTION_METHOD_LABEL_TO_VALUE = {
     "自动选择（推荐）": "auto",
     "自动选择": "auto",
 }
+_SUPPORTED_PROBE_TARGET_PATTERNS = {
+    "sql_asset": re.compile(r"^sql:\d+$", flags=re.IGNORECASE),
+    "http_asset": re.compile(r"^http:\d+$", flags=re.IGNORECASE),
+    "template": re.compile(r"^template:\d+$", flags=re.IGNORECASE),
+}
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -90,24 +110,97 @@ class DataGenerationConversationService:
 
     def __init__(self, db: Session, *, user_id: int | None = None):
         self._db = db
+        self._user_id = user_id
         self._runtime = ConversationRuntimeService(db)
         self._application = DataGenerationConversationApplicationService()
         self._approval_projector = FlowDraftApprovalProjector()
         self._runtime_adapter = CompiledPlanRuntimeAdapter()
         self._flow_draft_service = FlowDraftService(db)
-        llm = self._resolve_llm(user_id=user_id)
-        self._reasoning_engine: ConversationReasoningEngine | None = (
-            ConversationReasoningEngine(llm) if llm is not None else None
-        )
+        self._probe_planner = FlowDraftProbePlanner()
+        self._reasoning_engine: ConversationReasoningEngine | None = None
+        self._reasoning_engine_key: str | None = None
 
-    @staticmethod
-    def _resolve_llm(*, user_id: int | None) -> BaseLLM | None:
-        if user_id is None:
+    def _resolve_reasoning_llm(
+        self,
+        *,
+        task: Task | None,
+        user_id: int | None,
+    ) -> tuple[str | None, BaseLLM | None]:
+        """按 task 当前绑定模型优先解析 ReAct 所用 LLM。"""
+
+        effective_user_id = user_id if user_id is not None else self._user_id
+
+        # 先尊重 task 级模型选择。
+        if task is not None:
+            seen_refs: set[str] = set()
+            for source, raw_ref in (
+                ("task.compact_model_id", getattr(task, "compact_model_id", None)),
+                ("task.compact_model_name", getattr(task, "compact_model_name", None)),
+                ("task.model_id", getattr(task, "model_id", None)),
+                ("task.model_name", getattr(task, "model_name", None)),
+            ):
+                ref = str(raw_ref or "").strip()
+                if not ref or ref in seen_refs:
+                    continue
+                seen_refs.add(ref)
+                llm = get_llm_by_name(ref, self._db, effective_user_id)
+                if llm is not None:
+                    logger.info(
+                        "Datamakepool reasoning LLM resolved from %s: %s",
+                        source,
+                        ref,
+                    )
+                    return f"{source}:{ref}", llm
+                logger.warning(
+                    "Datamakepool reasoning LLM ref unavailable: source=%s ref=%s user_id=%s",
+                    source,
+                    ref,
+                    effective_user_id,
+                )
+
+        # 再回退到用户默认 compact/general。
+        if effective_user_id is None:
+            return None, None
+
+        default_llm, _, _, compact_llm = resolve_llms_for_user(self._db, effective_user_id)
+        if compact_llm is not None:
+            logger.info(
+                "Datamakepool reasoning LLM fell back to user compact default: user_id=%s model=%s",
+                effective_user_id,
+                getattr(compact_llm, "model_name", None),
+            )
+            return f"user_default:compact:{effective_user_id}", compact_llm
+        if default_llm is not None:
+            logger.info(
+                "Datamakepool reasoning LLM fell back to user general default: user_id=%s model=%s",
+                effective_user_id,
+                getattr(default_llm, "model_name", None),
+            )
+            return f"user_default:general:{effective_user_id}", default_llm
+        logger.warning(
+            "Datamakepool reasoning LLM unavailable after task/default resolution: task_id=%s user_id=%s",
+            getattr(task, "id", None),
+            effective_user_id,
+        )
+        return None, None
+
+    def _get_reasoning_engine(
+        self,
+        *,
+        task: Task | None,
+        user_id: int | None,
+    ) -> ConversationReasoningEngine | None:
+        """懒加载 reasoning engine，保证每个 task 都优先使用自身选中的模型。"""
+
+        engine_key, llm = self._resolve_reasoning_llm(task=task, user_id=user_id)
+        if llm is None:
+            self._reasoning_engine = None
+            self._reasoning_engine_key = None
             return None
-        llm = get_compact_model(user_id)
-        if llm is not None:
-            return llm
-        return get_default_model(user_id)
+        if self._reasoning_engine is None or self._reasoning_engine_key != engine_key:
+            self._reasoning_engine = ConversationReasoningEngine(llm)
+            self._reasoning_engine_key = engine_key
+        return self._reasoning_engine
 
     def get_or_create_session(
         self,
@@ -170,7 +263,14 @@ class DataGenerationConversationService:
             entry_recall=entry_recall,
             fact_snapshot=merged_fact_snapshot,
         )
+        if not has_candidates:
+            self._sync_flow_draft(
+                session=session,
+                fact_snapshot=merged_fact_snapshot,
+                reasoning_result=None,
+            )
         reasoning = self._build_initial_reasoning_packet(
+            task=task,
             session=session,
             entry_recall=entry_recall,
             has_candidates=has_candidates,
@@ -254,6 +354,7 @@ class DataGenerationConversationService:
                 )
                 if not missing_fields:
                     return self._decide_with_updated_facts(
+                        task=task,
                         session=session,
                         state_before=state_before,
                         fact_snapshot=fact_snapshot,
@@ -261,12 +362,14 @@ class DataGenerationConversationService:
                         user_message=user_message,
                     )
             return self._build_no_progress_decision(
+                task=task,
                 session=session,
                 state_before=state_before,
                 user_message=user_message,
             )
         fact_snapshot.update(parsed)
         return self._decide_with_updated_facts(
+            task=task,
             session=session,
             state_before=state_before,
             fact_snapshot=fact_snapshot,
@@ -296,6 +399,7 @@ class DataGenerationConversationService:
             else:
                 fact_snapshot[str(key)] = value
         return self._decide_with_updated_facts(
+            task=task,
             session=session,
             state_before=state_before,
             fact_snapshot=fact_snapshot,
@@ -957,6 +1061,7 @@ class DataGenerationConversationService:
     def _build_no_progress_decision(
         self,
         *,
+        task: Task,
         session: DataMakepoolConversationSession,
         state_before: str,
         user_message: str,
@@ -978,7 +1083,13 @@ class DataGenerationConversationService:
             and self._snapshot_has_candidates(latest_snapshot),
             fact_snapshot=fact_snapshot,
         )
+        self._sync_flow_draft(
+            session=session,
+            fact_snapshot=fact_snapshot,
+            reasoning_result=None,
+        )
         reasoning = self._reason(
+            task=task,
             session=session,
             current_message=user_message,
             missing_fields=missing_fields,
@@ -1005,6 +1116,7 @@ class DataGenerationConversationService:
     def _decide_with_updated_facts(
         self,
         *,
+        task: Task,
         session: DataMakepoolConversationSession,
         state_before: str,
         fact_snapshot: dict[str, Any],
@@ -1038,7 +1150,13 @@ class DataGenerationConversationService:
             and self._snapshot_has_candidates(latest_snapshot),
             fact_snapshot=fact_snapshot,
         )
+        self._sync_flow_draft(
+            session=session,
+            fact_snapshot=fact_snapshot,
+            reasoning_result=None,
+        )
         reasoning = self._reason(
+            task=task,
             session=session,
             current_message=str(user_message or ""),
             missing_fields=missing_fields,
@@ -1099,6 +1217,7 @@ class DataGenerationConversationService:
     def _build_initial_reasoning_packet(
         self,
         *,
+        task: Task,
         session: DataMakepoolConversationSession,
         entry_recall: Any,
         has_candidates: bool,
@@ -1111,7 +1230,7 @@ class DataGenerationConversationService:
         2. 首轮候选卡片 UI 已被前端消费，不能因为主脑化而直接打碎现有交互
         """
 
-        if has_candidates and self._reasoning_engine is None:
+        if has_candidates and self._get_reasoning_engine(task=task, user_id=int(session.user_id)) is None:
             return ReasoningPacket(
                 understanding="入口召回已命中可复用候选，建议先确认处理方式。",
                 evidence=[self._build_recall_summary(session, entry_recall)],
@@ -1121,6 +1240,7 @@ class DataGenerationConversationService:
                 parse_ok=False,
             )
         return self._reason(
+            task=task,
             session=session,
             current_message="",
             missing_fields=missing_fields,
@@ -1130,17 +1250,25 @@ class DataGenerationConversationService:
     def _reason(
         self,
         *,
+        task: Task,
         session: DataMakepoolConversationSession,
         current_message: str = "",
         missing_fields: list[str],
         entry_recall: Any | None = None,
     ) -> ReasoningResult:
         """调用 LLM ReAct 推断，不可用时降级。"""
-        if self._reasoning_engine is None:
-            return fallback_result(missing_fields=missing_fields)
         draft = self._flow_draft_service.get_active_draft(int(session.id))
         effective_facts = self._get_effective_fact_snapshot(session, draft=draft)
-        reasoning = self._reasoning_engine.reason(
+        has_probe_target = self._draft_has_probe_target(draft) if draft is not None else False
+        probe_target_summary = self._build_probe_target_summary(draft)
+        reasoning_engine = self._get_reasoning_engine(task=task, user_id=int(session.user_id))
+        if reasoning_engine is None:
+            return fallback_result(
+                missing_fields=missing_fields,
+                draft_status=str(draft.status) if draft else None,
+                has_probe_target=has_probe_target,
+            )
+        reasoning = reasoning_engine.reason(
             goal=str(session.goal or ""),
             history_summary=str(session.latest_summary or ""),
             fact_snapshot=effective_facts,
@@ -1148,6 +1276,8 @@ class DataGenerationConversationService:
             current_message=current_message,
             probe_findings=list((draft.probe_findings if draft else None) or []),
             draft_status=str(draft.status) if draft else None,
+            has_probe_target=has_probe_target,
+            probe_target_summary=probe_target_summary,
             approval_summary=(
                 dict(self._approval_projector.project(draft).summary)
                 if draft is not None
@@ -1341,11 +1471,46 @@ class DataGenerationConversationService:
         if draft is None:
             return None
         approval_projection = self._approval_projector.project(draft)
+        has_probe_target = self._draft_has_probe_target(draft)
         return DraftSignals(
             draft_status=str(draft.status or "drafting"),
             probe_findings=list(draft.probe_findings or []),
             readiness_verdict=dict(draft.readiness_verdict or {}),
             has_approval_blocks=approval_projection.has_blocking_approval,
+            has_probe_target=has_probe_target,
+        )
+
+    def _draft_has_probe_target(self, draft: Any) -> bool:
+        """判断当前草稿是否真的存在可执行的 probe 目标。
+
+        这里只认当前 probe service 真正支持的目标格式，避免：
+        - 把 `executor_type=auto` 这类生成态步骤误判为可 probe
+        - 把 `借记卡 / 卡BIN` 这类业务对象误当成 `sql:12` 之类资产标识
+        """
+
+        planned_probe = self._probe_planner.plan(draft=draft)
+        if planned_probe is None:
+            return False
+        probe_type = str(getattr(planned_probe, "probe_type", "") or "").strip().lower()
+        target_ref = str(getattr(planned_probe, "target_ref", "") or "").strip()
+        pattern = _SUPPORTED_PROBE_TARGET_PATTERNS.get(probe_type)
+        return bool(pattern and pattern.match(target_ref))
+
+    def _build_probe_target_summary(self, draft: Any | None) -> str:
+        """给 reasoning 层提供当前 probe 能力摘要。"""
+
+        if draft is None:
+            return ""
+        planned_probe = self._probe_planner.plan(draft=draft)
+        if planned_probe is None:
+            return "当前草稿中还没有 planner 可识别的 probe 目标。"
+        probe_type = str(getattr(planned_probe, "probe_type", "") or "").strip().lower()
+        target_ref = str(getattr(planned_probe, "target_ref", "") or "").strip()
+        if self._draft_has_probe_target(draft):
+            return f"当前可试跑目标为 {probe_type}:{target_ref}"
+        return (
+            "planner 已选出候选步骤，但目标仍不是当前 probe service 支持的资产标识："
+            f"{probe_type}:{target_ref}"
         )
 
     def _sync_flow_draft(
@@ -1385,11 +1550,11 @@ class DataGenerationConversationService:
         reasoning: ReasoningResult,
         routed_action: Any,
     ) -> DataGenerationConversationDecision:
-        session.state = str(routed_action.next_state)
-        session.latest_summary = (
-            reasoning.understanding
-            or str(routed_action.rationale or "系统已更新当前判断")
+        lead_message = self._humanize_reasoning_text(
+            str(routed_action.rationale or reasoning.understanding or "系统已更新当前判断")
         )
+        session.state = str(routed_action.next_state)
+        session.latest_summary = lead_message
         self._db.add(session)
         self._db.commit()
         self._runtime.record_decision(
@@ -1399,22 +1564,43 @@ class DataGenerationConversationService:
             recommended_action=str(routed_action.recommended_action),
             state_after=session.state,
             allowed_actions=list(routed_action.allowed_actions or []),
-            rationale=reasoning.understanding or str(routed_action.rationale or ""),
+            rationale=lead_message,
         )
 
         if bool(routed_action.should_pause_for_user):
-            message_parts = [reasoning.understanding or str(routed_action.rationale or "")]
+            message_parts = [lead_message]
             if reasoning.evidence:
-                message_parts.append("\n判断依据：\n" + "\n".join(f"- {e}" for e in reasoning.evidence))
-            if reasoning.blockers:
-                message_parts.append("\n当前阻塞点：\n" + "\n".join(f"- {b}" for b in reasoning.blockers))
-            if reasoning.question:
-                message_parts.append(f"\n{reasoning.question}")
-            if str(routed_action.recommended_action) == "PROBE_STEP":
                 message_parts.append(
-                    "\n当前草稿已达到 probe_ready，但还没有通过 probe 校验，"
-                    "请先对已选候选执行试跑。"
+                    "\n判断依据：\n"
+                    + "\n".join(
+                        f"- {self._humanize_reasoning_text(str(e))}"
+                        for e in reasoning.evidence
+                    )
                 )
+            if reasoning.blockers:
+                message_parts.append(
+                    "\n当前还缺少的信息：\n"
+                    + "\n".join(
+                        f"- {self._humanize_blocker(str(b))}"
+                        for b in reasoning.blockers
+                    )
+                )
+            if reasoning.question:
+                message_parts.append(
+                    f"\n{self._humanize_reasoning_text(str(reasoning.question))}"
+                )
+            if str(routed_action.recommended_action) == "PROBE_STEP":
+                draft_signals = self._load_draft_signals(session)
+                if draft_signals is not None and draft_signals.has_probe_target:
+                    message_parts.append(
+                        "\n系统已经找到一条可先验证的路径，"
+                        "接下来会先做一次小范围检查。"
+                    )
+                else:
+                    message_parts.append(
+                        "\n信息已经基本齐了，但系统还不知道该先走哪条现成路径，"
+                        "需要你再补一点更具体的信息。"
+                    )
             chat_response = {
                 "message": "\n".join(message_parts),
                 "interactions": reasoning.suggested_interactions,
@@ -1486,6 +1672,84 @@ class DataGenerationConversationService:
             "data_dependencies": "数据依赖",
             "reuse_strategy": "处理方式",
         }.get(field, field)
+
+    @staticmethod
+    def _user_field_label(field: str) -> str:
+        return _USER_FACING_FIELD_LABELS.get(field, field)
+
+    def _humanize_inline_fact_summary(self, text: str) -> str:
+        prefix = "当前已知信息："
+        if not text.startswith(prefix):
+            return text
+        raw_pairs = text[len(prefix) :].strip()
+        if not raw_pairs:
+            return "目前已知信息还比较少。"
+        parts: list[str] = []
+        for chunk in re.split(r"[，,]\s*", raw_pairs):
+            if ":" not in chunk:
+                parts.append(chunk.strip())
+                continue
+            key, value = chunk.split(":", 1)
+            label = self._user_field_label(key.strip())
+            normalized_value = value.strip()
+            if key.strip() == "data_count" and normalized_value.isdigit():
+                normalized_value = f"{normalized_value}"
+            parts.append(f"{label}：{normalized_value}")
+        return "目前已知：" + "，".join(part for part in parts if part)
+
+    def _humanize_reasoning_text(self, text: str) -> str:
+        normalized = str(text or "").strip()
+        if not normalized:
+            return normalized
+
+        normalized = self._humanize_inline_fact_summary(normalized)
+        normalized = normalized.replace("target_environment", self._user_field_label("target_environment"))
+        normalized = normalized.replace("target_entity", self._user_field_label("target_entity"))
+        normalized = normalized.replace("target_system", self._user_field_label("target_system"))
+        normalized = normalized.replace("execution_method", self._user_field_label("execution_method"))
+        normalized = normalized.replace("data_count", self._user_field_label("data_count"))
+        normalized = normalized.replace("field_constraints", self._user_field_label("field_constraints"))
+        normalized = normalized.replace("data_dependencies", self._user_field_label("data_dependencies"))
+        normalized = normalized.replace("reuse_strategy", self._user_field_label("reuse_strategy"))
+
+        normalized = re.sub(
+            r"FlowDraft状态为probe_ready，但Probe能力不支持[^。\n]*",
+            "目前信息已经基本齐了，但系统还没有找到一条可以直接验证的现成生成路径。",
+            normalized,
+        )
+        normalized = normalized.replace(
+            "当前草稿已达到 probe_ready，但还没有确定可试跑目标，需先选择候选或补足执行路径。",
+            "信息已经基本齐了，但系统还缺少可直接验证的现成方案或明确执行通道，所以还不能直接开始。",
+        )
+        normalized = normalized.replace(
+            "当前草稿已达到 probe_ready，但还没有通过 probe 校验，请先对已选候选执行试跑。",
+            "信息已经基本齐了，但系统还需要先做一次小范围检查，确认路径可用后再继续。",
+        )
+        normalized = normalized.replace(
+            "入口召回未命中任何候选",
+            "系统暂时没有找到可直接复用的历史方案",
+        )
+        normalized = normalized.replace(
+            "审批摘要显示approval_ready为true，needs_approval为false，所有项目状态为ready",
+            "当前不需要额外审批。",
+        )
+        normalized = normalized.replace(
+            "Probe能力",
+            "系统验证能力",
+        )
+        normalized = normalized.replace("probe_ready", "可进入检查")
+        normalized = normalized.replace("FlowDraft", "准备状态")
+        return normalized
+
+    def _humanize_blocker(self, blocker: str) -> str:
+        normalized = str(blocker or "").strip()
+        if not normalized:
+            return normalized
+        if normalized in _USER_FACING_FIELD_LABELS:
+            return self._user_field_label(normalized)
+        if normalized == "缺少可执行的 probe 目标":
+            return "还没有明确的可验证生成路径"
+        return self._humanize_reasoning_text(normalized)
 
     def _format_missing_fields(self, *, missing_fields: list[str]) -> str:
         if not missing_fields:

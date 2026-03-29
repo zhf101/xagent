@@ -20,7 +20,7 @@ import { CenterPanel } from "@/components/layout/center-panel"
 import { FilePreviewActionButtons } from "@/components/file/file-preview-action-buttons"
 
 function TaskDetailContent() {
-  const { state, sendMessage, setTaskId, openFilePreview, closeFilePreview, requestStatus, dispatch, pauseTask, resumeTask } = useApp();
+  const { state, sendMessage, setTaskId, openFilePreview, closeFilePreview, requestStatus, dispatch, pauseTask, resumeTask, isConnected } = useApp();
   const { t } = useI18n();
   const [files, setFiles] = useState<File[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -86,6 +86,41 @@ function TaskDetailContent() {
       }
     }
   }, [taskIdFromUrl, setTaskId, state.taskId]);
+
+  useEffect(() => {
+    if (!isConnected || typeof taskIdFromUrl !== "string") {
+      return;
+    }
+    const taskIdNum = parseInt(taskIdFromUrl, 10);
+    if (Number.isNaN(taskIdNum) || state.taskId !== taskIdNum) {
+      return;
+    }
+
+    const hasRenderableData =
+      !!state.currentTask ||
+      state.messages.length > 0 ||
+      state.steps.length > 0 ||
+      state.traceEvents.length > 0;
+
+    if (hasRenderableData) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      requestStatus();
+    }, 250);
+
+    return () => window.clearTimeout(timer);
+  }, [
+    isConnected,
+    taskIdFromUrl,
+    state.taskId,
+    state.currentTask,
+    state.messages.length,
+    state.steps.length,
+    state.traceEvents.length,
+    requestStatus,
+  ]);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });

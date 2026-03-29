@@ -69,6 +69,22 @@ export function ConfigDialog({ onConfigChange, currentConfig, trigger }: ConfigD
     }
   }, [open])
 
+  useEffect(() => {
+    setConfig({
+      model: currentConfig?.model || "",
+      smallFastModel: currentConfig?.smallFastModel,
+      visualModel: currentConfig?.visualModel,
+      compactModel: currentConfig?.compactModel,
+      memorySimilarityThreshold: currentConfig?.memorySimilarityThreshold ?? 1.5,
+    })
+  }, [
+    currentConfig?.model,
+    currentConfig?.smallFastModel,
+    currentConfig?.visualModel,
+    currentConfig?.compactModel,
+    currentConfig?.memorySimilarityThreshold,
+  ])
+
   const fetchModels = async () => {
     try {
       setLoading(true)

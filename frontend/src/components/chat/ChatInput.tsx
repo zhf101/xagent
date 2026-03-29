@@ -269,6 +269,7 @@ export function ChatInput({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const isSubmittingRef = useRef(false);
+  const hasUserCustomizedConfigRef = useRef(false);
   const { t } = useI18n();
   const [agentConfig, setAgentConfig] = useState<{
     model: string;
@@ -323,13 +324,19 @@ export function ChatInput({
             }
         }
 
-        setAgentConfig(prev => ({
-          ...prev,
-          model: prev.model || defaultModels.general?.model_id || "",
-          smallFastModel: prev.smallFastModel || defaultModels.small_fast?.model_id,
-          visualModel: prev.visualModel || defaultModels.visual?.model_id,
-          compactModel: prev.compactModel || defaultModels.compact?.model_id
-        }));
+        setAgentConfig(prev => {
+          // 用户已经手动改过配置后，默认模型异步返回不应再把选择覆盖回去。
+          if (hasUserCustomizedConfigRef.current) {
+            return prev;
+          }
+          return {
+            ...prev,
+            model: prev.model || defaultModels.general?.model_id || "",
+            smallFastModel: prev.smallFastModel || defaultModels.small_fast?.model_id,
+            visualModel: prev.visualModel || defaultModels.visual?.model_id,
+            compactModel: prev.compactModel || defaultModels.compact?.model_id
+          };
+        });
       } catch (error) {
         console.error('Failed to fetch default models:', error);
       }
@@ -343,13 +350,13 @@ export function ChatInput({
     if (taskConfig) {
       setAgentConfig(prev => ({
         ...prev,
-        model: taskConfig.model || prev.model,
-        smallFastModel: taskConfig.smallFastModel || prev.smallFastModel,
-        visualModel: taskConfig.visualModel || prev.visualModel,
-        compactModel: taskConfig.compactModel || prev.compactModel
+        model: readOnlyConfig ? (taskConfig.model || prev.model) : (hasUserCustomizedConfigRef.current ? prev.model : (taskConfig.model || prev.model)),
+        smallFastModel: readOnlyConfig ? (taskConfig.smallFastModel || prev.smallFastModel) : (hasUserCustomizedConfigRef.current ? prev.smallFastModel : (taskConfig.smallFastModel || prev.smallFastModel)),
+        visualModel: readOnlyConfig ? (taskConfig.visualModel || prev.visualModel) : (hasUserCustomizedConfigRef.current ? prev.visualModel : (taskConfig.visualModel || prev.visualModel)),
+        compactModel: readOnlyConfig ? (taskConfig.compactModel || prev.compactModel) : (hasUserCustomizedConfigRef.current ? prev.compactModel : (taskConfig.compactModel || prev.compactModel))
       }));
     }
-  }, [taskConfig]);
+  }, [taskConfig, readOnlyConfig]);
 
   const handleConfigChange = (config: {
     model: string;
@@ -358,6 +365,7 @@ export function ChatInput({
     compactModel?: string;
     memorySimilarityThreshold?: number;
   }) => {
+    hasUserCustomizedConfigRef.current = true;
     setAgentConfig(config);
   };
 

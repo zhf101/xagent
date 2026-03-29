@@ -770,9 +770,20 @@ class FlowDraftService:
                 continue
             if current.value_payload and not param.get("value_payload"):
                 param["value_payload"] = current.value_payload
-            if current.status and current.status != "pending":
+            # 新一轮如果已经算出 ready，就应覆盖旧的 blocked 状态；
+            # 否则用户补完字段后，草稿会被历史阻塞状态永久卡死。
+            if (
+                str(param.get("status") or "") != "ready"
+                and current.status
+                and current.status != "pending"
+            ):
                 param["status"] = str(current.status)
-            if current.blocking_reason and not param.get("blocking_reason"):
+            if (
+                str(param.get("status") or "") == "ready"
+                and param.get("value_payload") not in (None, "", [], {})
+            ):
+                param["blocking_reason"] = None
+            elif current.blocking_reason and not param.get("blocking_reason"):
                 param["blocking_reason"] = current.blocking_reason
             if current.source_ref and not param.get("source_ref"):
                 param["source_ref"] = current.source_ref
@@ -792,9 +803,16 @@ class FlowDraftService:
             current = existing.get(key)
             if current is None:
                 continue
-            if current.status and current.status != "pending":
+            # 映射和参数保持同一原则：新一轮已经 ready 时，不继承旧 blocked。
+            if (
+                str(mapping.get("status") or "") != "ready"
+                and current.status
+                and current.status != "pending"
+            ):
                 mapping["status"] = str(current.status)
-            if current.blocking_reason and not mapping.get("blocking_reason"):
+            if str(mapping.get("status") or "") == "ready":
+                mapping["blocking_reason"] = None
+            elif current.blocking_reason and not mapping.get("blocking_reason"):
                 mapping["blocking_reason"] = current.blocking_reason
             if current.source_ref and not mapping.get("source_ref"):
                 mapping["source_ref"] = current.source_ref

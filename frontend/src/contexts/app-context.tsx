@@ -152,7 +152,11 @@ interface Task {
   modelName?: string
   smallFastModelName?: string
   visualModelName?: string
+  compactModelName?: string
   vibeMode?: "task" | "process"
+  domainMode?: "data_generation" | "data_consultation" | "general"
+  isDag?: boolean
+  agentId?: number
 }
 
 interface StepExecution {
@@ -733,7 +737,12 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                 compactModelId: taskData.compact_model_id,
                 modelName: taskData.model_name,
                 smallFastModelName: taskData.small_fast_model_name,
+                visualModelName: taskData.visual_model_name,
+                compactModelName: taskData.compact_model_name,
                 vibeMode: taskData.vibe_mode,
+                domainMode: taskData.domain_mode,
+                isDag: taskData.is_dag,
+                agentId: taskData.agent_id,
               }
             })
           } else if (eventType === "dag_execution") {
@@ -2593,14 +2602,29 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
           }
           // Check if this is task info (has goal)
           else if (traceEventData.goal) {
-            // For now, create a basic task structure
+            // 兼容老 trace event：它只给 goal/task_preview，没有完整 task_info。
+            // 这里必须保留已有的 currentTask 关键信息，尤其是 domainMode，
+            // 否则任务详情页会被这个降级事件错误覆盖成 general。
+            const existingTask = currentState.currentTask
             const task = {
-              id: state.taskId?.toString() || "unknown",
-              title: traceEventData.task_preview || traceEventData.goal,
-              description: traceEventData.goal,
-              status: "completed" as const,
-              createdAt: new Date().toISOString(),
-              updatedAt: new Date().toISOString(),
+              id: existingTask?.id || currentState.taskId?.toString() || "unknown",
+              title: existingTask?.title || traceEventData.task_preview || traceEventData.goal,
+              description: traceEventData.goal || existingTask?.description || "",
+              status: existingTask?.status || ("completed" as const),
+              createdAt: existingTask?.createdAt || new Date().toISOString(),
+              updatedAt: existingTask?.updatedAt || new Date().toISOString(),
+              modelId: existingTask?.modelId,
+              smallFastModelId: existingTask?.smallFastModelId,
+              visualModelId: existingTask?.visualModelId,
+              compactModelId: existingTask?.compactModelId,
+              modelName: existingTask?.modelName,
+              smallFastModelName: existingTask?.smallFastModelName,
+              visualModelName: existingTask?.visualModelName,
+              compactModelName: existingTask?.compactModelName,
+              vibeMode: existingTask?.vibeMode,
+              domainMode: existingTask?.domainMode,
+              isDag: existingTask?.isDag,
+              agentId: existingTask?.agentId,
             }
             dispatch({ type: "SET_CURRENT_TASK", payload: task })
           }
@@ -3008,7 +3032,12 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
             compactModelId: taskData.compact_model_id,
             modelName: taskData.model_name || taskData.modelName, // API response field
             smallFastModelName: taskData.small_fast_model_name || taskData.smallFastModelName, // API response field
+            visualModelName: taskData.visual_model_name || taskData.visualModelName,
+            compactModelName: taskData.compact_model_name || taskData.compactModelName,
             vibeMode: taskData.vibe_mode,
+            domainMode: taskData.domain_mode,
+            isDag: taskData.is_dag,
+            agentId: taskData.agent_id,
           }
           dispatch({ type: "SET_CURRENT_TASK", payload: newTask })
 

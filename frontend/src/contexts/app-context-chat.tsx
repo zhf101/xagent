@@ -401,7 +401,7 @@ interface AppState {
 type AppAction =
   | { type: "SET_TASK_ID"; payload: number | null }
   | { type: "ADD_MESSAGE"; payload: Message }
-  | { type: "SET_CURRENT_TASK"; payload: Task }
+  | { type: "SET_CURRENT_TASK"; payload: Task | null }
   | { type: "UPDATE_TASK_STATUS"; payload: { status: Task["status"] } }
   | { type: "TRIGGER_TASK_UPDATE" }
   | { type: "SET_DAG_EXECUTION"; payload: DAGExecution | null }
@@ -492,9 +492,9 @@ function appReducer(state: AppState, action: AppAction): AppState {
         newTaskId: action.payload,
         payloadType: typeof action.payload
       })
-      // Clear messages if task ID changes
-      const messages = state.taskId !== action.payload ? [] : state.messages
-      const newState = { ...state, taskId: action.payload, messages }
+      // 任务切换时的消息清理由 setTaskId 显式控制，这里只更新 taskId。
+      // 否则会把上层刚保留下来的乐观消息或历史消息再次清空。
+      const newState = { ...state, taskId: action.payload }
       console.log('🔄 Reducer returning new state:', newState)
       return newState
 
@@ -3230,14 +3230,32 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
           }
           // Check if this is task info (has goal)
           else if (traceEventData.goal) {
-            // For now, create a basic task structure
+            // 兼容老 trace event：它只给 goal/task_preview，没有完整 task_info。
+            // 这里必须保留已有的 currentTask 关键信息，尤其是 domainMode，
+            // 否则任务详情页会被这个降级事件错误覆盖成 general。
+            const existingTask =
+              currentState.currentTask?.id === currentState.taskId?.toString()
+                ? currentState.currentTask
+                : null
             const task = {
-              id: state.taskId?.toString() || "unknown",
-              title: traceEventData.task_preview || traceEventData.goal,
-              description: traceEventData.goal,
-              status: "completed" as const,
-              createdAt: new Date().toISOString(),
-              updatedAt: new Date().toISOString(),
+              id: currentState.taskId?.toString() || existingTask?.id || "unknown",
+              title: traceEventData.task_preview || existingTask?.title || traceEventData.goal,
+              description: traceEventData.goal || existingTask?.description || "",
+              status: existingTask?.status || ("completed" as const),
+              createdAt: existingTask?.createdAt || new Date().toISOString(),
+              updatedAt: existingTask?.updatedAt || new Date().toISOString(),
+              modelId: existingTask?.modelId,
+              smallFastModelId: existingTask?.smallFastModelId,
+              visualModelId: existingTask?.visualModelId,
+              compactModelId: existingTask?.compactModelId,
+              modelName: existingTask?.modelName,
+              smallFastModelName: existingTask?.smallFastModelName,
+              visualModelName: existingTask?.visualModelName,
+              compactModelName: existingTask?.compactModelName,
+              vibeMode: existingTask?.vibeMode,
+              domainMode: existingTask?.domainMode,
+              isDag: existingTask?.isDag,
+              agentId: existingTask?.agentId,
             }
             dispatch({ type: "SET_CURRENT_TASK", payload: task })
           }
@@ -4018,9 +4036,16 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
       // by the connection effect AFTER the new task's history has already arrived.
       const keepMessageId =
         stateRef.current.taskId == null ? pendingOptimisticMessageId.current : null
+      const shouldPreserveCurrentTask =
+        taskId != null &&
+        stateRef.current.currentTask?.id === taskId.toString()
       dispatch({ type: "CLEAR_MESSAGES", payload: { keepMessageId } })
       dispatch({ type: "SET_TRACE_EVENTS", payload: [] })
       dispatch({ type: "SET_STEPS", payload: [] })
+      dispatch({ type: "SET_DAG_EXECUTION", payload: null })
+      if (!shouldPreserveCurrentTask) {
+        dispatch({ type: "SET_CURRENT_TASK", payload: null })
+      }
     }
 
     // Update URL to use dynamic route for task detail page

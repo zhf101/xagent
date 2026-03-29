@@ -39,6 +39,7 @@ class DraftSignals:
     probe_findings: list[dict[str, Any]] = field(default_factory=list)
     readiness_verdict: dict[str, Any] = field(default_factory=dict)
     has_approval_blocks: bool = False
+    has_probe_target: bool = False
 
     @property
     def is_ready(self) -> bool:
@@ -66,6 +67,9 @@ class DataGenerationDecisionEngine:
         "EXECUTE_READY": "EXECUTE",
         "REQUEST_APPROVAL_RESOLUTION": "AWAIT_APPROVAL",
         "DIRECT_EXECUTE": "EXECUTE",
+        # LLM 语义层信号，router 在调用 apply_hard_guards 前已将其展开，
+        # 这里保留映射以防止意外透传时被误识别为未知动作。
+        "READY_TO_PROCEED": "READY_TO_PROCEED",
     }
 
     def normalize_action(self, action: str) -> str:
@@ -93,6 +97,15 @@ class DataGenerationDecisionEngine:
         """
 
         normalized_action = self.normalize_action(action)
+
+        # READY_TO_PROCEED 是 LLM 语义层信号，正常路径下已由 router 展开。
+        # 若意外透传至此，按保守原则降级处理。
+        if normalized_action == "READY_TO_PROCEED":
+            if missing_fields:
+                normalized_action = "ASK_BLOCKING_INFO"
+            else:
+                normalized_action = "COMPILE_PLAN"
+
         if "reuse_strategy" in missing_fields and normalized_action in {
             "ASK_BLOCKING_INFO",
             "ASK_PREFERENCE",
@@ -110,13 +123,25 @@ class DataGenerationDecisionEngine:
             "SHOW_CANDIDATES",
             "ASK_BLOCKING_INFO",
             "ASK_PREFERENCE",
-            "PROBE_STEP",
             "AWAIT_APPROVAL",
         }:
             return ConversationDecisionOutcome(
                 recommended_action=normalized_action,
                 rationale="当前动作属于解释、提问、选择或局部验证，不需要额外收缩。",
                 allowed_actions=[normalized_action],
+            )
+
+        if normalized_action == "PROBE_STEP":
+            if draft_signals is not None and draft_signals.has_probe_target:
+                return ConversationDecisionOutcome(
+                    recommended_action="PROBE_STEP",
+                    rationale="系统已经找到可先验证的一条路径，下一步先做一次小范围检查。",
+                    allowed_actions=["PROBE_STEP"],
+                )
+            return ConversationDecisionOutcome(
+                recommended_action="ASK_BLOCKING_INFO",
+                rationale="信息已经基本齐了，但系统还不知道该先验证哪条生成路径，需要你再补一点更具体的信息。",
+                allowed_actions=["ASK_BLOCKING_INFO"],
             )
 
         if missing_fields and normalized_action in {"COMPILE_PLAN", "EXECUTE"}:
@@ -158,12 +183,12 @@ class DataGenerationDecisionEngine:
             if draft_signals.draft_status == "probe_ready":
                 return ConversationDecisionOutcome(
                     recommended_action="PROBE_STEP",
-                    rationale="draft 只达到 probe_ready，仍需先做局部试跑。",
+                    rationale="信息已经基本齐了，但系统还需要先做一次小范围检查，再继续往下执行。",
                     allowed_actions=["PROBE_STEP"],
                 )
             return ConversationDecisionOutcome(
                 recommended_action="COMPILE_PLAN",
-                rationale="draft 尚未冻结为可执行快照，需先编译计划。",
+                rationale="系统还需要先整理成正式执行方案，暂时不能直接开始。",
                 allowed_actions=["COMPILE_PLAN"],
             )
 
@@ -177,13 +202,13 @@ class DataGenerationDecisionEngine:
             if draft_signals.draft_status == "probe_ready":
                 return ConversationDecisionOutcome(
                     recommended_action="PROBE_STEP",
-                    rationale="draft 仅 probe_ready，需先 probe 再 compile。",
+                    rationale="信息已经基本齐了，但系统要先做一次小范围检查，确认没问题后再生成正式方案。",
                     allowed_actions=["PROBE_STEP"],
                 )
             if draft_signals.is_ready:
                 return ConversationDecisionOutcome(
                     recommended_action="EXECUTE",
-                    rationale="draft 已满足 execute readiness，无需重复 compile。",
+                    rationale="前置检查已经通过，可以直接开始执行，不需要重复整理方案。",
                     allowed_actions=["EXECUTE"],
                 )
             return ConversationDecisionOutcome(
