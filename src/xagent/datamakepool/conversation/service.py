@@ -31,6 +31,7 @@ from xagent.web.models.datamakepool_conversation import (
 from xagent.web.models.task import Task
 from xagent.core.model.chat.basic.base import BaseLLM
 from xagent.web.services.model_service import get_compact_model, get_default_model
+from .application_service import DataGenerationConversationApplicationService
 from .decision_engine import DataGenerationDecisionEngine, DraftSignals
 from .flow_draft_service import FlowDraftService
 from .reasoning_engine import ConversationReasoningEngine, fallback_result
@@ -89,6 +90,7 @@ class DataGenerationConversationService:
         self._db = db
         self._runtime = ConversationRuntimeService(db)
         self._decision_engine = DataGenerationDecisionEngine()
+        self._application = DataGenerationConversationApplicationService()
         self._flow_draft_service = FlowDraftService(db)
         llm = self._resolve_llm(user_id=user_id)
         self._reasoning_engine: ConversationReasoningEngine | None = (
@@ -978,47 +980,17 @@ class DataGenerationConversationService:
             reasoning_result=reasoning,
         )
         draft_signals = self._load_draft_signals(session)
-        decision = self._decision_engine.decide_after_user_message(
+        routed_action = self._application.select_action(
+            reasoning_packet=reasoning,
             missing_fields=missing_fields,
             draft_signals=draft_signals,
         )
-
-        session.state = decision.next_state
-        session.latest_summary = reasoning.understanding or "系统已返回判断依据与缺口说明"
-        self._db.add(session)
-        self._db.commit()
-        self._runtime.record_decision(
+        return self._finalize_reasoning_action(
             session=session,
             state_before=state_before,
             input_event_type="USER_FREE_TEXT",
-            recommended_action=decision.recommended_action,
-            state_after=session.state,
-            allowed_actions=decision.allowed_actions,
-            rationale=reasoning.understanding,
-        )
-
-        message_parts = [reasoning.understanding]
-        if reasoning.evidence:
-            message_parts.append("\n判断依据：\n" + "\n".join(f"- {e}" for e in reasoning.evidence))
-        if reasoning.blockers:
-            message_parts.append("\n当前阻塞点：\n" + "\n".join(f"- {b}" for b in reasoning.blockers))
-        if reasoning.question:
-            message_parts.append(f"\n{reasoning.question}")
-
-        chat_response = {
-            "message": "\n".join(message_parts),
-            "interactions": reasoning.suggested_interactions,
-        }
-        ui = (
-            {"type": "clarification_form", "interactions": reasoning.suggested_interactions}
-            if reasoning.suggested_interactions
-            else None
-        )
-        return DataGenerationConversationDecision(
-            should_pause_for_user=True,
-            state=session.state,
-            chat_response=chat_response,
-            ui=ui,
+            reasoning=reasoning,
+            routed_action=routed_action,
         )
 
     def _decide_with_updated_facts(
@@ -1065,113 +1037,17 @@ class DataGenerationConversationService:
             reasoning_result=reasoning,
         )
         draft_signals = self._load_draft_signals(session)
-        decision = self._decision_engine.decide_after_user_message(
+        routed_action = self._application.select_action(
+            reasoning_packet=reasoning,
             missing_fields=missing_fields,
             draft_signals=draft_signals,
         )
-
-        # LLM says we can proceed even if field-check says missing — trust LLM
-        effective_missing = missing_fields if reasoning.recommended_action == "REQUEST_CLARIFICATION" else []
-
-        if effective_missing:
-            session.state = decision.next_state
-            session.latest_summary = reasoning.understanding or "用户已补充部分信息，仍存在关键缺口"
-            self._db.add(session)
-            self._db.commit()
-            self._runtime.record_decision(
-                session=session,
-                state_before=state_before,
-                input_event_type=input_event_type,
-                recommended_action=decision.recommended_action,
-                state_after=session.state,
-                allowed_actions=decision.allowed_actions,
-                rationale=reasoning.understanding,
-            )
-            message_parts = [reasoning.understanding]
-            if reasoning.evidence:
-                message_parts.append("\n判断依据：\n" + "\n".join(f"- {e}" for e in reasoning.evidence))
-            if reasoning.blockers:
-                message_parts.append("\n当前阻塞点：\n" + "\n".join(f"- {b}" for b in reasoning.blockers))
-            if reasoning.question:
-                message_parts.append(f"\n{reasoning.question}")
-            chat_response = {
-                "message": "\n".join(message_parts),
-                "interactions": reasoning.suggested_interactions,
-            }
-            ui = (
-                {"type": "clarification_form", "interactions": reasoning.suggested_interactions}
-                if reasoning.suggested_interactions
-                else None
-            )
-            return DataGenerationConversationDecision(
-                should_pause_for_user=True,
-                state=session.state,
-                chat_response=chat_response,
-                ui=ui,
-            )
-
-        if decision.recommended_action in {
-            "RUN_PROBE",
-            "REQUEST_APPROVAL_RESOLUTION",
-            "REQUEST_CLARIFICATION",
-        }:
-            session.state = decision.next_state
-            session.latest_summary = reasoning.understanding or decision.rationale
-            self._db.add(session)
-            self._db.commit()
-            self._runtime.record_decision(
-                session=session,
-                state_before=state_before,
-                input_event_type=input_event_type,
-                recommended_action=decision.recommended_action,
-                state_after=session.state,
-                allowed_actions=decision.allowed_actions,
-                rationale=reasoning.understanding or decision.rationale,
-            )
-            message_parts = [reasoning.understanding or decision.rationale]
-            if reasoning.evidence:
-                message_parts.append("\n判断依据：\n" + "\n".join(f"- {e}" for e in reasoning.evidence))
-            if reasoning.blockers:
-                message_parts.append("\n当前阻塞点：\n" + "\n".join(f"- {b}" for b in reasoning.blockers))
-            if decision.recommended_action == "RUN_PROBE":
-                message_parts.append(
-                    "\n当前草稿已达到 probe_ready，但还没有通过 probe 校验，"
-                    "请先对已选候选执行试跑。"
-                )
-            chat_response = {
-                "message": "\n".join(message_parts),
-                "interactions": reasoning.suggested_interactions,
-            }
-            ui = (
-                {"type": "clarification_form", "interactions": reasoning.suggested_interactions}
-                if reasoning.suggested_interactions
-                else None
-            )
-            return DataGenerationConversationDecision(
-                should_pause_for_user=True,
-                state=session.state,
-                chat_response=chat_response,
-                ui=ui,
-            )
-
-        session.state = decision.next_state
-        session.latest_summary = "关键业务信息已满足 Phase 1 入口要求，准备进入正式执行"
-        self._db.add(session)
-        self._db.commit()
-        self._runtime.record_decision(
+        return self._finalize_reasoning_action(
             session=session,
             state_before=state_before,
             input_event_type=input_event_type,
-            recommended_action=decision.recommended_action,
-            state_after=session.state,
-            allowed_actions=decision.allowed_actions,
-            rationale=decision.rationale,
-        )
-        execution_context = self._build_execution_context(session=session)
-        return DataGenerationConversationDecision(
-            should_pause_for_user=False,
-            state=session.state,
-            execution_context=execution_context,
+            reasoning=reasoning,
+            routed_action=routed_action,
         )
 
     def _build_recall_summary(
@@ -1272,6 +1148,64 @@ class DataGenerationConversationService:
         session.active_flow_draft_id = int(draft.id)
         self._db.add(session)
         self._db.commit()
+
+    def _finalize_reasoning_action(
+        self,
+        *,
+        session: DataMakepoolConversationSession,
+        state_before: str,
+        input_event_type: str,
+        reasoning: ReasoningResult,
+        routed_action: Any,
+    ) -> DataGenerationConversationDecision:
+        session.state = str(routed_action.next_state)
+        session.latest_summary = (
+            reasoning.understanding
+            or str(routed_action.rationale or "系统已更新当前判断")
+        )
+        self._db.add(session)
+        self._db.commit()
+        self._runtime.record_decision(
+            session=session,
+            state_before=state_before,
+            input_event_type=input_event_type,
+            recommended_action=str(routed_action.recommended_action),
+            state_after=session.state,
+            allowed_actions=list(routed_action.allowed_actions or []),
+            rationale=reasoning.understanding or str(routed_action.rationale or ""),
+        )
+
+        if bool(routed_action.should_pause_for_user):
+            message_parts = [reasoning.understanding or str(routed_action.rationale or "")]
+            if reasoning.evidence:
+                message_parts.append("\n判断依据：\n" + "\n".join(f"- {e}" for e in reasoning.evidence))
+            if reasoning.blockers:
+                message_parts.append("\n当前阻塞点：\n" + "\n".join(f"- {b}" for b in reasoning.blockers))
+            if reasoning.question:
+                message_parts.append(f"\n{reasoning.question}")
+            if str(routed_action.recommended_action) == "PROBE_STEP":
+                message_parts.append(
+                    "\n当前草稿已达到 probe_ready，但还没有通过 probe 校验，"
+                    "请先对已选候选执行试跑。"
+                )
+            chat_response = {
+                "message": "\n".join(message_parts),
+                "interactions": reasoning.suggested_interactions,
+            }
+            ui = dict(reasoning.ui_hint or {}) or None
+            return DataGenerationConversationDecision(
+                should_pause_for_user=True,
+                state=session.state,
+                chat_response=chat_response,
+                ui=ui,
+            )
+
+        execution_context = self._build_execution_context(session=session)
+        return DataGenerationConversationDecision(
+            should_pause_for_user=False,
+            state=session.state,
+            execution_context=execution_context,
+        )
 
     def _parse_user_message(self, message: str) -> dict[str, Any]:
         result: dict[str, Any] = {}
