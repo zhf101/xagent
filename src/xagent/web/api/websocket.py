@@ -42,6 +42,38 @@ from ..utils.db_timezone import safe_timestamp_to_unix
 logger = logging.getLogger(__name__)
 
 
+def _build_websocket_request_id(websocket: WebSocket, task_id: int) -> str:
+    """为 WebSocket 会话生成稳定的 request_id，便于串联整条日志链路。"""
+
+    header_request_id = str(websocket.headers.get("x-request-id") or "").strip()
+    if header_request_id:
+        return header_request_id
+    return f"ws-{task_id}-{uuid.uuid4().hex[:8]}"
+
+
+def _build_task_log_context(
+    *,
+    task: Any,
+    user_id: int | None,
+    run_id: Any | None = None,
+) -> dict[str, Any]:
+    """从 task 上提取日志上下文字段，避免各处重复拼装。"""
+
+    task_agent_config = getattr(task, "agent_config", None)
+    task_domain_mode = (
+        task_agent_config.get("domain_mode")
+        if isinstance(task_agent_config, dict)
+        else None
+    )
+    return {
+        "task_id": getattr(task, "id", None),
+        "user_id": user_id,
+        "agent_type": getattr(task, "agent_type", None),
+        "domain_mode": task_domain_mode,
+        "run_id": run_id,
+    }
+
+
 def _resolve_task_llm_ids(
     task: Any, db: Session
 ) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
@@ -512,18 +544,13 @@ async def execute_task_background(
     # Wait for previous background task to complete
     await background_task_manager.wait_for_previous(task_id)
     task_agent_type = getattr(task, "agent_type", None)
-    task_agent_config = getattr(task, "agent_config", None)
-    task_domain_mode = (
-        task_agent_config.get("domain_mode")
-        if isinstance(task_agent_config, dict)
-        else None
-    )
-    tokens = bind_log_context(
-        task_id=task_id,
+    task_log_context = _build_task_log_context(
+        task=task,
         user_id=int(user.id) if user else None,
-        agent_type=task_agent_type,
-        domain_mode=task_domain_mode,
+        run_id=context.get("datamakepool_execution_run_id"),
     )
+    tokens = bind_log_context(**task_log_context)
+    task_domain_mode = task_log_context.get("domain_mode")
 
     try:
         log_dataflow(
@@ -730,18 +757,13 @@ async def execute_continuation_background(
     # Wait for previous background task to complete
     await background_task_manager.wait_for_previous(task_id)
     task_agent_type = getattr(task, "agent_type", None)
-    task_agent_config = getattr(task, "agent_config", None)
-    task_domain_mode = (
-        task_agent_config.get("domain_mode")
-        if isinstance(task_agent_config, dict)
-        else None
-    )
-    tokens = bind_log_context(
-        task_id=task_id,
+    task_log_context = _build_task_log_context(
+        task=task,
         user_id=int(user.id) if user else None,
-        agent_type=task_agent_type,
-        domain_mode=task_domain_mode,
+        run_id=context.get("datamakepool_execution_run_id"),
     )
+    tokens = bind_log_context(**task_log_context)
+    task_domain_mode = task_log_context.get("domain_mode")
 
     try:
         log_dataflow(
@@ -1895,85 +1917,93 @@ async def handle_execute_task(
             if not task:
                 raise Exception(f"Task {task_id} not found or access denied")
 
-            # Update task status to running
-            task.status = TaskStatus.RUNNING
-            db.commit()
-
-            (
-                model_id,
-                small_fast_model_id,
-                visual_model_id,
-                compact_model_id,
-            ) = _resolve_task_llm_ids(task, db)
-
-            # Send task info event to update frontend state
-            task_event = create_stream_event(
-                "task_info",
-                task_id,
-                {
-                    "id": task.id,
-                    "title": task.title,
-                    "description": task.description,
-                    "status": task.status.value,
-                    "model_id": model_id,
-                    "small_fast_model_id": small_fast_model_id,
-                    "visual_model_id": visual_model_id,
-                    "compact_model_id": compact_model_id,
-                    "model_name": task.model_name,
-                    "small_fast_model_name": task.small_fast_model_name,
-                    "visual_model_name": task.visual_model_name,
-                    "compact_model_name": task.compact_model_name,
-                    "vibe_mode": task.vibe_mode,
-                    "created_at": safe_timestamp_to_unix(task.created_at)
-                    if task.created_at
-                    else None,
-                    "updated_at": safe_timestamp_to_unix(task.updated_at)
-                    if task.updated_at
-                    else None,
-                },
-                task.created_at if task.created_at else None,
-            )
-            await manager.broadcast_to_task(task_event, task_id)
-
-            # DAG plan-execute will automatically send user_message trace event
-
-            # DAG plan-execute also sends trace events, but may not forward in real-time
-
-            # Get execution gateway dependencies
-            from .chat import get_agent_manager
-            from ...datamakepool.gateway import DatamakepoolTaskModeGateway
-            from ...datamakepool.conversation import (
-                DataGenerationConversationOrchestrator,
-                ConversationResponseBuilder,
-            )
-            from ...datamakepool.orchestration import (
-                EntryRecallCoordinator,
-            )
-            from ..services.chat_history_service import persist_assistant_message
-            from ..services.task_prompt_recommendation_refresh import (
-                schedule_user_task_prompt_refresh,
-            )
-
-            agent_manager = get_agent_manager()
-            session = None
-
-            # Set up user context
-            with UserContext(user.id):
-                # Build context with vibe mode information if available
-                task_context = {}
-                if hasattr(task, "vibe_mode") and task.vibe_mode:
-                    task_context["vibe_mode"] = task.vibe_mode
-                if hasattr(task, "process_description") and task.process_description:
-                    task_context["process_description"] = task.process_description
-                if hasattr(task, "examples") and task.examples:
-                    task_context["examples"] = task.examples
-
-                # Apply datamakepool task mode gateway before execution.
-                mode_decision = DatamakepoolTaskModeGateway.build_decision(
-                    task, task_context
+            execution_tokens = bind_log_context(
+                **_build_task_log_context(
+                    task=task,
+                    user_id=int(user.id),
                 )
-                task_context = mode_decision.execution_context
-                generation_system_short = None
+            )
+
+            try:
+                # Update task status to running
+                task.status = TaskStatus.RUNNING
+                db.commit()
+
+                (
+                    model_id,
+                    small_fast_model_id,
+                    visual_model_id,
+                    compact_model_id,
+                ) = _resolve_task_llm_ids(task, db)
+
+                # Send task info event to update frontend state
+                task_event = create_stream_event(
+                    "task_info",
+                    task_id,
+                    {
+                        "id": task.id,
+                        "title": task.title,
+                        "description": task.description,
+                        "status": task.status.value,
+                        "model_id": model_id,
+                        "small_fast_model_id": small_fast_model_id,
+                        "visual_model_id": visual_model_id,
+                        "compact_model_id": compact_model_id,
+                        "model_name": task.model_name,
+                        "small_fast_model_name": task.small_fast_model_name,
+                        "visual_model_name": task.visual_model_name,
+                        "compact_model_name": task.compact_model_name,
+                        "vibe_mode": task.vibe_mode,
+                        "created_at": safe_timestamp_to_unix(task.created_at)
+                        if task.created_at
+                        else None,
+                        "updated_at": safe_timestamp_to_unix(task.updated_at)
+                        if task.updated_at
+                        else None,
+                    },
+                    task.created_at if task.created_at else None,
+                )
+                await manager.broadcast_to_task(task_event, task_id)
+
+                # DAG plan-execute will automatically send user_message trace event
+
+                # DAG plan-execute also sends trace events, but may not forward in real-time
+
+                # Get execution gateway dependencies
+                from .chat import get_agent_manager
+                from ...datamakepool.gateway import DatamakepoolTaskModeGateway
+                from ...datamakepool.conversation import (
+                    DataGenerationConversationOrchestrator,
+                    ConversationResponseBuilder,
+                )
+                from ...datamakepool.orchestration import (
+                    EntryRecallCoordinator,
+                )
+                from ..services.chat_history_service import persist_assistant_message
+                from ..services.task_prompt_recommendation_refresh import (
+                    schedule_user_task_prompt_refresh,
+                )
+
+                agent_manager = get_agent_manager()
+                session = None
+
+                # Set up user context
+                with UserContext(user.id):
+                    # Build context with vibe mode information if available
+                    task_context = {}
+                    if hasattr(task, "vibe_mode") and task.vibe_mode:
+                        task_context["vibe_mode"] = task.vibe_mode
+                    if hasattr(task, "process_description") and task.process_description:
+                        task_context["process_description"] = task.process_description
+                    if hasattr(task, "examples") and task.examples:
+                        task_context["examples"] = task.examples
+
+                    # Apply datamakepool task mode gateway before execution.
+                    mode_decision = DatamakepoolTaskModeGateway.build_decision(
+                        task, task_context
+                    )
+                    task_context = mode_decision.execution_context
+                    generation_system_short = None
 
                 # data_generation 入口先跑统一召回协调层，再决定模板直跑 / 增强 / 动态规划。
                 if mode_decision.domain_mode == "data_generation":
@@ -2148,59 +2178,63 @@ async def handle_execute_task(
 
                 # Send task completion event (don't duplicate result as trace system already sent)
 
-            # Workspace cleanup now only happens on task deletion, so users can view result files
+                # Workspace cleanup now only happens on task deletion, so users can view result files
 
-            # Note: trace_task_completion is handled by handle_chat_message to avoid duplicates
+                # Note: trace_task_completion is handled by handle_chat_message to avoid duplicates
 
-            # Extract file output info
-            file_outputs, path_to_file_id = _normalize_file_outputs(
-                db,
-                task_id=int(task_id),
-                task_user_id=int(cast(Any, task.user_id)),
-                file_outputs=result.get("file_outputs", []),
-            )
-            result["output"] = _rewrite_file_links_to_file_id(
-                result.get("output", ""),
-                path_to_file_id,
-            )
+                # Extract file output info
+                file_outputs, path_to_file_id = _normalize_file_outputs(
+                    db,
+                    task_id=int(task_id),
+                    task_user_id=int(cast(Any, task.user_id)),
+                    file_outputs=result.get("file_outputs", []),
+                )
 
                 # Send task completion event (don't duplicate result as trace system already sent)
-            if mode_decision.domain_mode == "data_generation":
-                raise RuntimeError(
-                    "data_generation 不应落入旧 agent 完成分支；请检查 runtime contract 主链是否失效"
+                result["output"] = _rewrite_file_links_to_file_id(
+                    result.get("output", ""),
+                    path_to_file_id,
                 )
-            final_execution_type = str(
-                result.get("metadata", {}).get("execution_type") or "task_execution"
-            )
-            final_metadata = (
-                ConversationResponseBuilder.merge_execution_result_metadata(
-                    session=session,
-                    execution_type=final_execution_type,
-                    base_metadata=result.get("metadata", {}),
+
+                if mode_decision.domain_mode == "data_generation":
+                    raise RuntimeError(
+                        "data_generation 不应落入旧 agent 完成分支；请检查 runtime contract 主链是否失效"
+                    )
+                final_execution_type = str(
+                    result.get("metadata", {}).get("execution_type")
+                    or "task_execution"
                 )
-                if mode_decision.domain_mode == "data_generation"
-                else result.get("metadata", {})
-            )
-            await manager.broadcast_to_task(
-                {
-                    "type": "task_completed",
-                    "task": {
-                        "id": task.id,
-                        "title": task.title,
-                        "status": task.status.value,
-                        "description": task.description,
+                final_metadata = (
+                    ConversationResponseBuilder.merge_execution_result_metadata(
+                        session=session,
+                        execution_type=final_execution_type,
+                        base_metadata=result.get("metadata", {}),
+                    )
+                    if mode_decision.domain_mode == "data_generation"
+                    else result.get("metadata", {})
+                )
+                await manager.broadcast_to_task(
+                    {
+                        "type": "task_completed",
+                        "task": {
+                            "id": task.id,
+                            "title": task.title,
+                            "status": task.status.value,
+                            "description": task.description,
+                        },
+                        "success": result.get("success", False),
+                        "result": result.get("output", ""),
+                        "output": result.get("output", ""),
+                        "chat_response": result.get("chat_response"),
+                        "metadata": final_metadata,
+                        "conversation": final_metadata.get("conversation"),
+                        "file_outputs": file_outputs,  # Add file output info
+                        "timestamp": datetime.now(timezone.utc).timestamp(),
                     },
-                    "success": result.get("success", False),
-                    "result": result.get("output", ""),
-                    "output": result.get("output", ""),
-                    "chat_response": result.get("chat_response"),
-                    "metadata": final_metadata,
-                    "conversation": final_metadata.get("conversation"),
-                    "file_outputs": file_outputs,  # Add file output info
-                    "timestamp": datetime.now(timezone.utc).timestamp(),
-                },
-                task_id,
-            )
+                    task_id,
+                )
+            finally:
+                reset_log_context(execution_tokens)
 
         finally:
             db.close()
@@ -2548,6 +2582,11 @@ async def websocket_chat_endpoint(
         return
 
     await manager.connect(websocket, task_id)
+    connection_tokens = bind_log_context(
+        request_id=_build_websocket_request_id(websocket, task_id),
+        task_id=task_id,
+        user_id=int(user.id),
+    )
 
     try:
         # Send initial state
@@ -2601,6 +2640,8 @@ async def websocket_chat_endpoint(
         logger.error(f"Unexpected error in WebSocket: {e}")
         manager.disconnect(websocket, task_id)
         raise
+    finally:
+        reset_log_context(connection_tokens)
 
 
 async def handle_execute_direct(

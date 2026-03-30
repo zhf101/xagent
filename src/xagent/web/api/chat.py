@@ -15,6 +15,7 @@ from ...core.agent.trace import Tracer
 from ...core.model.chat.basic.base import BaseLLM
 from ...core.model.chat.basic.openai import OpenAILLM
 from ...core.model.chat.basic.zhipu import ZhipuLLM
+from ...core.observability.local_logging import bind_log_context, reset_log_context
 from ...integrations.openviking import get_openviking_service
 from ..auth_dependencies import get_current_user
 from ..config import ALLOWED_EXTERNAL_UPLOAD_DIRS, UPLOADS_DIR
@@ -1184,6 +1185,8 @@ class AgentServiceManager:
         tracker = None
         tracker_task_id = tracking_task_id or task_id
         effective_context = dict(context) if context else None
+        task_record: Optional[Task] = None
+        execution_log_tokens: dict[str, Any] = {}
         openviking_session_id: Optional[str] = None
         openviking_user_id: Optional[int] = None
         openviking_agent_id: Optional[str] = None
@@ -1205,13 +1208,38 @@ class AgentServiceManager:
                 tracker = None
 
         try:
-            if db_session and tracker_task_id and openviking_service.is_enabled():
+            if db_session and tracker_task_id:
                 try:
                     task_record = (
                         db_session.query(Task)
                         .filter(Task.id == int(tracker_task_id))
                         .first()
                     )
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to load task context for execution logging: task_id=%s error=%s",
+                        tracker_task_id,
+                        exc,
+                    )
+
+            if task_record is not None:
+                agent_config = _get_task_agent_config(task_record)
+                execution_log_tokens = bind_log_context(
+                    task_id=int(task_record.id),
+                    user_id=int(task_record.user_id)
+                    if task_record.user_id is not None
+                    else None,
+                    agent_type=getattr(task_record, "agent_type", None),
+                    domain_mode=agent_config.get("domain_mode"),
+                    run_id=(
+                        effective_context.get("datamakepool_execution_run_id")
+                        if effective_context
+                        else None
+                    ),
+                )
+
+            if db_session and tracker_task_id and openviking_service.is_enabled():
+                try:
                     if task_record and task_record.user_id is not None:
                         openviking_user_id = int(task_record.user_id)
                         openviking_agent_id = _build_openviking_agent_id(
@@ -1391,6 +1419,8 @@ class AgentServiceManager:
 
             return result
         finally:
+            if execution_log_tokens:
+                reset_log_context(execution_log_tokens)
             # Complete tracking if it was started
             if tracker:
                 try:

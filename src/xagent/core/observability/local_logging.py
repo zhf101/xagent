@@ -156,6 +156,36 @@ class UvicornStartupNoiseFilter(logging.Filter):
         return not any(keyword in message for keyword in self._NOISE_KEYWORDS)
 
 
+class UvicornProtocolNoiseFilter(logging.Filter):
+    """过滤 WebSocket 协议级别的低价值调试日志。
+
+    这类日志主要来自 uvicorn / websockets 在 DEBUG 级别下输出的协议细节，
+    例如 101 握手头、ping/pong、连接状态切换等。它们会大量刷屏，但对
+    绝大多数生产排障没有帮助，反而淹没真正有价值的业务日志。
+    """
+
+    _NOISE_PATTERNS = (
+        "HTTP/1.1 101 Switching Protocols",
+        "Upgrade: websocket",
+        "Connection: Upgrade",
+        "Sec-WebSocket-Accept:",
+        "Sec-WebSocket-Extensions:",
+        "connection open",
+        "connection closed",
+        "connection is OPEN",
+        "connection is CLOSING",
+        "connection is CLOSED",
+        "sending keepalive ping",
+        "received keepalive pong",
+        "> PING ",
+        "< PONG ",
+    )
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        return not any(pattern in message for pattern in self._NOISE_PATTERNS)
+
+
 def summarize_text(value: Any, *, limit: int = 200) -> str:
     """把任意值压缩成适合日志查看的单行摘要。"""
 
@@ -289,7 +319,6 @@ def log_llm_call_finished(
         "model": model,
         "call_type": call_type,
         "latency_ms": latency_ms,
-        "input_summary": input_summary,
         "output_summary": output_summary,
         **(usage or {}),
         **fields,

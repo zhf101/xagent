@@ -37,6 +37,9 @@ def build_logging_config(level: LogLevel = "INFO", *, debug: bool = False) -> di
             "drop_uvicorn_startup_noise": {
                 "()": "xagent.core.observability.local_logging.UvicornStartupNoiseFilter"
             },
+            "drop_uvicorn_protocol_noise": {
+                "()": "xagent.core.observability.local_logging.UvicornProtocolNoiseFilter"
+            },
         },
         "formatters": {
             "app": {
@@ -104,7 +107,10 @@ def build_logging_config(level: LogLevel = "INFO", *, debug: bool = False) -> di
             "uvicorn.error": {
                 "level": "INFO",
                 "handlers": ["console", "app_file"],
-                "filters": ["drop_uvicorn_startup_noise"],
+                "filters": [
+                    "drop_uvicorn_startup_noise",
+                    "drop_uvicorn_protocol_noise",
+                ],
                 "propagate": False,
             },
             "httpx": {"level": "WARNING"},

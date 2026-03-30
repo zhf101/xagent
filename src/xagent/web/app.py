@@ -56,6 +56,38 @@ app = FastAPI(
 )
 
 
+def _should_promote_http_request_log(
+    *,
+    method: str,
+    path: str,
+    status_code: int | None = None,
+    latency_ms: float | None = None,
+) -> bool:
+    """决定一条 HTTP 请求日志是否值得进入 INFO 主日志。
+
+    目标是让 `app.log` 更接近“问题导向”的生产日志，而不是把所有正常轮询
+    GET 都刷进去。规则保持保守：
+
+    - 写操作默认保留：POST / PUT / PATCH / DELETE
+    - 异常响应保留：4xx / 5xx
+    - 慢请求保留：默认阈值 1000ms
+    - 其余常规成功 GET/HEAD/OPTIONS 只在 DEBUG 级别可见
+    """
+
+    normalized_method = method.upper().strip()
+    if normalized_method not in {"GET", "HEAD", "OPTIONS"}:
+        return True
+
+    if status_code is not None and status_code >= 400:
+        return True
+
+    if latency_ms is not None and latency_ms >= 1000:
+        return True
+
+    del path
+    return False
+
+
 @app.middleware("http")
 async def request_logging_middleware(request: Request, call_next: Any) -> Any:
     """为每个 HTTP 请求注入 request_id，并记录起止日志。"""
@@ -63,13 +95,10 @@ async def request_logging_middleware(request: Request, call_next: Any) -> Any:
     request_id = request.headers.get("x-request-id") or uuid.uuid4().hex[:12]
     tokens = bind_log_context(request_id=request_id)
     started_at = time.perf_counter()
-
-    log_dataflow(
-        logger,
-        event="request_started",
-        msg="收到 HTTP 请求",
-        method=request.method,
-        path=request.url.path,
+    logger.debug(
+        'event=request_started msg="收到 HTTP 请求" method=%s path=%s',
+        request.method,
+        request.url.path,
     )
 
     try:
@@ -88,14 +117,22 @@ async def request_logging_middleware(request: Request, call_next: Any) -> Any:
     else:
         elapsed_ms = round((time.perf_counter() - started_at) * 1000, 2)
         response.headers["X-Request-ID"] = request_id
-        log_dataflow(
-            logger,
-            event="request_finished",
-            msg="HTTP 请求处理完成",
-            method=request.method,
-            path=request.url.path,
-            status_code=response.status_code,
-            latency_ms=elapsed_ms,
+        log_method = (
+            logger.info
+            if _should_promote_http_request_log(
+                method=request.method,
+                path=request.url.path,
+                status_code=response.status_code,
+                latency_ms=elapsed_ms,
+            )
+            else logger.debug
+        )
+        log_method(
+            'event=request_finished msg="HTTP 请求处理完成" method=%s path=%s status_code=%s latency_ms=%s',
+            request.method,
+            request.url.path,
+            response.status_code,
+            elapsed_ms,
         )
         return response
     finally:
