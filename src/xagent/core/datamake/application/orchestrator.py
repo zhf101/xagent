@@ -1,14 +1,18 @@
 """
 应用编排辅助模块。
 
-这一层放的是顶层主脑的“辅助编排器”，不是第二个主脑。
-也就是说，这里可以负责上下文组装、终止收口等胶水工作，
-但不能偷偷引入新的业务裁决逻辑。
+这里放的是顶层主脑的“辅助编排器”，不是第二个主脑。
+当前阶段最重要的职责，是把散落在 `context.state`、Recall、Ledger 中的信息
+收敛成一份稳定的 `Round Context`（单轮上下文）。
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
+
+from ...agent.context import AgentContext
+from ..ledger.snapshots import SnapshotBuilder
+from ..services.recall_service import RecallService
 
 
 class DecisionBuilder:
@@ -20,42 +24,79 @@ class DecisionBuilder:
     - 需求分层：`Agent Control Plane`（Agent 控制平面）的辅助组件
     - 在你的设计里：单轮推理前的数据拼装器
 
-    主要职责：
-    - 聚合 `Recall Result`（召回结果）、`Ledger Snapshot`（账本快照）、
-      `FlowDraft`（流程草稿）、最近 `Observation`（观察结果）等输入。
-    - 为顶层 Agent 推理构建统一的 `Round Context`（单轮上下文）视图。
-    - 屏蔽多来源上下文差异，避免主脑 run 方法里堆满拼装代码。
+    当前实现的目标很明确：
+    - 让主脑不需要自己去拼 `context.state`、Recall、Ledger。
+    - 让每一轮给 LLM 的输入都遵循稳定结构，后续更容易扩展 prompt。
     """
 
-    async def build_round_context(self, task: str, context: Any) -> Any:
+    def __init__(
+        self,
+        snapshot_builder: SnapshotBuilder,
+        recall_service: Optional[RecallService] = None,
+    ) -> None:
+        self.snapshot_builder = snapshot_builder
+        self.recall_service = recall_service
+
+    async def build_round_context(
+        self,
+        task: str,
+        context: AgentContext,
+    ) -> dict[str, Any]:
         """
         构建 `Round Context`（单轮上下文）。
 
-        输出结果未来会直接喂给 `DataMakeReActPattern`（造数 ReAct 主控模式）
-        作为当前轮决策输入。
+        当前阶段输出重点包含：
+        - 当前任务文本
+        - AgentContext 中已有状态
+        - Ledger 最新快照
+        - Recall 结果
         """
-        raise NotImplementedError("DecisionBuilder.build_round_context 尚未实现")
+
+        ledger_snapshot = await self.snapshot_builder.build(context.task_id)
+        recall_results: list[dict[str, Any]] = []
+
+        if self.recall_service is not None:
+            recall_results = await self.recall_service.search(task)
+
+        return {
+            "task_id": context.task_id,
+            "session_id": context.session_id,
+            "task": task,
+            "user_id": context.user_id,
+            "system_prompt": context.state.get("system_prompt"),
+            "flow_draft": context.state.get("flow_draft", {}),
+            "context_state": context.state,
+            "history": list(context.history),
+            "recall_results": recall_results,
+            "ledger_snapshot": ledger_snapshot,
+            "file_info": context.state.get("file_info"),
+            "uploaded_files": context.state.get("uploaded_files"),
+        }
 
 
 class TerminationResolver:
     """
     `TerminationResolver`（终止收口器）。
 
-    所属分层：
-    - 代码分层：`application`
-    - 需求分层：`Agent Control Plane`（Agent 控制平面）的辅助组件
-    - 在你的设计里：结束态输出与留痕收口器
-
-    主要职责：
-    - 统一处理 `terminate`（终止）类决策的最终状态、返回结果、用户可见摘要。
-    - 保证终止结果也进入 `Ledger`（业务账本）留痕，避免结束态丢失审计证据。
-    - 让“成功结束”“失败结束”“人工中止”等结束语义有统一出口。
+    这个类负责把主脑输出的 terminate 决策统一转换成模式层最终返回结果，
+    让 `DataMakeReActPattern`（造数 ReAct 主控模式）结尾逻辑保持稳定。
     """
 
-    async def resolve(self, decision: Any) -> Any:
+    async def resolve(self, decision: Any) -> dict[str, Any]:
         """
-        处理 `terminate`（终止）类型决策。
+        处理 `terminate`（终止）类型决策，并组装最终返回结果。
+        """
 
-        未来这里会负责把终态决策转成对外返回结果与账本记录。
-        """
-        raise NotImplementedError("TerminationResolver.resolve 尚未实现")
+        final_status = getattr(decision, "final_status", None) or "completed"
+        final_message = getattr(decision, "final_message", None) or ""
+        success = final_status not in {"failed", "cancelled"}
+
+        return {
+            "success": success,
+            "status": final_status,
+            "output": final_message,
+            "final_message": final_message,
+            "decision": decision.model_dump(mode="json")
+            if hasattr(decision, "model_dump")
+            else decision,
+        }

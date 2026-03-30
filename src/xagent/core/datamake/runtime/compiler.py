@@ -1,35 +1,50 @@
 """
 `ExecutionCompiler`（执行契约编译器）模块。
-
-这个模块负责把“业务上想做什么”翻译成“运行时应该怎么执行”。
-它是业务动作描述和底层执行细节之间的关键隔离层。
 """
 
 from __future__ import annotations
 
-from typing import Any
+from ..contracts.constants import EXECUTION_MODE_EXECUTE, EXECUTION_MODE_PROBE, ROUTE_RUNTIME_PROBE
+from ..contracts.decision import NextActionDecision
+from ..contracts.guard import GuardVerdict
+from ..contracts.runtime import CompiledExecutionContract
+from ..resources.catalog import ResourceCatalog
 
 
 class ExecutionCompiler:
     """
     `ExecutionCompiler`（执行契约编译器）。
-
-    所属分层：
-    - 代码分层：`runtime`
-    - 需求分层：`Runtime / Workflow Plane`（运行时 / 工作流平面）
-    - 在你的设计里：动作到执行计划的编译器
-
-    主要职责：
-    - 把 `execution_action`（执行动作）编译成 Runtime 可执行的标准契约。
-    - 隔离“业务动作描述”和“底层资源调用细节”，避免运行时直接消费松散字典。
-    - 在契约里固化资源键、动作键、执行模式、幂等键、恢复信息等执行语义。
     """
 
-    def compile(self, action: Any, verdict: Any) -> Any:
-        """
-        编译一个执行动作。
+    def __init__(self, resource_catalog: ResourceCatalog) -> None:
+        self.resource_catalog = resource_catalog
 
-        这里未来会结合 Guard 裁决结果，把 action 固化成
-        `CompiledExecutionContract`（编译后执行契约）。
+    def compile(
+        self,
+        action: NextActionDecision,
+        verdict: GuardVerdict,
+    ) -> CompiledExecutionContract:
         """
-        raise NotImplementedError("ExecutionCompiler.compile 尚未实现")
+        将 execution_action 编译成 Runtime 可稳定执行的标准契约。
+        """
+
+        resource_key = str(action.params["resource_key"])
+        operation_key = str(action.params["operation_key"])
+        resource_action = self.resource_catalog.get_action(resource_key, operation_key)
+
+        return CompiledExecutionContract(
+            decision_id=action.decision_id,
+            action=verdict.normalized_action or (action.action or "execute_registered_action"),
+            mode=EXECUTION_MODE_PROBE if verdict.route == ROUTE_RUNTIME_PROBE else EXECUTION_MODE_EXECUTE,
+            resource_key=resource_key,
+            operation_key=operation_key,
+            tool_name=resource_action.tool_name,
+            params=action.params,
+            metadata={
+                "risk_level": verdict.risk_level,
+                "adapter_kind": resource_action.adapter_kind,
+                "description": resource_action.description,
+                "result_normalizer": resource_action.result_normalizer,
+                "result_contract": dict(resource_action.result_contract),
+            },
+        )

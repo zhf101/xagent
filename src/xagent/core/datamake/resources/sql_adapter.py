@@ -1,34 +1,91 @@
 """
 `SQL Resource Adapter`（SQL 资源适配器）模块。
 
-它不是为了支持任意 SQL 文本自由执行，
-而是为了把“受控 SQL 资源动作”映射到 xagent 现有 SQL 能力。
+这一层不开放任意 SQL，而是把受控资源动作映射到现有 xagent SQL 工具。
 """
 
 from __future__ import annotations
 
 from typing import Any
 
+from ..contracts.runtime import CompiledExecutionContract, RuntimeResult
+from .catalog import ResourceCatalog
+
 
 class SqlResourceAdapter:
     """
     `SqlResourceAdapter`（SQL 资源适配器）。
-
-    所属分层：
-    - 代码分层：`resources`
-    - 需求分层：`Resource Plane`（资源平面）
-    - 在你的设计里：SQL 类资源的底层落地适配器
-
-    主要职责：
-    - 用资源语义包装现有 SQL Tool。
-    - 让 Runtime 面对的是受控 SQL 动作，而不是任意 SQL 文本。
-    - 在未来承接参数绑定、只读限制、结果映射等安全控制。
     """
 
-    async def execute(self, contract: Any) -> Any:
+    async def execute(
+        self,
+        catalog: ResourceCatalog,
+        contract: CompiledExecutionContract,
+    ) -> RuntimeResult:
         """
-        执行一个 SQL 资源动作。
+        基于编译后的执行契约调用已绑定的 xagent SQL 工具。
+        """
 
-        输入会是标准运行时契约，而不是自由拼接 SQL 的原始请求。
+        resource_action = catalog.get_action(contract.resource_key, contract.operation_key)
+        normalizer = catalog.get_result_normalizer(resource_action)
+        tool = catalog.get_tool(contract.tool_name)
+        tool_args = contract.params.get("tool_args", contract.params)
+        result_contract = dict(resource_action.result_contract)
+
+        try:
+            raw_result = await self._run_tool(tool, tool_args)
+        except Exception as exc:
+            normalized = normalizer.normalize_exception(
+                exc,
+                contract=contract,
+                result_contract=result_contract,
+            )
+            return RuntimeResult(
+                run_id=contract.run_id,
+                status=normalized.status,
+                summary=normalized.summary,
+                facts=normalized.facts,
+                data={"raw_error": self._serialize_raw_payload(exc)},
+                error=normalized.error,
+                evidence=[f"tool:{contract.tool_name}"],
+            )
+
+        normalized = normalizer.normalize_result(
+            raw_result,
+            contract=contract,
+            result_contract=result_contract,
+        )
+        return RuntimeResult(
+            run_id=contract.run_id,
+            status=normalized.status,
+            summary=normalized.summary,
+            facts=normalized.facts,
+            data={"raw_result": self._serialize_raw_payload(raw_result)},
+            error=normalized.error,
+            evidence=[f"tool:{contract.tool_name}"],
+        )
+
+    async def _run_tool(self, tool: Any, tool_args: dict[str, Any]) -> Any:
         """
-        raise NotImplementedError("SqlResourceAdapter.execute 尚未实现")
+        统一兼容异步 / 同步 xagent 工具执行接口。
+        """
+
+        if hasattr(tool, "run_json_async"):
+            return await tool.run_json_async(tool_args)
+        return tool.run_json_sync(tool_args)
+
+    def _serialize_raw_payload(self, payload: Any) -> Any:
+        """
+        保留 SQL 资源层原始事实，供 Runtime / Ledger 回放。
+        """
+
+        if isinstance(payload, (dict, list, str, int, float, bool)) or payload is None:
+            return payload
+        if hasattr(payload, "model_dump"):
+            return payload.model_dump(mode="json")
+        if isinstance(payload, Exception):
+            return {
+                "type": type(payload).__name__,
+                "message": str(payload),
+            }
+        return str(payload)

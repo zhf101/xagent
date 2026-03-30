@@ -1,33 +1,35 @@
 """
 `Snapshot`（快照）模块。
 
-这里负责从 append-only 账本事实里，组装出适合当前轮消费的上下文快照。
+当前阶段这里先保持轻量：
+`SnapshotBuilder`（快照构建器）只是把 `LedgerRepository`（业务账本仓储）
+提供的事实流和挂起信息，拼成主脑单轮决策所需的只读上下文快照。
 """
 
 from __future__ import annotations
 
 from typing import Any
 
+from .repository import LedgerRepository
+
 
 class SnapshotBuilder:
     """
     `SnapshotBuilder`（快照构建器）。
 
-    所属分层：
-    - 代码分层：`ledger`
-    - 需求分层：`Memory / Ledger Plane`（记忆 / 账本平面）
-    - 在你的设计里：给主脑和恢复逻辑供数的快照拼装器
-
-    主要职责：
-    - 将账本中的多条记录拼装成当前轮上下文视图。
-    - 为顶层 Agent 决策提供统一的 `Ledger Snapshot`（账本快照）输入。
-    - 让主脑读取的是“当前事实摘要”，而不是原始流水账。
+    当前实现尽量简单，核心目标是给主脑提供一份：
+    - 最近发生了什么
+    - 当前有没有挂起工单
+    - 下一轮编号是多少
+    的统一只读视图。
     """
 
-    async def build(self, task_id: str) -> Any:
+    def __init__(self, ledger_repository: LedgerRepository) -> None:
+        self.ledger_repository = ledger_repository
+
+    async def build(self, task_id: str) -> dict[str, Any]:
         """
         构建任务级快照。
-
-        未来输出可能包含最近决策、最近观察结果、当前 draft 状态、挂起审批等。
         """
-        raise NotImplementedError("SnapshotBuilder.build 尚未实现")
+
+        return await self.ledger_repository.build_runtime_snapshot(task_id)

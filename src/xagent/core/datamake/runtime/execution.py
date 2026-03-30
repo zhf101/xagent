@@ -1,34 +1,43 @@
 """
 `Action Execution`（正式动作执行）模块。
-
-只有当动作已经通过护栏并满足正式执行条件时，才会进入这里。
-这里会真正触达底层资源。
 """
 
 from __future__ import annotations
 
-from typing import Any
+from ..contracts.constants import ADAPTER_KIND_HTTP, ADAPTER_KIND_SQL
+from ..contracts.runtime import CompiledExecutionContract, RuntimeResult
+from ..resources.catalog import ResourceCatalog
+from ..resources.http_adapter import HttpResourceAdapter
+from ..resources.sql_adapter import SqlResourceAdapter
 
 
 class ActionExecutor:
     """
     `ActionExecutor`（正式动作执行器）。
-
-    所属分层：
-    - 代码分层：`runtime`
-    - 需求分层：`Runtime / Workflow Plane`（运行时 / 工作流平面）
-    - 在你的设计里：真正落地资源调用的执行器
-
-    主要职责：
-    - 执行正式 `execute`（正式执行）模式动作。
-    - 通过 `ResourceAdapter`（资源适配器）真正调用底层资源。
-    - 统一封装执行结果、错误、重试上下文，避免上层感知资源细节。
     """
 
-    async def execute(self, contract: Any) -> Any:
+    def __init__(
+        self,
+        resource_catalog: ResourceCatalog,
+        sql_adapter: SqlResourceAdapter,
+        http_adapter: HttpResourceAdapter,
+    ) -> None:
+        self.resource_catalog = resource_catalog
+        self.sql_adapter = sql_adapter
+        self.http_adapter = http_adapter
+
+    async def execute(self, contract: CompiledExecutionContract) -> RuntimeResult:
         """
         执行一个正式动作契约。
-
-        输入是已编译好的运行时契约，而不是随意的资源调用参数。
         """
-        raise NotImplementedError("ActionExecutor.execute 尚未实现")
+
+        resource_action = self.resource_catalog.get_action(
+            contract.resource_key, contract.operation_key
+        )
+        if resource_action.adapter_kind == ADAPTER_KIND_SQL:
+            return await self.sql_adapter.execute(self.resource_catalog, contract)
+        if resource_action.adapter_kind == ADAPTER_KIND_HTTP:
+            return await self.http_adapter.execute(self.resource_catalog, contract)
+        raise ValueError(
+            f"不支持的 execute 适配器类型: {resource_action.adapter_kind}"
+        )

@@ -1,77 +1,121 @@
 """
 `Interaction Channel`（用户交互通道）桥接模块。
 
-这一层对应你设计里所有“需要用户补信息、澄清、确认”的分支。
-它的核心作用是把内部决策语言，翻译成前端和用户能消费的交互语言，
-然后再把用户回复翻译回系统内部统一的 `Observation`（观察结果）。
+这一层负责把主脑已经做好的交互型决策，转换成：
+- 可展示给用户的问题
+- 可写入账本的挂起工单
+- 用户回答后的统一 observation
 """
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
+
+from ..contracts.decision import NextActionDecision
+from ..contracts.interaction import InteractionDisplayPayload, InteractionTicket
+from ..contracts.observation import ObservationActor, ObservationEnvelope
 
 
 class InteractionBridge:
     """
     `InteractionBridge`（用户交互桥接器）。
 
-    所属分层：
-    - 代码分层：`application`
-    - 需求分层：`User / UI Channel`（用户 / 界面通道）
-    - 在你的设计里：用户侧等待态与回流入口
-
-    主要职责：
-    - 创建用户澄清、补参、确认等等待态，形成可追踪的 `Interaction Ticket`
-      （交互工单）。
-    - 生成前端可以直接消费的展示结构，而不是把内部控制字段直接暴露给 UI。
-    - 接收用户回复，并转为统一的 `InteractionObservation`
-      （用户交互观察结果），供主脑进入下一轮决策。
-
-    明确边界：
-    - 不负责判断是否应该向用户提问；这个决定已经由顶层 Agent 做出。
-    - 不负责审批裁决；人工审批属于 `SupervisionBridge`（人工监督桥接器）。
-    - 不负责真正执行资源动作；执行路径会进入 guard / runtime。
+    第一阶段为了尽量贴合 xagent 现有 `AgentRunner` 行为，
+    这里会同时生成：
+    - `InteractionTicket`（用户交互工单）
+    - CLI / 前端可直接消费的问题文本
+    - 用户答复后的 `InteractionObservation`（交互观察结果）
     """
 
-    async def open_ticket(self, decision: Any) -> Any:
+    async def open_ticket(
+        self,
+        task_id: str,
+        session_id: str | None,
+        round_id: int,
+        decision: NextActionDecision,
+    ) -> InteractionTicket:
         """
-        创建 `Interaction Ticket`（交互工单）。
+        基于交互型决策创建一个待回复工单。
+        """
 
-        输入是已经确定好的用户交互型决策；
-        输出会是一个可持久化、可展示、可等待回复的交互请求对象。
-        """
-        raise NotImplementedError("InteractionBridge.open_ticket 尚未实现")
+        questions = (
+            decision.user_visible.questions
+            or decision.params.get("questions", [])
+            or [decision.user_visible.summary]
+        )
 
-    async def consume_reply(self, reply: Any) -> Any:
-        """
-        消费用户回复，并转为统一 `InteractionObservation`（用户交互观察结果）。
+        return InteractionTicket(
+            task_id=task_id,
+            session_id=session_id,
+            round_id=round_id,
+            decision_id=decision.decision_id,
+            action=decision.action or "ask_clarification",
+            questions=questions,
+            response_field=f"datamake_reply_{decision.decision_id}",
+            display=InteractionDisplayPayload(
+                title=decision.user_visible.title,
+                summary=decision.user_visible.summary,
+                details=list(decision.user_visible.details),
+            ),
+            metadata={
+                "response_contract": "free_text",
+            },
+        )
 
-        这个方法的意义是把前端输入重新拉回领域语言，
-        让主脑后续处理时不需要关心 UI 表单细节。
+    async def consume_reply(
+        self,
+        ticket: InteractionTicket,
+        reply: Any,
+    ) -> ObservationEnvelope:
         """
-        raise NotImplementedError("InteractionBridge.consume_reply 尚未实现")
+        将用户回复回收为统一的 `ObservationEnvelope`（观察结果外壳）。
+        """
+
+        normalized_reply = (
+            reply.strip() if isinstance(reply, str) else str(reply)
+        )
+        ticket.status = "answered"
+        ticket.answered_at = datetime.utcnow()
+
+        return ObservationEnvelope(
+            observation_type="interaction",
+            action_kind="interaction_action",
+            action=ticket.action,
+            status="confirmed",
+            actor=ObservationActor(type="user"),
+            result={
+                "summary": f"用户已回复交互问题：{normalized_reply}"
+            },
+            evidence=[f"interaction_ticket:{ticket.ticket_id}"],
+            payload={
+                "ticket_id": ticket.ticket_id,
+                "reply": normalized_reply,
+                "questions": list(ticket.questions),
+            },
+        )
 
 
 class UiResponseMapper:
     """
     `UiResponseMapper`（界面响应映射器）。
 
-    所属分层：
-    - 代码分层：`application`
-    - 需求分层：`User / UI Channel`（用户 / 界面通道）
-    - 在你的设计里：面向前端的展示协议适配器
-
-    主要职责：
-    - 把内部决策中的 `user_visible`（用户可见载荷）映射成具体前端消息、
-      表单、确认卡片等结构。
-    - 屏蔽底层控制字段，不让前端直接承接内部 runtime / ledger 语义。
-    - 帮助前后端在“展示协议”层解耦。
+    当前阶段先输出最通用的聊天结构，后续再根据真实前端协议扩展。
     """
 
-    def to_chat_payload(self, decision: Any) -> Any:
+    def to_chat_payload(
+        self,
+        ticket: InteractionTicket,
+    ) -> dict[str, Any]:
         """
-        把内部决策映射为前端聊天载荷。
+        把交互型决策映射成可展示的聊天载荷。
+        """
 
-        未来这里会负责统一 chat payload、表单 schema、确认按钮等 UI 协议。
-        """
-        raise NotImplementedError("UiResponseMapper.to_chat_payload 尚未实现")
+        return {
+            "title": ticket.display.title,
+            "summary": ticket.display.summary,
+            "details": list(ticket.display.details),
+            "questions": list(ticket.questions),
+            "response_field": ticket.response_field,
+            "ticket_id": ticket.ticket_id,
+        }

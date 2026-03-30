@@ -1,34 +1,91 @@
 """
 `HTTP Resource Adapter`（HTTP 资源适配器）模块。
 
-它把已注册的 HTTP / API 资源动作映射到现有网络调用能力，
-并在资源层统一约束请求方式、目标地址、鉴权与返回解析。
+这一层把受控 API 动作映射到现有 xagent 工具。
 """
 
 from __future__ import annotations
 
 from typing import Any
 
+from ..contracts.runtime import CompiledExecutionContract, RuntimeResult
+from .catalog import ResourceCatalog
+
 
 class HttpResourceAdapter:
     """
     `HttpResourceAdapter`（HTTP 资源适配器）。
-
-    所属分层：
-    - 代码分层：`resources`
-    - 需求分层：`Resource Plane`（资源平面）
-    - 在你的设计里：HTTP / API 类资源的底层落地适配器
-
-    主要职责：
-    - 用资源语义包装现有 API Tool。
-    - 让 Runtime 只执行已注册的受控 HTTP 动作。
-    - 后续承接请求模板、鉴权注入、返回结构校验等能力。
     """
 
-    async def execute(self, contract: Any) -> Any:
+    async def execute(
+        self,
+        catalog: ResourceCatalog,
+        contract: CompiledExecutionContract,
+    ) -> RuntimeResult:
         """
-        执行一个 HTTP 资源动作。
+        基于编译后的执行契约调用已绑定的 HTTP / API 工具。
+        """
 
-        这里不应该接受“任意 URL + 任意方法”的自由请求。
+        resource_action = catalog.get_action(contract.resource_key, contract.operation_key)
+        normalizer = catalog.get_result_normalizer(resource_action)
+        tool = catalog.get_tool(contract.tool_name)
+        tool_args = contract.params.get("tool_args", contract.params)
+        result_contract = dict(resource_action.result_contract)
+
+        try:
+            raw_result = await self._run_tool(tool, tool_args)
+        except Exception as exc:
+            normalized = normalizer.normalize_exception(
+                exc,
+                contract=contract,
+                result_contract=result_contract,
+            )
+            return RuntimeResult(
+                run_id=contract.run_id,
+                status=normalized.status,
+                summary=normalized.summary,
+                facts=normalized.facts,
+                data={"raw_error": self._serialize_raw_payload(exc)},
+                error=normalized.error,
+                evidence=[f"tool:{contract.tool_name}"],
+            )
+
+        normalized = normalizer.normalize_result(
+            raw_result,
+            contract=contract,
+            result_contract=result_contract,
+        )
+        return RuntimeResult(
+            run_id=contract.run_id,
+            status=normalized.status,
+            summary=normalized.summary,
+            facts=normalized.facts,
+            data={"raw_result": self._serialize_raw_payload(raw_result)},
+            error=normalized.error,
+            evidence=[f"tool:{contract.tool_name}"],
+        )
+
+    async def _run_tool(self, tool: Any, tool_args: dict[str, Any]) -> Any:
         """
-        raise NotImplementedError("HttpResourceAdapter.execute 尚未实现")
+        统一兼容异步 / 同步 xagent 工具执行接口。
+        """
+
+        if hasattr(tool, "run_json_async"):
+            return await tool.run_json_async(tool_args)
+        return tool.run_json_sync(tool_args)
+
+    def _serialize_raw_payload(self, payload: Any) -> Any:
+        """
+        保留资源层原始事实，供 Runtime / Ledger 回放。
+        """
+
+        if isinstance(payload, (dict, list, str, int, float, bool)) or payload is None:
+            return payload
+        if hasattr(payload, "model_dump"):
+            return payload.model_dump(mode="json")
+        if isinstance(payload, Exception):
+            return {
+                "type": type(payload).__name__,
+                "message": str(payload),
+            }
+        return str(payload)

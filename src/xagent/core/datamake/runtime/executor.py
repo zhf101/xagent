@@ -1,50 +1,94 @@
 """
 `RuntimeExecutor`（运行时执行器）入口模块。
-
-这里是 runtime 层的总入口。
-在 Guard 已经给出 `GuardVerdict`（护栏裁决结果）之后，
-这里负责把“允许执行”的动作真正推进下去。
 """
 
 from __future__ import annotations
 
-from typing import Any
+from ..contracts.constants import (
+    EXECUTION_MODE_PROBE,
+    OBSERVATION_TYPE_EXECUTION,
+    OBSERVATION_TYPE_FAILURE,
+    OBSERVATION_STATUS_FAIL,
+    OBSERVATION_STATUS_SUCCESS,
+    RUNTIME_STATUS_SUCCESS,
+)
+from ..contracts.decision import NextActionDecision
+from ..contracts.guard import GuardVerdict
+from ..contracts.observation import ObservationActor, ObservationEnvelope
+from .compiler import ExecutionCompiler
+from .execution import ActionExecutor
+from .probe import ProbeExecutor
 
 
 class RuntimeExecutor:
     """
     `RuntimeExecutor`（运行时执行器）。
-
-    所属分层：
-    - 代码分层：`runtime`
-    - 需求分层：`Runtime / Workflow Plane`（运行时 / 工作流平面）
-    - 在你的设计里：执行层总协调入口
-
-    主要职责：
-    - 接收 `GuardVerdict`（护栏裁决结果）。
-    - 调用 `ExecutionCompiler`（执行契约编译器）把动作转换成
-      `CompiledExecutionContract`（编译后执行契约）。
-    - 根据裁决与契约，路由到 `ProbeExecutor`（探测执行器）、
-      `ActionExecutor`（正式动作执行器）或 `DagRuntimeAdapter`
-      （DAG 运行时适配器）。
-    - 统一处理 timeout、retry、idempotency、pause、resume 等工程问题。
-    - 输出标准化的 `RuntimeResult`（运行时结果）或
-      `ObservationEnvelope`（观察结果外壳）。
-
-    明确边界：
-    - 不负责重新决定业务目标。
-    - 不直接暴露底层资源差异给顶层 Agent。
     """
 
-    async def execute(self, verdict: Any) -> Any:
-        """
-        执行一个已经通过 Guard 的动作。
+    def __init__(
+        self,
+        compiler: ExecutionCompiler,
+        probe_executor: ProbeExecutor,
+        action_executor: ActionExecutor,
+    ) -> None:
+        self.compiler = compiler
+        self.probe_executor = probe_executor
+        self.action_executor = action_executor
 
-        输入语义：
-        - `verdict`：护栏层给出的标准裁决结果，包含是否允许执行、
-          走 probe 还是 execute、是否需要审批后恢复等关键信息。
-
-        输出语义：
-        - 未来会返回统一执行结果，用于写入账本并继续驱动主脑下一轮决策。
+    async def execute(
+        self,
+        action: NextActionDecision,
+        verdict: GuardVerdict,
+    ) -> ObservationEnvelope:
         """
-        raise NotImplementedError("RuntimeExecutor.execute 尚未实现")
+        执行一个已经通过 Guard 的动作，并统一回流为 observation。
+        """
+
+        contract = self.compiler.compile(action, verdict)
+
+        try:
+            if contract.mode == EXECUTION_MODE_PROBE:
+                runtime_result = await self.probe_executor.execute(contract)
+            else:
+                runtime_result = await self.action_executor.execute(contract)
+        except Exception as exc:
+            return ObservationEnvelope(
+                observation_type="failure",
+                action_kind="execution_action",
+                action=action.action,
+                status="fail",
+                actor=ObservationActor(type="system"),
+                result={"summary": f"执行失败：{exc}"},
+                error=str(exc),
+                payload={
+                    "decision_id": action.decision_id,
+                    "resource_key": action.params.get("resource_key"),
+                    "operation_key": action.params.get("operation_key"),
+                    "raw_error": {
+                        "type": type(exc).__name__,
+                        "message": str(exc),
+                    },
+                },
+            )
+
+        observation_type = OBSERVATION_TYPE_EXECUTION if runtime_result.status == RUNTIME_STATUS_SUCCESS else OBSERVATION_TYPE_FAILURE
+        observation_status = OBSERVATION_STATUS_SUCCESS if runtime_result.status == RUNTIME_STATUS_SUCCESS else OBSERVATION_STATUS_FAIL
+
+        return ObservationEnvelope(
+            observation_type=observation_type,
+            action_kind="execution_action",
+            action=action.action,
+            status=observation_status,
+            actor=ObservationActor(type="system"),
+            result={"summary": runtime_result.summary},
+            error=runtime_result.error,
+            evidence=list(runtime_result.evidence),
+            payload={
+                "run_id": runtime_result.run_id,
+                "facts": dict(runtime_result.facts),
+                "data": runtime_result.data,
+                "resource_key": contract.resource_key,
+                "operation_key": contract.operation_key,
+                "mode": contract.mode,
+            },
+        )

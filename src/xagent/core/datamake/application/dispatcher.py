@@ -1,55 +1,206 @@
 """
 `Action Dispatch`（动作分发）模块。
 
-这一层对应你设计图中的 `ACTION DISPATCH`（动作分发层）。
-它接收的前提是：顶层主脑已经给出了明确的
-`NextActionDecision`（下一动作决策）。
-
-因此这里要解决的问题只有一个：
-“这份已经确定好的决策，应该送到哪条通道执行？”
-
-它不解决的问题是：
-- 为什么要做这个动作
-- 下一步是否应该换方向
-- 当前业务目标是否已经达成
-这些仍然属于顶层 `DataMakeReActPattern`（造数 ReAct 主控模式）。
+这里严格保持“只做投递、不做重决策”的边界。
+只要顶层主脑已经给出 `NextActionDecision`（下一动作决策），
+这里就负责把它送到正确通道，并返回统一结果。
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal, Optional
+
+from pydantic import BaseModel, Field
+
+from ..contracts.constants import (
+    ACTION_KIND_EXECUTION,
+    ACTION_KIND_INTERACTION,
+    ACTION_KIND_SUPERVISION,
+    DECISION_MODE_TERMINATE,
+    DISPATCH_KIND_FINAL,
+    DISPATCH_KIND_OBSERVATION,
+    DISPATCH_KIND_WAITING_HUMAN,
+    DISPATCH_KIND_WAITING_USER,
+    GUARD_RESULT_KIND_APPROVAL_REQUIRED,
+    GUARD_RESULT_KIND_OBSERVATION,
+)
+from ..contracts.decision import NextActionDecision
+from ..contracts.observation import PauseObservation
+from ..guard.service import GuardEvaluationResult, GuardService
+from .interaction import InteractionBridge, UiResponseMapper
+from .orchestrator import TerminationResolver
+from .supervision import SupervisionBridge
+
+
+class DispatchOutcome(BaseModel):
+    """
+    `DispatchOutcome`（分发结果）。
+
+    这里不是跨系统永久契约，而是 application 层内部的统一回传对象。
+    Pattern 只依赖这个对象做下一步处理，避免分支逻辑散落在主循环里。
+    """
+
+    kind: Literal[
+        "final",
+        "observation",
+        "waiting_user",
+        "waiting_human",
+    ] = Field(description="当前分发结果的类别。")
+    payload: dict[str, Any] = Field(
+        default_factory=dict,
+        description="kind 对应的结果载荷。",
+    )
 
 
 class ActionDispatcher:
     """
     `ActionDispatcher`（动作分发器）。
-
-    所属分层：
-    - 代码分层：`application`
-    - 需求分层：`ACTION DISPATCH`（动作分发层）
-    - 在你的设计里：控制层与各执行通道之间的路由关节
-
-    主要职责：
-    - 接收顶层 Agent 已经做出的结构化决策，而不是半成品意图。
-    - 根据决策中的 `decision_mode` / `action_kind`，把请求路由给
-      `InteractionBridge`（用户交互桥接器）、
-      `SupervisionBridge`（人工监督桥接器）、
-      `GuardService`（护栏服务）等下游组件。
-    - 保持“纯分发、无业务决策权”的边界，避免 application 层反向长成第二个 Agent。
     """
 
-    async def dispatch(self, decision: Any) -> Any:
+    def __init__(
+        self,
+        interaction_bridge: InteractionBridge,
+        supervision_bridge: SupervisionBridge,
+        guard_service: GuardService,
+        termination_resolver: Optional[TerminationResolver] = None,
+        ui_response_mapper: Optional[UiResponseMapper] = None,
+    ) -> None:
+        self.interaction_bridge = interaction_bridge
+        self.supervision_bridge = supervision_bridge
+        self.guard_service = guard_service
+        self.termination_resolver = termination_resolver or TerminationResolver()
+        self.ui_response_mapper = ui_response_mapper or UiResponseMapper()
+
+    async def dispatch(
+        self,
+        task_id: str,
+        session_id: str | None,
+        round_id: int,
+        decision: NextActionDecision,
+    ) -> DispatchOutcome:
         """
         分发一个已经确定好的 `NextActionDecision`（下一动作决策）。
-
-        这里未来会做的事情包括：
-- 识别当前决策属于 `interaction`（用户交互）、
-  `supervision`（人工监督）还是 `execution`（执行）路径。
-- 调用对应桥接器或护栏入口。
-- 返回统一的 `ObservationEnvelope`（观察结果外壳）或等待态结果。
-
-        这里明确不会做的事情：
-- 重新推理“下一步到底该干什么”。
-- 在分发层直接拼资源参数并下钻到底层资源适配器。
         """
-        raise NotImplementedError("ActionDispatcher.dispatch 尚未实现")
+
+        if decision.decision_mode == DECISION_MODE_TERMINATE:
+            final_result = await self.termination_resolver.resolve(decision)
+            return DispatchOutcome(kind=DISPATCH_KIND_FINAL, payload=final_result)
+
+        if decision.action_kind == ACTION_KIND_INTERACTION:
+            ticket = await self.interaction_bridge.open_ticket(
+                task_id=task_id,
+                session_id=session_id,
+                round_id=round_id,
+                decision=decision,
+            )
+            pause_observation = PauseObservation(
+                action_kind="interaction_action",
+                action=decision.action,
+                result={
+                    "summary": "当前轮已进入等待用户回复状态"
+                },
+                evidence=[f"interaction_ticket:{ticket.ticket_id}"],
+                payload={
+                    "ticket_id": ticket.ticket_id,
+                    "response_field": ticket.response_field,
+                },
+            )
+            return DispatchOutcome(
+                kind=DISPATCH_KIND_WAITING_USER,
+                payload={
+                    "ticket": ticket,
+                    "pause_observation": pause_observation,
+                    "chat_payload": self.ui_response_mapper.to_chat_payload(
+                        ticket
+                    ),
+                    "question": "\n".join(ticket.questions),
+                    "field": ticket.response_field,
+                },
+            )
+
+        if decision.action_kind == ACTION_KIND_SUPERVISION:
+            ticket = await self.supervision_bridge.open_approval(
+                task_id=task_id,
+                session_id=session_id,
+                round_id=round_id,
+                decision=decision,
+            )
+            pause_observation = PauseObservation(
+                action_kind="supervision_action",
+                action=decision.action,
+                result={
+                    "summary": "当前轮已进入等待人工审批状态"
+                },
+                evidence=[f"approval_ticket:{ticket.approval_id}"],
+                payload={
+                    "approval_id": ticket.approval_id,
+                    "response_field": ticket.response_field,
+                },
+            )
+            return DispatchOutcome(
+                kind=DISPATCH_KIND_WAITING_HUMAN,
+                payload={
+                    "ticket": ticket,
+                    "pause_observation": pause_observation,
+                    "question": self.supervision_bridge.build_waiting_question(ticket),
+                    "field": ticket.response_field,
+                },
+            )
+
+        if decision.action_kind == ACTION_KIND_EXECUTION:
+            guard_result: GuardEvaluationResult = await self.guard_service.evaluate(
+                decision
+            )
+            if guard_result.kind == GUARD_RESULT_KIND_OBSERVATION:
+                return DispatchOutcome(
+                    kind=DISPATCH_KIND_OBSERVATION,
+                    payload={"observation": guard_result.payload["observation"]},
+                )
+
+            if guard_result.kind == GUARD_RESULT_KIND_APPROVAL_REQUIRED:
+                guard_verdict = guard_result.payload["verdict"]
+                approval_decision = decision.model_copy(deep=True)
+                approval_decision.action_kind = ACTION_KIND_SUPERVISION
+                approval_decision.action = "request_human_confirm"
+                approval_decision.requires_approval = True
+                approval_decision.risk_level = guard_verdict.risk_level
+                approval_decision.params["approval_key"] = guard_result.payload[
+                    "approval_key"
+                ]
+                approval_decision.user_visible.summary = str(
+                    guard_result.payload["summary"]
+                )
+                ticket = await self.supervision_bridge.open_approval(
+                    task_id=task_id,
+                    session_id=session_id,
+                    round_id=round_id,
+                    decision=approval_decision,
+                )
+                # 审批工单里需要保留“原始 execution 决策”而不是审批包装决策，
+                # 这样审批通过后才能恢复回原执行动作，而不是再次进入 supervision。
+                ticket.original_execution_decision = decision.model_dump(mode="json")
+                pause_observation = PauseObservation(
+                    action_kind="supervision_action",
+                    action=approval_decision.action,
+                    result={"summary": "当前轮已进入等待人工审批状态"},
+                    evidence=[f"approval_ticket:{ticket.approval_id}"],
+                    payload={
+                        "approval_id": ticket.approval_id,
+                        "response_field": ticket.response_field,
+                        "approval_key": guard_result.payload["approval_key"],
+                        "guard_verdict": guard_verdict.model_dump(mode="json"),
+                    },
+                )
+                return DispatchOutcome(
+                    kind=DISPATCH_KIND_WAITING_HUMAN,
+                    payload={
+                        "ticket": ticket,
+                        "pause_observation": pause_observation,
+                        "question": self.supervision_bridge.build_waiting_question(ticket),
+                        "field": ticket.response_field,
+                    },
+                )
+
+        raise ValueError(
+            f"未知 action_kind: {decision.action_kind}，无法完成 ActionDispatcher 分发"
+        )
