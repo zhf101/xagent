@@ -51,6 +51,7 @@ const zh = {
     history: "全部任务",
     search: "搜索任务",
     templates: "模板",
+    channels: "渠道",
     sections: {
       agentDevelopment: "Agent 开发",
       resources: "资源",
@@ -268,6 +269,52 @@ Build when you need.`
       },
     },
   },
+  channels: {
+    page_title: "渠道管理",
+    page_description: "管理您的沟通渠道和机器人。",
+    telegram_bots: "Telegram 机器人",
+    add_telegram: "添加 Telegram",
+    title: "渠道与机器人",
+    description: "配置您的专属 {platform}。",
+    add_channel: "添加渠道",
+    no_channels: "暂未配置任何渠道。",
+    status: {
+      active: "已启用",
+      inactive: "未启用"
+    },
+    actions: {
+      edit: "编辑",
+      delete: "删除"
+    },
+    dialog: {
+      add_title: "添加渠道",
+      edit_title: "编辑渠道",
+      description: "在下方配置您的消息机器人详情。",
+      platform: "平台",
+      telegram_bot: "Telegram 机器人",
+      name: "名称",
+      name_placeholder: "例如：我的专属机器人",
+      bot_token: "Bot Token",
+      allowed_users: "允许使用的用户",
+      allowed_users_placeholder: "英文逗号分隔的 Telegram 用户 ID。留空以允许所有用户。",
+      active: "启用状态",
+      cancel: "取消",
+      save: "保存"
+    },
+    messages: {
+      load_failed: "加载渠道失败",
+      create_success: "渠道创建成功",
+      update_success: "渠道更新成功",
+      fill_required: "请填写所有必填字段",
+      save_failed: "保存渠道失败",
+      delete_confirm: "确定要删除这个渠道吗？",
+      delete_success: "渠道删除成功",
+      delete_failed: "删除渠道失败",
+      toggle_failed: "更新状态失败",
+      name_exists: "渠道名称已存在",
+      token_exists: "机器人 Token 已存在"
+    }
+  },
   setup: {
     title: "初始化 {appName}",
     description: "请先创建第一个管理员账号以完成系统初始化",
@@ -316,27 +363,27 @@ Build when you need.`
       network_failed: "登录失败，请稍后重试",
     },
     options: {
-       remember_me: "记住登录状态",
-       forgot_password: "忘记密码？",
-     },
+      remember_me: "记住登录状态",
+      forgot_password: "忘记密码？",
+    },
     register_prompt: "还没有账户？",
     register_link: "立即注册",
     register_closed: "当前已关闭注册",
-     features: {
-       version_control: {
-         title: "自主规划",
-         description: "AI 先规划后执行。将复杂任务拆解并逐步执行。",
-       },
-       team: {
-         title: "内置记忆",
-         description: "记住重要信息。在任务和对话中保持上下文。",
-       },
-       automation: {
-         title: "人工监管",
-         description: "您来引导。AI 执行。随时审查、调整和介入。",
-       },
-     },
-   },
+    features: {
+      version_control: {
+        title: "自主规划",
+        description: "AI 先规划后执行。将复杂任务拆解并逐步执行。",
+      },
+      team: {
+        title: "内置记忆",
+        description: "记住重要信息。在任务和对话中保持上下文。",
+      },
+      automation: {
+        title: "人工监管",
+        description: "您来引导。AI 执行。随时审查、调整和介入。",
+      },
+    },
+  },
   vibe: {
     title: "Vibe 阶段",
     description: "把 prompts 变成可运行的 Agent，大模型自动规划，释放想象力",
@@ -439,57 +486,57 @@ Build when you need.`
     },
   },
   dashboard: {
-      stats: {
-        total_tasks: "总任务数",
-        active_agents: "活跃Agent",
-        deployed_apps: "已部署应用",
-        today_calls: "今日调用",
+    stats: {
+      total_tasks: "总任务数",
+      active_agents: "活跃Agent",
+      deployed_apps: "已部署应用",
+      today_calls: "今日调用",
+    },
+    features: {
+      title: "主要功能",
+      vibe: {
+        title: "VIBE",
+        description: "创建智能Agent，自动规划，释放想象力",
       },
-      features: {
-        title: "主要功能",
-        vibe: {
-          title: "VIBE",
-          description: "创建智能Agent，自动规划，释放想象力",
-        },
-        build: {
-          title: "BUILD",
-          description: "将Agent工作流构建为可部署的应用",
-        },
-        deploy: {
-          title: "DEPLOY",
-          description: "部署应用到生产环境，实现业务价值",
-        },
-        models: {
-          title: "模型管理",
-          description: "配置和管理AI模型，设置默认模型",
-        },
-        monitoring: {
-          title: "监控",
-          description: "监控LLM调用、工具使用和系统性能",
-        },
-        files: {
-          title: "文件管理",
-          description: "上传、管理和查看项目文件",
-        },
+      build: {
+        title: "BUILD",
+        description: "将Agent工作流构建为可部署的应用",
       },
-      tasks: {
-        title: "最近任务",
-        search_placeholder: "搜索任务...",
-        new_task: "新建任务",
-        empty: "暂无任务记录",
-        delete_confirm: "确定要删除这个任务吗？",
-        status: {
-          completed: "已完成",
-          running: "运行中",
-          failed: "失败",
-          pending: "等待中",
-        },
+      deploy: {
+        title: "DEPLOY",
+        description: "部署应用到生产环境，实现业务价值",
+      },
+      models: {
+        title: "模型管理",
+        description: "配置和管理AI模型，设置默认模型",
+      },
+      monitoring: {
+        title: "监控",
+        description: "监控LLM调用、工具使用和系统性能",
       },
       files: {
-        title: "最近文件",
-        view_all: "查看全部",
-        empty: "暂无文件",
+        title: "文件管理",
+        description: "上传、管理和查看项目文件",
       },
+    },
+    tasks: {
+      title: "最近任务",
+      search_placeholder: "搜索任务...",
+      new_task: "新建任务",
+      empty: "暂无任务记录",
+      delete_confirm: "确定要删除这个任务吗？",
+      status: {
+        completed: "已完成",
+        running: "运行中",
+        failed: "失败",
+        pending: "等待中",
+      },
+    },
+    files: {
+      title: "最近文件",
+      view_all: "查看全部",
+      empty: "暂无文件",
+    },
   },
   monitoring: {
     title: "监控",

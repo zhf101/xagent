@@ -1629,6 +1629,8 @@ async def create_task(
             visual_model_name=task.visual_model_name,
             compact_model_name=task.compact_model_name,
             vibe_mode=task.vibe_mode,
+            channel_id=task.channel_id,
+            channel_name=task.channel_name,
         )
 
     except Exception as e:
@@ -1759,6 +1761,8 @@ async def get_tasks(
                         "total_tokens": task.total_tokens or 0,
                         "llm_calls": task.llm_calls or 0,
                         "agent_id": task.agent_id,
+                        "channel_id": task.channel_id,
+                        "channel_name": task.channel_name,
                     }
 
                     if task.agent_id and task.agent_id in agents_map:
@@ -1873,6 +1877,8 @@ async def get_task(
                 "output_tokens": task.output_tokens or 0,
                 "total_tokens": task.total_tokens or 0,
                 "llm_calls": task.llm_calls or 0,
+                "channel_id": task.channel_id,
+                "channel_name": task.channel_name,
             }
 
         # Execute in thread pool to avoid blocking
@@ -1935,6 +1941,8 @@ async def get_task_status(
                 "output_tokens": task.output_tokens or 0,
                 "total_tokens": task.total_tokens or 0,
                 "llm_calls": task.llm_calls or 0,
+                "channel_id": task.channel_id,
+                "channel_name": task.channel_name,
             }
 
         # Execute in thread pool to avoid blocking

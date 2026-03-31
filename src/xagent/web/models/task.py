@@ -114,6 +114,12 @@ class Task(Base):  # type: ignore
     )  # Process mode: detailed process description
     examples = Column(JSON, nullable=True)  # Process mode: input/output examples
 
+    # Channel configuration
+    channel_id = Column(
+        Integer, ForeignKey("user_channels.id", ondelete="SET NULL"), nullable=True
+    )
+    channel_name = Column(String(100), nullable=True)
+
     # Token usage statistics
     input_tokens = Column(Integer, default=0)
     output_tokens = Column(Integer, default=0)

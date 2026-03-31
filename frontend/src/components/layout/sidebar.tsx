@@ -64,6 +64,8 @@ interface Task {
   description?: string
   agent_id?: number
   agent_logo_url?: string
+  channel_id?: number
+  channel_name?: string
 }
 
 interface VersionInfo {
@@ -167,6 +169,13 @@ const baseUserMenuItems: NavigationItem[] = [
     nameKey: "nav.files",
     href: "/files",
     icon: FileText,
+    color: "text-blue-400"
+  },
+  {
+    name: "Channels",
+    nameKey: "nav.channels",
+    href: "/channels",
+    icon: MessageSquare,
     color: "text-blue-400"
   },
   {
@@ -869,7 +878,14 @@ export function Sidebar({ className }: SidebarProps) {
                             />
                           </div>
                         ) : (
-                          <span className="truncate flex-1 text-left">{task.title || "Untitled Task"}</span>
+                          <span className="truncate flex-1 text-left flex items-center gap-2">
+                            <span className="truncate">{task.title || "Untitled Task"}</span>
+                            {task.channel_name && (
+                              <span className="text-[10px] text-muted-foreground bg-accent/50 px-1.5 rounded flex-shrink-0 border border-border/50">
+                                {task.channel_name}
+                              </span>
+                            )}
+                          </span>
                         )}
                         {unreadTasks.has(String(task.task_id)) && (
                           <div className="absolute right-4 top-1/2 -translate-y-1/2 h-2 w-2 rounded-full bg-primary group-hover:opacity-0 transition-opacity" />

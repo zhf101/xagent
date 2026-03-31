@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from .api.admin_users import router as admin_users_router
 from .api.agents import router as agents_router
 from .api.auth import auth_router
+from .api.channel import router as channel_router
 from .api.chat import chat_router
 from .api.cloud_storage import cloud_router
 from .api.files import file_router
@@ -149,6 +150,7 @@ app.include_router(skills_router)
 app.include_router(system_router)
 app.include_router(templates_router)
 app.include_router(agents_router)
+app.include_router(channel_router, prefix="/api/channels", tags=["Channels"])
 
 
 # 初始化数据库
@@ -205,9 +207,38 @@ async def startup_event() -> None:
     else:
         logger.info("Sandbox manager not available (disabled or init failed)")
 
+    # Start Telegram channel if enabled
+    try:
+        import asyncio
+
+        from .channels.telegram.bot import get_telegram_channel
+
+        telegram_channel = get_telegram_channel()
+        if telegram_channel.enabled:
+            logger.info("Initializing Telegram channel manager...")
+            app.state.telegram_task = asyncio.create_task(telegram_channel.start())
+            logger.info("Telegram channel background task created successfully")
+    except Exception as e:
+        logger.error(f"Failed to start Telegram channel manager: {e}", exc_info=True)
+
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
+    # Shutdown Telegram channel if enabled
+    try:
+        if hasattr(app.state, "telegram_task"):
+            app.state.telegram_task.cancel()
+            logger.info("Cancelled Telegram polling task")
+
+        from .channels.telegram.bot import get_telegram_channel
+
+        telegram_channel = get_telegram_channel()
+        if telegram_channel.enabled:
+            await telegram_channel.stop()
+            logger.info("Telegram channel stopped successfully")
+    except Exception as e:
+        logger.error(f"Failed to stop Telegram channel: {e}", exc_info=True)
+
     # Shutdown all sandboxes
     from .sandbox_manager import get_sandbox_manager
 

@@ -96,6 +96,8 @@ class TaskCreateResponse(BaseModel):
     visual_model_name: Optional[str] = None
     compact_model_name: Optional[str] = None
     vibe_mode: Optional[str] = None
+    channel_id: Optional[int] = None
+    channel_name: Optional[str] = None
 
 
 class ExecutionStatus(BaseModel):

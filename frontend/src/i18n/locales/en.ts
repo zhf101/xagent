@@ -51,6 +51,7 @@ const en = {
     history: "All Tasks",
     search: "Search Tasks",
     templates: "Templates",
+    channels: "Channels",
     sections: {
       agentDevelopment: "Agent Development",
       resources: "Resources",
@@ -268,6 +269,52 @@ Build when you need.`
       },
     },
   },
+  channels: {
+    page_title: "Channels Management",
+    page_description: "Manage your communication channels and bots.",
+    telegram_bots: "Telegram Bots",
+    add_telegram: "Add Telegram",
+    title: "Channels & Bots",
+    description: "Configure your personal {platform}.",
+    add_channel: "Add Channel",
+    no_channels: "No channels configured yet.",
+    status: {
+      active: "Active",
+      inactive: "Inactive"
+    },
+    actions: {
+      edit: "Edit",
+      delete: "Delete"
+    },
+    dialog: {
+      add_title: "Add Channel",
+      edit_title: "Edit Channel",
+      description: "Configure your messaging bot details below.",
+      platform: "Platform",
+      telegram_bot: "Telegram Bot",
+      name: "Name",
+      name_placeholder: "e.g. My Personal Bot",
+      bot_token: "Bot Token",
+      allowed_users: "Allowed Users",
+      allowed_users_placeholder: "Comma separated Telegram User IDs. Leave empty to allow all.",
+      active: "Active",
+      cancel: "Cancel",
+      save: "Save"
+    },
+    messages: {
+      load_failed: "Failed to load channels",
+      create_success: "Channel created successfully",
+      update_success: "Channel updated successfully",
+      fill_required: "Please fill in all required fields",
+      save_failed: "Failed to save channel",
+      delete_confirm: "Are you sure you want to delete this channel?",
+      delete_success: "Channel deleted successfully",
+      delete_failed: "Failed to delete channel",
+      toggle_failed: "Failed to update status",
+      name_exists: "Channel name already exists",
+      token_exists: "Bot token already exists"
+    }
+  },
   setup: {
     title: "Initialize {appName}",
     description: "Create the first administrator account to complete setup.",
@@ -316,27 +363,27 @@ Build when you need.`
       network_failed: "Login failed, please try again later",
     },
     options: {
-       remember_me: "Remember me",
-       forgot_password: "Forgot password?",
-     },
+      remember_me: "Remember me",
+      forgot_password: "Forgot password?",
+    },
     register_prompt: "Don't have an account?",
     register_link: "Register now",
     register_closed: "Registration is currently disabled",
-     features: {
-       version_control: {
-         title: "Autonomous Planning",
-         description: "AI that plans before it acts. Breaks down complex tasks and executes step by step.",
-       },
-       team: {
-         title: "Built-in Memory",
-         description: "Remembers what matters. Keeps context across tasks and conversations.",
-       },
-       automation: {
-         title: "Human in Control",
-         description: "You guide. AI executes. Review, adjust, and step in anytime.",
-       },
-     },
-   },
+    features: {
+      version_control: {
+        title: "Autonomous Planning",
+        description: "AI that plans before it acts. Breaks down complex tasks and executes step by step.",
+      },
+      team: {
+        title: "Built-in Memory",
+        description: "Remembers what matters. Keeps context across tasks and conversations.",
+      },
+      automation: {
+        title: "Human in Control",
+        description: "You guide. AI executes. Review, adjust, and step in anytime.",
+      },
+    },
+  },
   vibe: {
     title: "Vibe Stage",
     description: "Turn prompts into runnable agents; let LLMs plan automatically and unleash imagination",
