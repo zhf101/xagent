@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 
 from ...core.agent.service import AgentService
@@ -32,6 +33,7 @@ from ..services.task_execution_context_service import (
 from ..tools.config import WebToolConfig
 from ..user_isolated_memory import UserContext
 from ..utils.db_timezone import format_datetime_for_api, safe_timestamp_to_unix
+from ...core.database import get_database_profile, normalize_database_type
 from .trace_handlers import DatabaseTraceHandler
 from .ws_trace_handlers import WebSocketTraceHandler
 
@@ -1096,20 +1098,14 @@ class AgentServiceManager:
             raise
 
     def _infer_database_type(self, database_url: str) -> str:
-        """Infer database type from connection URL"""
-        if database_url.startswith("mysql://") or database_url.startswith("mysql2://"):
-            return "MySQL"
-        elif database_url.startswith("postgresql://") or database_url.startswith(
-            "postgres://"
-        ):
-            return "PostgreSQL"
-        elif database_url.startswith("sqlite://"):
-            return "SQLite"
-        elif database_url.startswith("sqlserver://") or database_url.startswith(
-            "mssql://"
-        ):
-            return "SQL Server"
-        else:
+        """根据连接 URL 推断可展示的数据库类型。"""
+
+        try:
+            normalized = normalize_database_type(
+                make_url(database_url).drivername.split("+", 1)[0]
+            )
+            return str(get_database_profile(normalized).get("display_name") or normalized)
+        except Exception:
             return "Unknown"
 
     async def _execute_text2sql_agent_directly(

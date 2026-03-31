@@ -1,13 +1,33 @@
-"""Text2SQL database management API routes"""
+"""Text2SQL 数据源管理 API。
+
+这层接口的职责是：
+- 管理数据库连接配置
+- 提供数据库类型模板、连接表单与 URL 编解码能力
+- 做真实连通性测试
+
+它不负责决定 datamake / SQL Brain 的业务主循环。
+"""
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import func
 
+from ...core.database import (
+    build_connection_url,
+    get_connection_form_definition,
+    get_database_profile,
+    list_database_profiles,
+    mask_connection_url,
+    parse_connection_url,
+)
+from ...core.database.adapters import create_adapter_for_type
+from ...core.database.config import database_connection_config_from_url
+from ...core.database.types import normalize_database_type
 from ..auth_dependencies import get_current_user
 from ..models.database import get_db
 from ..models.text2sql import DatabaseStatus, DatabaseType, Text2SQLDatabase
@@ -23,20 +43,34 @@ text2sql_router = APIRouter(prefix="/api/text2sql", tags=["text2sql"])
 
 # Pydantic schemas
 class DatabaseCreateRequest(BaseModel):
-    """Request schema for creating a new database configuration"""
+    """创建或编辑数据源的请求。"""
 
     name: str = Field(
         ..., min_length=1, max_length=255, description="Database display name"
     )
     type: str = Field(
-        ..., description="Database type (sqlite, postgresql, mysql, sqlserver)"
+        ...,
+        description=(
+            "Database type "
+            "(mysql, postgresql/postgres, oracle, sqlserver/mssql, "
+            "sqlite, dm/dameng, kingbase, gaussdb/opengauss, oceanbase, tidb, "
+            "clickhouse, polardb, vastbase, highgo, goldendb)"
+        ),
     )
-    url: str = Field(..., min_length=1, description="Database connection URL")
+    connection_mode: Literal["form", "url"] = Field(
+        default="url",
+        description="Connection edit mode. 'form' uses structured fields; 'url' uses raw URL.",
+    )
+    url: Optional[str] = Field(default=None, description="Database connection URL")
+    connection_form: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Structured connection fields for form mode",
+    )
     read_only: bool = Field(default=True, description="Whether database is read-only")
 
 
 class DatabaseResponse(BaseModel):
-    """Response schema for database configuration"""
+    """数据库配置响应。"""
 
     id: int
     name: str
@@ -49,6 +83,88 @@ class DatabaseResponse(BaseModel):
     error_message: Optional[str] = None
     created_at: str
     updated_at: str
+
+
+class DatabaseProfileResponse(BaseModel):
+    """数据库连接模板响应。"""
+
+    db_type: str
+    display_name: str
+    default_port: Optional[int] = None
+    category: str
+    protocol: str
+    support_level: str
+    aliases: List[str]
+    driver_packages: List[str]
+    connection_example: str
+    notes: List[str]
+
+
+class ConnectionPreviewRequest(BaseModel):
+    """连接表单预览/测试请求。"""
+
+    db_type: str
+    connection_mode: Literal["form", "url"] = "form"
+    url: Optional[str] = None
+    connection_form: Dict[str, Any] = Field(default_factory=dict)
+    read_only: bool = True
+
+
+def _resolve_connection_url(
+    payload: DatabaseCreateRequest | ConnectionPreviewRequest,
+) -> str:
+    """把普通模式/高级模式请求统一折叠成最终 URL。"""
+
+    raw_type = payload.type if hasattr(payload, "type") else payload.db_type
+    normalized_type = normalize_database_type(raw_type)
+    mode = payload.connection_mode
+    if mode == "form":
+        try:
+            return build_connection_url(normalized_type, payload.connection_form)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Failed to build connection URL: {exc}",
+            ) from exc
+
+    url = (payload.url or "").strip()
+    if not url:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Connection URL is required in advanced mode",
+        )
+    return url
+
+
+def _build_connection_config(url_str: str, *, read_only: bool):
+    """把原始 URL 转成 adapter 可消费的统一连接配置。"""
+
+    try:
+        url = make_url(url_str)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid connection URL: {exc}",
+        ) from exc
+    return database_connection_config_from_url(url, read_only=read_only)
+
+
+def _build_driver_install_hint(db_type: str) -> str | None:
+    """根据数据库类型生成缺驱动时的安装提示。"""
+
+    try:
+        profile = get_database_profile(db_type)
+    except ValueError:
+        return None
+
+    packages = profile.get("driver_packages") or []
+    if not packages:
+        return None
+    if len(packages) == 1:
+        return f"缺少数据库驱动，请安装：pip install {packages[0]}"
+    return "缺少数据库驱动，请安装以下任一依赖：" + " / ".join(
+        f"pip install {package}" for package in packages
+    )
 
 
 class DataMapping(BaseModel):
@@ -95,6 +211,127 @@ class PredictionResponse(BaseModel):
     error: Optional[str] = None
 
 
+@text2sql_router.get(
+    "/database-types",
+    response_model=List[DatabaseProfileResponse],
+)
+async def get_database_type_profiles() -> List[DatabaseProfileResponse]:
+    """返回支持的 SQL 数据库类型与接入模板。"""
+
+    return [DatabaseProfileResponse(**item) for item in list_database_profiles()]
+
+
+@text2sql_router.get(
+    "/database-types/{db_type}",
+    response_model=DatabaseProfileResponse,
+)
+async def get_database_type_profile(db_type: str) -> DatabaseProfileResponse:
+    """返回单个数据库类型模板。"""
+
+    try:
+        return DatabaseProfileResponse(**get_database_profile(db_type))
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+
+
+@text2sql_router.get("/database-types/{db_type}/connection-form")
+async def get_database_connection_form(db_type: str) -> Dict[str, Any]:
+    """返回指定数据库类型的普通模式字段定义。"""
+
+    try:
+        return get_connection_form_definition(db_type)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+
+
+@text2sql_router.post("/connection/preview")
+async def preview_connection_url(
+    payload: ConnectionPreviewRequest,
+    user: User = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """根据结构化表单生成连接字符串预览。"""
+
+    del user
+    url = _resolve_connection_url(payload)
+    return {
+        "url": url,
+        "masked_url": mask_connection_url(url),
+        "db_type": normalize_database_type(payload.db_type),
+    }
+
+
+@text2sql_router.post("/connection/parse")
+async def parse_connection_form(
+    payload: ConnectionPreviewRequest,
+    user: User = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """把高级模式 URL 尝试解析回普通模式字段。"""
+
+    del user
+    if not payload.url:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="URL is required for parse",
+        )
+    try:
+        return parse_connection_url(payload.db_type, payload.url)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+
+@text2sql_router.post("/connection/test")
+async def test_connection_from_form(
+    payload: ConnectionPreviewRequest,
+    user: User = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """在不保存数据源的情况下测试当前连接配置。"""
+
+    del user
+    url = _resolve_connection_url(payload)
+    normalized_type = normalize_database_type(payload.db_type)
+    config = _build_connection_config(url, read_only=payload.read_only)
+    adapter = create_adapter_for_type(normalized_type, config)
+    try:
+        await adapter.connect()
+        try:
+            schema = await adapter.get_schema()
+        finally:
+            await adapter.disconnect()
+    except ImportError as exc:
+        hint = _build_driver_install_hint(normalized_type)
+        detail = f"Database connection failed: {exc}"
+        if hint:
+            detail = f"{detail}. {hint}"
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=detail,
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Database connection failed: {exc}",
+        ) from exc
+
+    table_count = len(schema.get("tables") or [])
+    return {
+        "status": "connected",
+        "message": f"连接测试成功，识别到 {table_count} 个顶层对象。",
+        "table_count": table_count,
+        "url": url,
+        "masked_url": mask_connection_url(url),
+        "db_type": normalized_type,
+    }
+
+
 @text2sql_router.get("/databases", response_model=List[DatabaseResponse])
 async def get_databases(
     db: Session = Depends(get_db),
@@ -128,7 +365,7 @@ async def create_database(
     try:
         # Validate database type
         try:
-            db_type = DatabaseType(db_config.type)
+            db_type = DatabaseType(normalize_database_type(db_config.type))
         except ValueError:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -151,12 +388,14 @@ async def create_database(
                 detail=f"Database with name '{db_config.name}' already exists",
             )
 
+        resolved_url = _resolve_connection_url(db_config)
+
         # Create new database configuration
         new_db = Text2SQLDatabase(
             user_id=user.id,
             name=db_config.name,
             type=db_type,
-            url=db_config.url,
+            url=resolved_url,
             read_only=db_config.read_only,
             status=DatabaseStatus.CONNECTED,  # Set to connected by default
             table_count=0,  # TODO: Query actual table count
@@ -210,7 +449,7 @@ async def update_database(
 
         # Validate database type
         try:
-            db_type = DatabaseType(db_config.type)
+            db_type = DatabaseType(normalize_database_type(db_config.type))
         except ValueError:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -234,10 +473,12 @@ async def update_database(
                 detail=f"Database with name '{db_config.name}' already exists",
             )
 
+        resolved_url = _resolve_connection_url(db_config)
+
         # Update database configuration
         existing_db.name = db_config.name
         existing_db.type = db_type
-        existing_db.url = db_config.url
+        existing_db.url = resolved_url
         existing_db.read_only = db_config.read_only
         existing_db.status = (
             DatabaseStatus.DISCONNECTED
@@ -326,36 +567,19 @@ async def test_database_connection(
                 detail="Database configuration not found",
             )
 
-        # Simple connection test
         try:
-            import sqlite3
+            config = _build_connection_config(
+                existing_db.url,
+                read_only=existing_db.read_only,
+            )
+            adapter = create_adapter_for_type(existing_db.type.value, config)
+            await adapter.connect()
+            try:
+                schema = await adapter.get_schema()
+            finally:
+                await adapter.disconnect()
 
-            db_url = existing_db.url
-
-            if existing_db.type.value == "sqlite":
-                # SQLite connection test
-                if db_url.startswith("sqlite:///"):
-                    db_path = db_url.replace("sqlite:///", "")
-                    conn = sqlite3.connect(db_path)
-                    conn.close()
-
-                    # Get table count
-                    conn = sqlite3.connect(db_path)
-                    cursor = conn.cursor()
-                    cursor.execute(
-                        "SELECT count(*) FROM sqlite_master WHERE type='table'"
-                    )
-                    table_count = cursor.fetchone()[0]
-                    conn.close()
-
-                else:
-                    # Other format SQLite URL
-                    conn = sqlite3.connect(db_url.replace("sqlite://", ""))
-                    conn.close()
-                    table_count = 0
-            else:
-                # For other database types, skip actual connection test for now
-                table_count = 0
+            table_count = len(schema.get("tables") or [])
 
             # Update connection status
             existing_db.status = DatabaseStatus.CONNECTED
@@ -370,6 +594,19 @@ async def test_database_connection(
                 "table_count": table_count,
             }
 
+        except ImportError as test_error:
+            existing_db.status = DatabaseStatus.ERROR
+            existing_db.error_message = str(test_error)
+            db.commit()
+
+            hint = _build_driver_install_hint(existing_db.type.value)
+            detail = f"Database connection failed: {str(test_error)}"
+            if hint:
+                detail = f"{detail}. {hint}"
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=detail,
+            )
         except Exception as test_error:
             # Connection test failed
             existing_db.status = DatabaseStatus.ERROR

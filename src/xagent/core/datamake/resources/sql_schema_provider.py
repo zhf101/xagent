@@ -29,8 +29,10 @@ import os
 from typing import Any, Iterable, Mapping
 
 from sqlalchemy import create_engine, inspect
-from sqlalchemy.engine import URL, make_url
+from sqlalchemy.engine import make_url
 
+from ...database.adapters import create_adapter_for_type
+from ...database.config import database_connection_config_from_url
 from .sql_datasource_resolver import SqlDatasourceResolver
 from .sql_resource_definition import parse_sql_resource_metadata
 
@@ -113,39 +115,24 @@ class SqlSchemaProvider:
         从而把数据库访问严格收缩在“结构信息”层面。
         """
 
-        resolved_url = self._resolve_database_url(connection_name=connection_name, db_url=db_url)
+        resolved_url = self._resolve_database_url(
+            connection_name=connection_name,
+            db_url=db_url,
+        )
         if resolved_url is None:
             return []
 
-        engine = create_engine(resolved_url)
-        ddl_snippets: list[str] = []
         try:
-            inspector = inspect(engine)
-            schema_names = inspector.get_schema_names() or []
-            preferred_schemas = [
-                schema_name
-                for schema_name in schema_names
-                if schema_name not in {"information_schema", "pg_catalog"}
-            ] or [None]
-
-            for schema_name in preferred_schemas:
-                table_names = inspector.get_table_names(schema=schema_name)
-                for table_name in table_names:
-                    ddl_snippets.append(
-                        self._build_table_ddl(
-                            schema_name=schema_name,
-                            table_name=table_name,
-                            columns=inspector.get_columns(table_name, schema=schema_name),
-                        )
-                    )
-                    if len(ddl_snippets) >= max(max_tables, 0):
-                        return ddl_snippets
+            config = database_connection_config_from_url(make_url(resolved_url), read_only=True)
+            try:
+                adapter = create_adapter_for_type(config.db_type, config)
+            except ValueError:
+                return self._reflect_schema_via_sqlalchemy(resolved_url)[: max(max_tables, 0)]
+            schema_snapshot = self._run_async(adapter.get_schema())
         except Exception:
             return []
-        finally:
-            engine.dispose()
 
-        return ddl_snippets
+        return self._convert_snapshot_to_ddl(schema_snapshot)[: max(max_tables, 0)]
 
     def _extract_inline_schema_ddl(
         self,
@@ -273,19 +260,62 @@ class SqlSchemaProvider:
         *,
         connection_name: str | None,
         db_url: str | None,
-    ) -> URL | None:
+    ) -> str | None:
         """
         优先解析显式 URL；没有时再从约定环境变量读取。
         """
 
         if isinstance(db_url, str) and db_url.strip():
-            return make_url(db_url.strip())
+            return db_url.strip()
         if isinstance(connection_name, str) and connection_name.strip():
             env_key = f"XAGENT_EXTERNAL_DB_{connection_name.strip().upper()}"
             url = os.getenv(env_key)
             if isinstance(url, str) and url.strip():
-                return make_url(url.strip())
+                return url.strip()
         return None
+
+    def _run_async(self, awaitable: Any) -> Any:
+        """在同步 schema provider 中安全执行 adapter 的异步接口。
+
+        这里不能直接 `asyncio.run()`，因为上游经常已经运行在事件循环线程里。
+        因此把 awaitable 丢到独立线程中执行，避免触发
+        `asyncio.run() cannot be called from a running event loop`。
+        """
+
+        import asyncio
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            return executor.submit(lambda: asyncio.run(awaitable)).result()
+
+    def _reflect_schema_via_sqlalchemy(self, db_url: str) -> list[str]:
+        """为历史 SQLAlchemy 方言保留 schema 反射兼容路径。"""
+
+        engine = create_engine(db_url, future=True)
+        ddl_snippets: list[str] = []
+        try:
+            inspector = inspect(engine)
+            schema_names = inspector.get_schema_names() or []
+            preferred_schemas = [
+                schema_name
+                for schema_name in schema_names
+                if schema_name not in {"information_schema", "pg_catalog", "sys"}
+            ] or [None]
+
+            for schema_name in preferred_schemas:
+                table_names = inspector.get_table_names(schema=schema_name)
+                for table_name in table_names:
+                    ddl_snippets.append(
+                        self._build_table_ddl(
+                            schema_name=schema_name,
+                            table_name=table_name,
+                            columns=inspector.get_columns(table_name, schema=schema_name),
+                        )
+                    )
+        finally:
+            engine.dispose()
+
+        return ddl_snippets
 
     def _coalesce_str(self, *values: Any) -> str | None:
         """

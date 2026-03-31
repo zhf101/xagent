@@ -7,12 +7,19 @@
 from __future__ import annotations
 
 import asyncio
+import csv
+import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import create_engine, text
+from sqlalchemy.engine import make_url
 
+from ...database.adapters import create_adapter_for_type
+from ...database.adapters.sqlalchemy_common import SqlAlchemySyncAdapter
+from ...database.config import database_connection_config_from_url
 from ...tools.core.sql_tool import (
+    _looks_like_write_operation,
     _stream_export_to_csv,
     _stream_export_to_jsonlines,
     _stream_export_to_parquet,
@@ -356,6 +363,7 @@ class SqlResourceAdapter:
             raw_result = await self._run_direct_sql_query(
                 db_url=db_url,
                 query=str(tool_args["query"]),
+                read_only=self._resolve_direct_sql_read_only(contract, tool_args),
                 output_file=output_file,
                 workspace=workspace,
             )
@@ -451,6 +459,7 @@ class SqlResourceAdapter:
         *,
         db_url: str,
         query: str,
+        read_only: bool = True,
         output_file: str | None = None,
         workspace: TaskWorkspace | None = None,
     ) -> dict[str, Any]:
@@ -463,12 +472,18 @@ class SqlResourceAdapter:
         - 一条慢查询不应该卡住整条事件循环
         """
 
+        thread_kwargs: dict[str, Any] = {
+            "db_url": db_url,
+            "query": query,
+            "output_file": output_file,
+            "workspace": workspace,
+        }
+        if not read_only:
+            thread_kwargs["read_only"] = False
+
         return await asyncio.to_thread(
             self._run_direct_sql_query_sync,
-            db_url=db_url,
-            query=query,
-            output_file=output_file,
-            workspace=workspace,
+            **thread_kwargs,
         )
 
     def _run_direct_sql_query_sync(
@@ -476,6 +491,7 @@ class SqlResourceAdapter:
         *,
         db_url: str,
         query: str,
+        read_only: bool = True,
         output_file: str | None = None,
         workspace: TaskWorkspace | None = None,
     ) -> dict[str, Any]:
@@ -486,8 +502,112 @@ class SqlResourceAdapter:
         不需要感知“这次是 connection_name 还是 direct db_url”。
         """
 
-        engine = create_engine(db_url)
+        config = database_connection_config_from_url(make_url(db_url), read_only=read_only)
+        adapter = self._create_adapter_if_supported(config)
+
+        if output_file and workspace:
+            streaming_url = self._resolve_direct_streaming_sqlalchemy_url(
+                db_url=db_url,
+                adapter=adapter,
+            )
+            if streaming_url is not None:
+                return self._run_direct_sqlalchemy_query_sync(
+                    db_url=streaming_url,
+                    query=query,
+                    output_file=output_file,
+                    workspace=workspace,
+                )
+
+        if adapter is None:
+            return self._run_direct_sqlalchemy_query_sync(
+                db_url=db_url,
+                query=query,
+                read_only=read_only,
+                output_file=output_file,
+                workspace=workspace,
+            )
+
+        result = asyncio.run(self._run_query_via_adapter(adapter=adapter, query=query))
+
+        columns = list(result.rows[0].keys()) if result.rows else []
+        row_count = (
+            len(result.rows)
+            if result.rows
+            else int(result.affected_rows or 0)
+        )
+        if output_file and workspace:
+            exported_count = self._export_direct_sql_rows(
+                workspace=workspace,
+                output_file=output_file,
+                rows=result.rows,
+                columns=columns,
+            )
+            return {
+                "success": True,
+                "rows": [],
+                "row_count": exported_count,
+                "columns": columns,
+                "message": (
+                    "Direct SQL executed successfully, "
+                    f"exported {exported_count} row(s) to {output_file}"
+                ),
+            }
+
+        if result.rows:
+            return {
+                "success": True,
+                "rows": result.rows,
+                "row_count": len(result.rows),
+                "columns": columns,
+                "message": f"Direct SQL executed successfully, returned {len(result.rows)} row(s)",
+            }
+
+        return {
+            "success": True,
+            "rows": [],
+            "row_count": row_count,
+            "columns": columns,
+            "message": f"Direct SQL executed successfully, affected {row_count} row(s)",
+        }
+
+    def _create_adapter_if_supported(self, config: Any) -> Any | None:
+        """创建已纳入平台治理的 adapter；未知方言保留历史 SQLAlchemy 兼容路径。"""
+
+        try:
+            return create_adapter_for_type(config.db_type, config)
+        except ValueError:
+            return None
+
+    def _resolve_direct_streaming_sqlalchemy_url(
+        self,
+        *,
+        db_url: str,
+        adapter: Any | None,
+    ) -> str | None:
+        """为 direct SQL 导出场景解析可流式执行的 SQLAlchemy URL。"""
+
+        if isinstance(adapter, SqlAlchemySyncAdapter):
+            try:
+                return str(adapter.build_sqlalchemy_url())
+            except Exception:
+                return None
+        if adapter is None:
+            return db_url
+        return None
+
+    def _run_direct_sqlalchemy_query_sync(
+        self,
+        *,
+        db_url: str,
+        query: str,
+        read_only: bool = True,
+        output_file: str | None = None,
+        workspace: TaskWorkspace | None = None,
+    ) -> dict[str, Any]:
+        """保留 direct `db_url` 的历史 SQLAlchemy 兼容/流式导出路径。"""
+
         stmt = text(query)
+        engine = create_engine(db_url, future=True)
         try:
             with engine.connect() as connection:
                 if output_file and workspace:
@@ -510,7 +630,7 @@ class SqlResourceAdapter:
 
                 result = connection.execute(stmt)
                 if result.returns_rows:
-                    rows = [dict(row._mapping) for row in result.all()]
+                    rows = [dict(row._mapping) for row in result.fetchall()]
                     columns = list(rows[0].keys()) if rows else list(result.keys())
                     return {
                         "success": True,
@@ -521,16 +641,31 @@ class SqlResourceAdapter:
                     }
 
                 rowcount = result.rowcount if hasattr(result, "rowcount") else 0
-                connection.commit()
+                if not read_only and _looks_like_write_operation(query):
+                    connection.commit()
                 return {
                     "success": True,
                     "rows": [],
-                    "row_count": rowcount,
+                    "row_count": int(rowcount or 0),
                     "columns": [],
-                    "message": f"Direct SQL executed successfully, affected {rowcount} row(s)",
+                    "message": f"Direct SQL executed successfully, affected {int(rowcount or 0)} row(s)",
                 }
         finally:
             engine.dispose()
+
+    async def _run_query_via_adapter(
+        self,
+        *,
+        adapter: Any,
+        query: str,
+    ) -> Any:
+        """统一封装 adapter 生命周期，避免 direct 路径重复散落 connect/disconnect。"""
+
+        await adapter.connect()
+        try:
+            return await adapter.execute_query(query)
+        finally:
+            await adapter.disconnect()
 
     def _export_direct_sql_result(
         self,
@@ -573,3 +708,88 @@ class SqlResourceAdapter:
             "Supported: .csv (streaming), .parquet (streaming), "
             ".json/.jsonl/.ndjson (streaming JSON Lines)"
         )
+
+    def _export_direct_sql_rows(
+        self,
+        *,
+        workspace: TaskWorkspace,
+        output_file: str,
+        rows: list[dict[str, Any]],
+        columns: list[str],
+    ) -> int:
+        """把 adapter 统一结果导出到 workspace。
+
+        direct `db_url` 迁到多数据库 adapter 后，并不是每种数据库都能继续复用
+        SQLAlchemy CursorResult 的流式接口，所以这里补一个统一的结果导出兜底。
+        """
+
+        resolved_path = workspace.resolve_path(output_file, default_dir="output")
+        file_ext = Path(output_file).suffix.lower()
+
+        if file_ext == ".csv":
+            with open(resolved_path, "w", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=columns or self._infer_columns(rows))
+                writer.writeheader()
+                writer.writerows(rows)
+            return len(rows)
+
+        if file_ext in (".json", ".jsonl", ".ndjson"):
+            with open(resolved_path, "w", encoding="utf-8") as handle:
+                if file_ext == ".json":
+                    json.dump(rows, handle, ensure_ascii=False, indent=2)
+                else:
+                    for row in rows:
+                        print(json.dumps(row, ensure_ascii=False), file=handle)
+            return len(rows)
+
+        if file_ext == ".parquet":
+            try:
+                import pyarrow as pa  # type: ignore[import-not-found]
+                import pyarrow.parquet as pq  # type: ignore[import-not-found]
+            except ImportError as err:
+                raise ImportError(
+                    f"{err}\n"
+                    "pyarrow is required for Parquet export. "
+                    "Install it with: pip install pyarrow"
+                )
+            table = pa.Table.from_pylist(rows)
+            pq.write_table(table, resolved_path)
+            return len(rows)
+
+        raise ValueError(
+            f"Unsupported file format: {file_ext}. "
+            "Supported: .csv (streaming), .parquet (streaming), "
+            ".json/.jsonl/.ndjson (streaming JSON Lines)"
+        )
+
+    def _infer_columns(self, rows: list[dict[str, Any]]) -> list[str]:
+        """在 rows 非空但列名未显式传入时，从首行推断列名。"""
+
+        if not rows:
+            return []
+        return list(rows[0].keys())
+
+    def _resolve_direct_sql_read_only(
+        self,
+        contract: CompiledExecutionContract,
+        tool_args: dict[str, Any],
+    ) -> bool:
+        """解析 direct `db_url` 路径应遵循的只读约束。"""
+
+        candidates = [
+            tool_args.get("read_only"),
+            contract.params.get("read_only"),
+        ]
+        sql_source = contract.params.get("_system_sql_datasource")
+        if isinstance(sql_source, dict):
+            candidates.append(sql_source.get("read_only"))
+        resource_metadata = contract.metadata.get("resource_metadata")
+        if isinstance(resource_metadata, dict):
+            sql_datasource = resource_metadata.get("sql_datasource")
+            if isinstance(sql_datasource, dict):
+                candidates.append(sql_datasource.get("read_only"))
+
+        for candidate in candidates:
+            if isinstance(candidate, bool):
+                return candidate
+        return True

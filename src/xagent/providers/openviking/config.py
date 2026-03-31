@@ -36,6 +36,8 @@ class OpenVikingSettings(BaseModel):
     default_agent: str = "default"
     search_enabled: bool = True
     memory_enabled: bool = True
+    skill_index_enabled: bool = False
+    resource_sync_enabled: bool = False
     timeout_seconds: float = Field(default=15.0, ge=1.0, le=120.0)
 
     @property
@@ -64,6 +66,14 @@ def get_openviking_settings() -> OpenVikingSettings:
         memory_enabled=_parse_bool(
             os.getenv("XAGENT_OPENVIKING_MEMORY_ENABLED"),
             True,
+        ),
+        skill_index_enabled=_parse_bool(
+            os.getenv("XAGENT_OPENVIKING_SKILL_INDEX_ENABLED"),
+            False,
+        ),
+        resource_sync_enabled=_parse_bool(
+            os.getenv("XAGENT_OPENVIKING_RESOURCE_SYNC_ENABLED"),
+            False,
         ),
         timeout_seconds=float(
             os.getenv("XAGENT_OPENVIKING_TIMEOUT_SECONDS", "15.0")

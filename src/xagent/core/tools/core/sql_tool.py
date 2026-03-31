@@ -25,6 +25,10 @@ from pydantic import BaseModel, Field
 from sqlalchemy import URL, create_engine, text
 from sqlalchemy.engine import CursorResult, Row, make_url
 
+from ...database.adapters import create_adapter_for_type
+from ...database.adapters.sqlalchemy_common import SqlAlchemySyncAdapter
+from ...database.config import database_connection_config_from_url
+
 if TYPE_CHECKING:
     from ...workspace import TaskWorkspace
 
@@ -86,8 +90,7 @@ def get_database_type(connection_name: str) -> str:
         Database type (driver name)
     """
     url = _get_connection_url(connection_name)
-    # Extract driver name from URL (e.g., "postgresql+asyncpg" -> "postgresql")
-    return url.drivername.split("+")[0]
+    return database_connection_config_from_url(url, read_only=True).db_type
 
 
 def _row_to_dict(row: Row) -> dict[str, Any]:
@@ -120,99 +123,284 @@ def execute_sql_query(
             - columns: column names in the result
             - message: what happened
     """
-    # Get connection URL from environment
     url = _get_connection_url(connection_name)
-    stmt = text(query)
-    engine = create_engine(url)
+    config = database_connection_config_from_url(url, read_only=False)
+    adapter = _create_adapter_if_supported(config)
+
+    # 对导出场景优先保留历史 SQLAlchemy 流式写盘能力，避免把整表结果先堆进内存。
+    if output_file and workspace:
+        streaming_url = _resolve_streaming_sqlalchemy_url(url=url, adapter=adapter)
+        if streaming_url is not None:
+            return _execute_sqlalchemy_query_sync(
+                connection_name=connection_name,
+                url=streaming_url,
+                query=query,
+                output_file=output_file,
+                workspace=workspace,
+            )
+
+    # 对尚未纳入 adapter 白名单、但历史上可被 SQLAlchemy 直接执行的方言，
+    # 继续走兼容路径，例如 `duckdb:///...`。
+    if adapter is None:
+        return _execute_sqlalchemy_query_sync(
+            connection_name=connection_name,
+            url=url,
+            query=query,
+            output_file=output_file,
+            workspace=workspace,
+        )
+
+    import asyncio
+
+    async def _run_query() -> dict[str, Any]:
+        await adapter.connect()
+        try:
+            result = await adapter.execute_query(query)
+        finally:
+            await adapter.disconnect()
+
+        columns = list(result.rows[0].keys()) if result.rows else []
+        if output_file and workspace:
+            exported_count = _export_rows_to_file(
+                workspace=workspace,
+                output_file=output_file,
+                rows=result.rows,
+                columns=columns,
+            )
+            return SQLQueryResult(
+                success=True,
+                rows=[],
+                row_count=exported_count,
+                columns=columns,
+                message=f"Query executed successfully on '{connection_name}', exported {exported_count} row(s) to {output_file}",
+            ).model_dump()
+
+        row_count = len(result.rows) if result.rows else int(result.affected_rows or 0)
+        return SQLQueryResult(
+            success=True,
+            rows=result.rows,
+            row_count=row_count,
+            columns=columns,
+            message=(
+                f"Query executed successfully on '{connection_name}', returned {len(result.rows)} row(s)"
+                if result.rows
+                else f"Query executed successfully on '{connection_name}', affected {row_count} row(s)"
+            ),
+        ).model_dump()
+
+    return _run_coroutine_safely(_run_query())
+
+
+def _create_adapter_if_supported(config: Any) -> Any | None:
+    """按数据库类型尝试创建 adapter；不支持时回退到历史 SQLAlchemy 路径。"""
 
     try:
+        return create_adapter_for_type(config.db_type, config)
+    except ValueError:
+        return None
+
+
+def _resolve_streaming_sqlalchemy_url(*, url: URL, adapter: Any | None) -> URL | None:
+    """为导出场景解析可流式执行的 SQLAlchemy URL。
+
+    优先级：
+    1. SQLAlchemy 家族 adapter 的最终 driver URL
+    2. 历史直接透传的原始 URL
+    3. 非 SQLAlchemy adapter（如 ClickHouse / DM）返回 `None`
+    """
+
+    if isinstance(adapter, SqlAlchemySyncAdapter):
+        try:
+            return adapter.build_sqlalchemy_url()
+        except Exception:
+            return None
+    if adapter is None:
+        return url
+    return None
+
+
+def _looks_like_write_operation(query: str) -> bool:
+    """按首个关键字粗粒度判断是否属于写操作。"""
+
+    tokens = query.strip().lower().split(None, 1)
+    return bool(tokens) and tokens[0] in {
+        "insert",
+        "update",
+        "delete",
+        "alter",
+        "drop",
+        "truncate",
+        "create",
+        "replace",
+        "merge",
+    }
+
+
+def _execute_sqlalchemy_query_sync(
+    *,
+    connection_name: str,
+    url: URL,
+    query: str,
+    output_file: Optional[str] = None,
+    workspace: Optional["TaskWorkspace"] = None,
+) -> dict[str, Any]:
+    """保留历史 SQLAlchemy 兼容路径。
+
+    这条路径现在承担两个职责：
+    - 继续兼容 adapter 白名单之外、但 SQLAlchemy 已支持的历史方言
+    - 在导出场景继续复用 `CursorResult` 流式写盘，避免整表 materialize
+    """
+
+    stmt = text(query)
+    engine = create_engine(url, future=True)
+    try:
         with engine.connect() as conn:
-            # Check if export to file is requested first
             if output_file and workspace:
-                file_ext = Path(output_file).suffix.lower()
-                if file_ext == ".csv":
-                    # Streaming export for large datasets
-                    result = conn.execute(stmt)
-                    _, exported_count, columns = _stream_export_to_csv(
-                        workspace, output_file, result
-                    )
-                    return SQLQueryResult(
-                        success=True,
-                        rows=[],
-                        row_count=exported_count,
-                        columns=columns,
-                        message=f"Query executed successfully on '{connection_name}', exported {exported_count} row(s) to {output_file}",
-                    ).model_dump()
-                elif file_ext == ".parquet":
-                    # Streaming export with Parquet (better compression & type preservation)
-                    result = conn.execute(stmt)
-                    (
-                        _,
-                        exported_count,
-                        columns,
-                    ) = _stream_export_to_parquet(workspace, output_file, result)
-                    return SQLQueryResult(
-                        success=True,
-                        rows=[],
-                        row_count=exported_count,
-                        columns=columns,
-                        message=f"Query executed successfully on '{connection_name}', exported {exported_count} row(s) to {output_file}",
-                    ).model_dump()
-                elif file_ext in (".json", ".jsonl", ".ndjson"):
-                    # Streaming JSON Lines (NDJSON) export
-                    result = conn.execute(stmt)
-                    (
-                        _,
-                        exported_count,
-                        columns,
-                    ) = _stream_export_to_jsonlines(workspace, output_file, result)
-                    return SQLQueryResult(
-                        success=True,
-                        rows=[],
-                        row_count=exported_count,
-                        columns=columns,
-                        message=f"Query executed successfully on '{connection_name}', exported {exported_count} row(s) to {output_file}",
-                    ).model_dump()
-                else:
-                    raise ValueError(
-                        f"Unsupported file format: {file_ext}. "
-                        f"Supported: .csv (streaming), .parquet (streaming), .json/.jsonl/.ndjson (streaming JSON Lines)"
-                    )
-
-            # Original behavior: return data in response
-            result = conn.execute(stmt)
-
-            # Get column names from result
-            if result.returns_rows:
-                rows = result.all()
-                row_list = [_row_to_dict(row) for row in rows]
-
-                # Extract column names from first row
-                columns = list(row_list[0].keys()) if row_list else []
-
-                return SQLQueryResult(
-                    success=True,
-                    rows=row_list,
-                    row_count=len(row_list),
-                    columns=columns,
-                    message=f"Query executed successfully on '{connection_name}', returned {len(row_list)} row(s)",
-                ).model_dump()
-            else:
-                # For INSERT, UPDATE, DELETE operations
-                rowcount = result.rowcount if hasattr(result, "rowcount") else 0
-
-                # Commit the transaction for non-SELECT queries
-                conn.commit()
-
+                result = conn.execute(stmt)
+                exported_count, columns = _stream_result_to_file(
+                    workspace=workspace,
+                    output_file=output_file,
+                    result=result,
+                )
                 return SQLQueryResult(
                     success=True,
                     rows=[],
-                    row_count=rowcount,
-                    columns=[],
-                    message=f"Query executed successfully on '{connection_name}', affected {rowcount} row(s)",
+                    row_count=exported_count,
+                    columns=columns,
+                    message=f"Query executed successfully on '{connection_name}', exported {exported_count} row(s) to {output_file}",
                 ).model_dump()
+
+            result = conn.execute(stmt)
+            if result.returns_rows:
+                rows = [dict(row._mapping) for row in result.fetchall()]
+                columns = list(rows[0].keys()) if rows else list(result.keys())
+                return SQLQueryResult(
+                    success=True,
+                    rows=rows,
+                    row_count=len(rows),
+                    columns=columns,
+                    message=f"Query executed successfully on '{connection_name}', returned {len(rows)} row(s)",
+                ).model_dump()
+
+            row_count = result.rowcount if hasattr(result, "rowcount") else 0
+            if _looks_like_write_operation(query):
+                conn.commit()
+            return SQLQueryResult(
+                success=True,
+                rows=[],
+                row_count=int(row_count or 0),
+                columns=[],
+                message=f"Query executed successfully on '{connection_name}', affected {int(row_count or 0)} row(s)",
+            ).model_dump()
     finally:
         engine.dispose()
+
+
+def _run_coroutine_safely(awaitable: Any) -> Any:
+    """在同步入口中安全执行协程。
+
+    这里不能假设调用方永远不在事件循环线程里，所以要兼容：
+    - 普通同步上下文：直接 `asyncio.run`
+    - 已有事件循环的线程：切到独立线程执行
+    """
+
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(awaitable)
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        return executor.submit(lambda: asyncio.run(awaitable)).result()
+
+
+def _export_rows_to_file(
+    *,
+    workspace: "TaskWorkspace",
+    output_file: str,
+    rows: list[dict[str, Any]],
+    columns: list[str],
+) -> int:
+    """把统一 rows 结果导出到 workspace。
+
+    迁入多数据库 adapter 后，不同数据库不一定还能暴露 SQLAlchemy 的 CursorResult。
+    因此这里补一个“结果级导出”兜底，保证 output_file 语义仍然成立。
+    """
+
+    resolved_path = workspace.resolve_path(output_file, default_dir="output")
+    file_ext = Path(output_file).suffix.lower()
+
+    if file_ext == ".csv":
+        fieldnames = columns or (list(rows[0].keys()) if rows else [])
+        with open(resolved_path, "w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
+        return len(rows)
+
+    if file_ext == ".parquet":
+        try:
+            import pyarrow as pa  # type: ignore[import-not-found]
+            import pyarrow.parquet as pq  # type: ignore[import-not-found]
+        except ImportError as err:
+            raise ImportError(
+                f"{err}\n"
+                "pyarrow is required for Parquet export. "
+                "Install it with: pip install pyarrow"
+            )
+        table = pa.Table.from_pylist(rows)
+        pq.write_table(table, resolved_path)
+        return len(rows)
+
+    if file_ext in (".json", ".jsonl", ".ndjson"):
+        with open(resolved_path, "w", encoding="utf-8") as handle:
+            if file_ext == ".json":
+                json.dump(rows, handle, ensure_ascii=False, indent=2)
+            else:
+                for row in rows:
+                    print(json.dumps(row, ensure_ascii=False), file=handle)
+        return len(rows)
+
+    raise ValueError(
+        f"Unsupported file format: {file_ext}. "
+        "Supported: .csv (streaming), .parquet (streaming), "
+        ".json/.jsonl/.ndjson (streaming JSON Lines)"
+    )
+
+
+def _stream_result_to_file(
+    *,
+    workspace: "TaskWorkspace",
+    output_file: str,
+    result: CursorResult,
+) -> tuple[int, list[str]]:
+    """从 `CursorResult` 流式导出，保留历史大结果集安全边界。"""
+
+    file_ext = Path(output_file).suffix.lower()
+    if file_ext == ".csv":
+        _, exported_count, columns = _stream_export_to_csv(workspace, output_file, result)
+        return exported_count, columns
+    if file_ext == ".parquet":
+        _, exported_count, columns = _stream_export_to_parquet(
+            workspace,
+            output_file,
+            result,
+        )
+        return exported_count, columns
+    if file_ext in (".json", ".jsonl", ".ndjson"):
+        _, exported_count, columns = _stream_export_to_jsonlines(
+            workspace,
+            output_file,
+            result,
+        )
+        return exported_count, columns
+    raise ValueError(
+        f"Unsupported file format: {file_ext}. "
+        "Supported: .csv (streaming), .parquet (streaming), "
+        ".json/.jsonl/.ndjson (streaming JSON Lines)"
+    )
 
 
 def _stream_export_to_csv(
