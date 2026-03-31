@@ -19,7 +19,7 @@ export default function DataMakePage() {
       <FlowDraftCanvas />
       
       {/* 3. 右侧审计区：Memory Plane 数据与执行详情 */}
-      <ContextDrawer />
+      <ContextDrawer taskId={taskId} />
     </div>
   )
 }

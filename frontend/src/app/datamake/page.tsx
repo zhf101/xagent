@@ -58,7 +58,17 @@ export default function DataMakeListPage() {
       if (!res.ok) throw new Error("Failed to create task")
       
       const data = await res.json()
-      toast.success("造数任务已启动")
+      const result = data.result || {}
+      const failedToStart = result.success === false || result.status === "error" || result.status === "failed"
+
+      if (failedToStart) {
+        toast.error("任务已创建，但首次执行失败")
+      } else if (result.status === "waiting_user" || result.status === "waiting_human") {
+        toast.warning("任务已创建，等待进一步交互")
+      } else {
+        toast.success("造数任务已启动")
+      }
+
       router.push(`/datamake/${data.task_id}`)
     } catch (err) {
       console.error(err)
@@ -71,24 +81,24 @@ export default function DataMakeListPage() {
 
   if (loading) {
     return (
-      <div className="flex h-screen w-full items-center justify-center bg-slate-50">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600" />
+      <div className="flex h-screen w-full items-center justify-center bg-background">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
       </div>
     )
   }
 
   return (
-    <div className="flex flex-col h-screen w-full bg-slate-50 overflow-hidden text-slate-800">
-      <header className="h-16 bg-white border-b flex items-center justify-between px-8 shrink-0">
+    <div className="flex flex-col h-screen w-full bg-background overflow-hidden text-foreground">
+      <header className="h-16 bg-background border-b border-border flex items-center justify-between px-8 shrink-0">
         <div className="flex items-center gap-3">
-          <div className="p-2 bg-blue-600 rounded-lg">
-            <Database className="w-5 h-5 text-white" />
+          <div className="p-2 bg-primary rounded-lg">
+            <Database className="w-5 h-5 text-primary-foreground" />
           </div>
-          <h1 className="text-xl font-bold text-slate-800">智能造数工作台</h1>
+          <h1 className="text-xl font-bold text-foreground">智能造数工作台</h1>
         </div>
         <Button 
           onClick={() => setIsCreateDialogOpen(true)}
-          className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white"
+          className="flex items-center gap-2 bg-primary hover:bg-primary/90 text-white"
         >
           <Plus className="w-4 h-4" />
           发起新造数任务
@@ -98,17 +108,17 @@ export default function DataMakeListPage() {
       <main className="flex-1 overflow-y-auto p-8">
         <div className="max-w-5xl mx-auto">
           <div className="mb-8">
-            <h2 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-2">活跃中的造数工程</h2>
-            <p className="text-slate-500 text-sm">管理您的自动化数据生成、表结构探测与 SQL 推演任务。</p>
+            <h2 className="text-sm font-bold text-muted-foreground uppercase tracking-wider mb-2">活跃中的造数工程</h2>
+            <p className="text-muted-foreground text-sm">管理您的自动化数据生成、表结构探测与 SQL 推演任务。</p>
           </div>
 
           {tasks.length === 0 ? (
-            <div className="bg-white border rounded-xl p-16 flex flex-col items-center justify-center text-center shadow-sm">
-              <div className="w-16 h-16 bg-slate-100 rounded-full flex items-center justify-center mb-4">
-                <Database className="w-8 h-8 text-slate-400" />
+            <div className="bg-card border border-border rounded-xl p-16 flex flex-col items-center justify-center text-center shadow-sm">
+              <div className="w-16 h-16 bg-secondary rounded-full flex items-center justify-center mb-4">
+                <Database className="w-8 h-8 text-muted-foreground" />
               </div>
               <h3 className="text-lg font-bold">暂无造数任务</h3>
-              <p className="text-slate-500 mt-2 max-w-xs">
+              <p className="text-muted-foreground mt-2 max-w-xs">
                 您还没有发起过专门的造数任务。点击右上角按钮开始您的第一个数据生成实验。
               </p>
             </div>
@@ -118,31 +128,31 @@ export default function DataMakeListPage() {
                 <Link 
                   key={task.task_id} 
                   href={`/datamake/${task.task_id}`}
-                  className="group bg-white border rounded-xl p-5 hover:border-blue-400 hover:shadow-md transition-all flex items-center justify-between"
+                  className="group bg-card border border-border rounded-xl p-5 hover:border-primary/40 hover:shadow-md transition-all flex items-center justify-between"
                 >
                   <div className="flex items-center gap-4">
-                    <div className="w-10 h-10 rounded-full bg-blue-50 text-blue-600 flex items-center justify-center group-hover:bg-blue-600 group-hover:text-white transition-colors">
+                    <div className="w-10 h-10 rounded-full bg-primary/10 text-primary flex items-center justify-center group-hover:bg-primary group-hover:text-primary-foreground transition-colors">
                       <Database className="w-5 h-5" />
                     </div>
                     <div>
-                      <h4 className="font-bold group-hover:text-blue-600 transition-colors">
+                      <h4 className="font-bold group-hover:text-primary transition-colors">
                         {task.title || "未命名造数任务"}
                       </h4>
                       <div className="flex items-center gap-3 mt-1">
                         <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase ${
-                          task.status === 'completed' ? 'bg-green-100 text-green-700' :
-                          task.status === 'running' ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-600'
+                          task.status === 'completed' ? 'bg-green-500/10 text-green-500' :
+                          task.status === 'running' ? 'bg-primary/10 text-primary' : 'bg-secondary text-muted-foreground'
                         }`}>
                           {task.status}
                         </span>
-                        <div className="flex items-center gap-1 text-slate-400 text-xs">
+                        <div className="flex items-center gap-1 text-muted-foreground text-xs">
                           <Clock className="w-3 h-3" />
                           {task.created_at}
                         </div>
                       </div>
                     </div>
                   </div>
-                  <ChevronRight className="w-5 h-5 text-slate-300 group-hover:text-blue-500 transform group-hover:translate-x-1 transition-all" />
+                  <ChevronRight className="w-5 h-5 text-muted-foreground/50 group-hover:text-primary transform group-hover:translate-x-1 transition-all" />
                 </Link>
               ))}
             </div>
@@ -181,7 +191,7 @@ export default function DataMakeListPage() {
               type="button" 
               onClick={handleCreateNew}
               disabled={!newPrompt.trim() || isSubmitting}
-              className="bg-blue-600 hover:bg-blue-700 text-white"
+              className="bg-primary hover:bg-primary/90 text-white"
             >
               {isSubmitting ? (
                 <>

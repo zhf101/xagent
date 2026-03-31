@@ -143,6 +143,22 @@ def main() -> None:
 
     if args.debug:
         logger.info("🐛 Debug mode: verbose logging enabled")
+    
+    # 配置访问日志（可通过环境变量控制）
+    from .access_logging import get_uvicorn_log_config
+    
+    access_log_file = os.getenv("ACCESS_LOG_FILE", "access.log")
+    disable_console_access_log = os.getenv("DISABLE_CONSOLE_ACCESS_LOG", "true").lower() == "true"
+    
+    uvicorn_log_config = get_uvicorn_log_config(
+        access_log_file=access_log_file,
+        disable_console=disable_console_access_log,
+    )
+    
+    if disable_console_access_log:
+        logger.info(f"📝 访问日志将输出到: {access_log_file}")
+    else:
+        logger.info(f"📝 访问日志将输出到: {access_log_file} 和控制台")
 
     try:
         uvicorn.run(
@@ -151,6 +167,7 @@ def main() -> None:
             port=args.port,
             reload=args.reload,
             log_level=log_level,
+            log_config=uvicorn_log_config,  # 使用自定义日志配置
         )
     except KeyboardInterrupt:
         logger.info("⏹️  Service stopped")

@@ -821,6 +821,13 @@ class DataMakeReActPattern(AgentPattern):
             "2. 若 flow_draft 已有 confirmed_params 且 available_resources 已知，可直接 execution_action。\n"
             "3. 若动作 risk_level=high/critical 或 requires_approval=true，必须 supervision_action。\n"
             "4. 若任务目标已完成或无法继续，输出 terminate。\n"
+            "5. 若当前没有 available_resources，且 recall_results 也为空，默认输出 interaction_action，"
+            "向用户追问你需要的历史范围/业务域/筛选条件；不要输出空 action。\n"
+            "\n"
+            "## 输出完整性约束\n"
+            "- 只要 decision_mode=action，action_kind 和 action 都必须填写，绝不能输出 null。\n"
+            "- 若选择 interaction_action，params.questions 至少提供一个明确问题。\n"
+            "- 若选择 terminate，final_status 和 final_message 必须填写。\n"
             "\n"
             "## execution_action 使用约束\n"
             "- params.resource_key 和 params.operation_key 必须来自 available_resources，不得凭空编造。\n"
@@ -866,14 +873,15 @@ class DataMakeReActPattern(AgentPattern):
             CONTEXT_KEY_UPLOADED_FILES: round_context.get(CONTEXT_KEY_UPLOADED_FILES),
             "response_contract": {
                 "decision_mode": "action|terminate",
-                "action_kind": "interaction_action|supervision_action|execution_action|null",
-                "action": "string|null",
+                "action_kind": "decision_mode=action 时必填：interaction_action|supervision_action|execution_action",
+                "action": "decision_mode=action 时必填：string",
                 "reasoning": "string（解释为什么现在选这个动作）",
                 "goal_delta": "string（本轮推进了目标的哪一步）",
                 "params": {
                     "（execution_action 时）resource_key": "来自 available_resources",
                     "（execution_action 时）operation_key": "来自 available_resources",
                     "（execution_action 时）tool_args": "{}",
+                    "（interaction_action 时）questions": ["至少一个明确问题"],
                     "（execution_action 可选）sql_context": {
                         "schema_ddl": [],
                         "example_sqls": [],
@@ -887,7 +895,6 @@ class DataMakeReActPattern(AgentPattern):
                             "summary": "string|null",
                         }
                     ],
-                    "（interaction_action 时）questions": ["string"],
                 },
                 "risk_level": "low|medium|high|critical",
                 "requires_approval": False,

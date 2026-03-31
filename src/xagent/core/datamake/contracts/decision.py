@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any, Literal, Optional
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class UserVisiblePayload(BaseModel):
@@ -119,6 +119,38 @@ class NextActionDecision(BaseModel):
         default=None,
         description="终止型决策给调用方或用户的最终说明。",
     )
+
+    @model_validator(mode="after")
+    def validate_decision_contract(self) -> "NextActionDecision":
+        """
+        对决策契约做业务边界校验。
+
+        这里必须拦住“结构上能反序列化、语义上却无法分发”的半成品决策，
+        否则问题会延后到 dispatcher/runtime 才暴露，既污染账本，也让错误定位变差。
+        """
+
+        if self.decision_mode == "action":
+            if not self.action_kind:
+                raise ValueError(
+                    "decision_mode=action 时必须提供 action_kind，不能为 null/empty"
+                )
+            if not self.action or not self.action.strip():
+                raise ValueError(
+                    "decision_mode=action 时必须提供 action，不能为 null/empty"
+                )
+            return self
+
+        if self.decision_mode == "terminate":
+            if not self.final_status or not str(self.final_status).strip():
+                raise ValueError(
+                    "decision_mode=terminate 时必须提供 final_status"
+                )
+            if not self.final_message or not str(self.final_message).strip():
+                raise ValueError(
+                    "decision_mode=terminate 时必须提供 final_message"
+                )
+
+        return self
 
 
 # 兼容当前文档和骨架中的命名方式，先保留 Contract 别名。

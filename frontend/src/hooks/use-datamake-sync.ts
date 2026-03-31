@@ -1,6 +1,13 @@
-import { useState, useCallback, useRef } from "react"
+import { useState, useCallback } from "react"
 
-export type DataMakeStatus = "idle" | "running" | "waiting_user" | "waiting_human" | "completed" | "failed"
+export type DataMakeStatus =
+  | "idle"
+  | "running"
+  | "waiting_user"
+  | "waiting_human"
+  | "completed"
+  | "failed"
+  | "error"
 
 export interface DataMakeState {
   taskId: number | null
@@ -10,6 +17,21 @@ export interface DataMakeState {
   question?: string
   field?: string
   chatResponseConfig?: any // for dynamic form rendering
+}
+
+function normalizeDataMakeStatus(status: unknown): DataMakeStatus {
+  if (
+    status === "idle" ||
+    status === "running" ||
+    status === "waiting_user" ||
+    status === "waiting_human" ||
+    status === "completed" ||
+    status === "failed" ||
+    status === "error"
+  ) {
+    return status
+  }
+  return "completed"
 }
 
 export function useDataMakeSync(initialTaskId?: number) {
@@ -36,11 +58,11 @@ export function useDataMakeSync(initialTaskId?: number) {
       })
       const data = await res.json()
       
-      const status = data.result?.status
+      const status = normalizeDataMakeStatus(data.result?.status)
       setState(s => ({
         ...s,
         taskId: data.task_id,
-        status: status || "completed",
+        status,
         ticketId: data.result?.ticket_id,
         approvalId: data.result?.approval_id,
         question: data.result?.question,
@@ -78,10 +100,10 @@ export function useDataMakeSync(initialTaskId?: number) {
       })
       const data = await res.json()
       
-      const status = data.result?.status
+      const status = normalizeDataMakeStatus(data.result?.status)
       setState(s => ({
         ...s,
-        status: status || "completed",
+        status,
         ticketId: data.result?.ticket_id,
         approvalId: data.result?.approval_id,
         question: data.result?.question,

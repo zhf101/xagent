@@ -29,6 +29,13 @@ from .api.datamake import router as datamake_router
 from .config import UPLOADS_DIR
 from .dynamic_memory_store import get_memory_store
 from .models.database import init_db
+from .middleware import (
+    HTTPLoggingMiddleware,
+    setup_http_logging,
+    setup_sql_logging,
+    enable_sql_logging,
+    setup_websocket_logging,
+)
 
 # Logger will not configured by __main__.py, because this module is already imported in __init__.py of the subpackage.
 logger = logging.getLogger(__name__)
@@ -106,6 +113,24 @@ async def global_exception_handler(request: Request, exc: Exception) -> None:
     raise exc
 
 
+# 配置 HTTP 请求响应日志（可通过环境变量控制）
+enable_http_logging = os.getenv("ENABLE_HTTP_LOGGING", "false").lower() == "true"
+if enable_http_logging:
+    setup_http_logging(
+        log_file=os.getenv("HTTP_LOG_FILE", "http.log"),
+        log_level=logging.INFO,
+        max_bytes=10 * 1024 * 1024,  # 10MB
+        backup_count=5,
+    )
+    app.add_middleware(
+        HTTPLoggingMiddleware,
+        log_request_body=True,
+        log_response_body=True,
+        max_body_length=10000,
+        exclude_paths=["/health", "/docs", "/openapi.json", "/ws", "/api/progress"],
+    )
+    logger.info("HTTP 日志中间件已启用")
+
 # 添加CORS中间件
 app.add_middleware(
     CORSMiddleware,
@@ -156,6 +181,40 @@ async def startup_event() -> None:
     logger.info("Initializing database...")
     init_db()
     logger.info("Database initialized successfully")
+    
+    # 配置 LLM 日志（可通过环境变量控制）
+    from ..core.model.chat.langchain import setup_llm_logging_from_env
+    setup_llm_logging_from_env()
+    
+    # 配置 SQL 日志（可通过环境变量控制）
+    enable_sql_logging_flag = os.getenv("ENABLE_SQL_LOGGING", "false").lower() == "true"
+    if enable_sql_logging_flag:
+        from .models.database import get_engine
+        
+        setup_sql_logging(
+            log_file=os.getenv("SQL_LOG_FILE", "sql.log"),
+            log_level=logging.INFO,
+            max_bytes=10 * 1024 * 1024,  # 10MB
+            backup_count=5,
+            log_query_params=True,
+        )
+        enable_sql_logging(
+            engine=get_engine(),
+            log_params=True,
+            log_results=False,  # 不记录查询结果，避免日志过大
+        )
+        logger.info("SQL 日志记录已启用")
+    
+    # 配置 WebSocket 日志（可通过环境变量控制）
+    enable_ws_logging = os.getenv("ENABLE_WEBSOCKET_LOGGING", "false").lower() == "true"
+    if enable_ws_logging:
+        setup_websocket_logging(
+            log_file=os.getenv("WEBSOCKET_LOG_FILE", "websocket.log"),
+            log_level=logging.INFO,
+            max_bytes=10 * 1024 * 1024,  # 10MB
+            backup_count=5,
+        )
+        logger.info("WebSocket 日志记录已启用")
 
     # Initialize skill manager
     from ..skills.utils import create_skill_manager

@@ -75,6 +75,15 @@ export function DataMakeChatSidebar({ taskId }: { taskId?: number }) {
             </form>
           </div>
         )}
+
+        {state.status === "error" && (
+          <div className="p-4 bg-red-50 border border-red-200 rounded-lg shrink-0 mt-4">
+            <h4 className="font-bold text-red-800 text-sm mb-2">任务执行失败</h4>
+            <p className="text-sm text-red-700 whitespace-pre-wrap">
+              {state.question || "造数任务执行失败，请检查右侧追踪信息或稍后重试。"}
+            </p>
+          </div>
+        )}
       </div>
 
       <div className="p-4 border-t bg-white shrink-0">
