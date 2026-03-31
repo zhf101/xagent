@@ -9,6 +9,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..ledger.repository import LedgerRepository
+from .resume_token import parse_resume_token
+
 
 class RecoveryCoordinator:
     """
@@ -25,6 +28,9 @@ class RecoveryCoordinator:
     - 保证恢复流程依赖标准化上下文，而不是隐式内存状态。
     """
 
+    def __init__(self, ledger_repository: LedgerRepository) -> None:
+        self.ledger_repository = ledger_repository
+
     async def resume(self, resume_token: Any) -> Any:
         """
         基于恢复信息继续执行。
@@ -32,4 +38,30 @@ class RecoveryCoordinator:
         未来这里会读取 resume token 对应的账本或运行时状态，
         决定从哪个执行节点续跑。
         """
-        raise NotImplementedError("RecoveryCoordinator.resume 尚未实现")
+
+        token = parse_resume_token(resume_token)
+
+        pending_interaction = await self.ledger_repository.load_pending_interaction(
+            token.task_id
+        )
+        if pending_interaction is not None:
+            return {
+                "kind": "waiting_user",
+                "task_id": token.task_id,
+                "ticket": pending_interaction,
+            }
+
+        pending_approval = await self.ledger_repository.load_pending_approval(token.task_id)
+        if pending_approval is not None:
+            return {
+                "kind": "waiting_human",
+                "task_id": token.task_id,
+                "ticket": pending_approval,
+            }
+
+        snapshot = await self.ledger_repository.build_runtime_snapshot(token.task_id)
+        return {
+            "kind": "no_pending",
+            "task_id": token.task_id,
+            "snapshot": snapshot,
+        }

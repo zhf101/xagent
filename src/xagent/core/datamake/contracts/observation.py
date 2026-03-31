@@ -8,7 +8,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
@@ -94,7 +94,7 @@ class ObservationEnvelope(BaseModel):
         description="当前 observation 的产生者。",
     )
     timestamp: datetime = Field(
-        default_factory=datetime.utcnow,
+        default_factory=lambda: datetime.now(timezone.utc),
         description="当前 observation 的产生时间。",
     )
     result: ObservationResult = Field(

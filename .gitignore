@@ -258,3 +258,8 @@ default.yaml
 fenixaos_web.db
 
 .claude/
+/doc/*
+/docs/*
+/offline/*
+
+/test/*

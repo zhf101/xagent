@@ -5,10 +5,38 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
 
+const LOCAL_DEVELOPMENT_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"])
+
+function normalizeBaseUrl(url: string | undefined): string {
+  if (!url) {
+    return ""
+  }
+  return url.trim().replace(/\/+$/, "")
+}
+
+function resolveLocalBackendBaseUrl(protocol: "http" | "ws"): string {
+  if (typeof window === "undefined") {
+    return ""
+  }
+
+  const { hostname } = window.location
+  if (!LOCAL_DEVELOPMENT_HOSTS.has(hostname)) {
+    return ""
+  }
+
+  // 本地开发（local development）场景下，前端通常跑在 3000 端口，
+  // FastAPI 后端固定跑在 8000 端口。这里显式回退到 8000，
+  // 避免 `getApiUrl()` / `getWsUrl()` 返回空串后把请求误发到 Next 自己的页面路由。
+  return `${protocol}://${hostname}:8000`
+}
+
 export function getApiUrl(): string {
-  // Client-side: use environment variable or fallback to relative path
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL || ''
-  return apiUrl
+  const configuredApiUrl = normalizeBaseUrl(process.env.NEXT_PUBLIC_API_URL)
+  if (configuredApiUrl) {
+    return configuredApiUrl
+  }
+
+  return resolveLocalBackendBaseUrl("http")
 }
 
 export function getAuthHeaders(token: string | null): Record<string, string> {
@@ -19,19 +47,20 @@ export function getAuthHeaders(token: string | null): Record<string, string> {
 }
 
 export function getWsUrl(): string {
-  // 1. Use explicit env var if set (production/staging)
-  if (process.env.NEXT_PUBLIC_WS_URL) {
-    return process.env.NEXT_PUBLIC_WS_URL
+  const configuredWsUrl = normalizeBaseUrl(process.env.NEXT_PUBLIC_WS_URL)
+  if (configuredWsUrl) {
+    return configuredWsUrl
   }
 
-  // 2. Auto-construct from current location (development/same-domain)
-  if (typeof window !== 'undefined') {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    return `${protocol}//${window.location.host}`
+  const localWsUrl = resolveLocalBackendBaseUrl("ws")
+  if (localWsUrl) {
+    return localWsUrl
   }
 
-  // 3. Fallback for SSR (shouldn't happen for WS, but safe)
-  return ''
+  // 非本地开发环境如果没有显式配置，就继续返回空串。
+  // 这样生产环境可以通过反向代理（reverse proxy）走同域部署，
+  // 同时也避免在未知主机上擅自猜测后端地址。
+  return ""
 }
 
 export async function fetchWithAuth(url: string, token: string | null, options: RequestInit = {}): Promise<Response> {

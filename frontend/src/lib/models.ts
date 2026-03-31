@@ -162,6 +162,24 @@ export interface ProviderModel {
   description?: string;
 }
 
+async function parseJsonResponse<T>(
+  response: Response,
+  errorMessage: string
+): Promise<T> {
+  const contentType = response.headers.get('content-type') || ''
+  if (!contentType.includes('application/json')) {
+    const responseSnippet = (await response.text())
+      .slice(0, 160)
+      .replace(/\s+/g, ' ')
+      .trim()
+    throw new Error(
+      `${errorMessage}: 响应不是 JSON，content-type=${contentType || 'unknown'}，片段=${responseSnippet}`
+    )
+  }
+
+  return response.json() as Promise<T>
+}
+
 /**
  * Get list of supported model providers
  */
@@ -173,7 +191,10 @@ export async function getSupportedProviders(): Promise<Provider[]> {
     throw new Error('Failed to fetch supported providers');
   }
 
-  const data = await response.json();
+  const data = await parseJsonResponse<{ providers?: Provider[] } | Provider[]>(
+    response,
+    'Failed to fetch supported providers'
+  );
   if (Array.isArray(data)) {
     return data;
   }
@@ -204,12 +225,18 @@ export async function getProviderModels(
   });
 
   if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}));
+    const errorData: { detail?: string } = await parseJsonResponse<{ detail?: string }>(
+      response,
+      'Failed to fetch provider models'
+    ).catch(() => ({}));
     throw new Error(errorData.detail || 'Failed to fetch provider models');
   }
 
-  const data = await response.json();
-  if (data && Array.isArray(data.models)) {
+  const data = await parseJsonResponse<{ models?: ProviderModel[] } | ProviderModel[]>(
+    response,
+    'Failed to fetch provider models'
+  );
+  if (!Array.isArray(data) && data && Array.isArray(data.models)) {
     return data.models;
   }
   return Array.isArray(data) ? data : [];

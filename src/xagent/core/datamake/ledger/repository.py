@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from copy import deepcopy
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from ..contracts.decision import NextActionDecision
@@ -83,7 +83,7 @@ class LedgerRepository:
                 "record_type": "decision",
                 "task_id": task_id,
                 "round_id": round_id,
-                "created_at": datetime.utcnow().isoformat(),
+                "created_at": datetime.now(timezone.utc).isoformat(),
                 "decision": decision.model_dump(mode="json"),
             }
         )
@@ -105,7 +105,7 @@ class LedgerRepository:
                 "record_type": "observation",
                 "task_id": task_id,
                 "round_id": round_id,
-                "created_at": datetime.utcnow().isoformat(),
+                "created_at": datetime.now(timezone.utc).isoformat(),
                 "observation": observation.model_dump(mode="json"),
             }
         )
@@ -136,7 +136,7 @@ class LedgerRepository:
                 "record_type": record_type,
                 "task_id": task_id,
                 "round_id": round_id,
-                "created_at": datetime.utcnow().isoformat(),
+                "created_at": datetime.now(timezone.utc).isoformat(),
                 "ticket": ticket.model_dump(mode="json"),
             }
         )
@@ -156,7 +156,7 @@ class LedgerRepository:
                 "record_type": "interaction_ticket_resolved",
                 "task_id": task_id,
                 "round_id": ticket.round_id,
-                "created_at": datetime.utcnow().isoformat(),
+                "created_at": datetime.now(timezone.utc).isoformat(),
                 "ticket": ticket.model_dump(mode="json"),
             }
         )
@@ -176,7 +176,7 @@ class LedgerRepository:
                 "record_type": "approval_ticket_resolved",
                 "task_id": task_id,
                 "round_id": ticket.round_id,
-                "created_at": datetime.utcnow().isoformat(),
+                "created_at": datetime.now(timezone.utc).isoformat(),
                 "ticket": ticket.model_dump(mode="json"),
             }
         )
@@ -293,3 +293,21 @@ class LedgerRepository:
             if record.get("record_type") == record_type:
                 return deepcopy(record.get(payload_key))
         return None
+
+
+def create_persistent_ledger_repository(
+    session_factory: Any,
+    projection_updater: Any | None = None,
+) -> "PersistentLedgerRepository":
+    """
+    创建持久化版 ledger repository。
+
+    保持这个工厂放在 `repository.py`，让上层调用方仍然从统一入口拿仓储实现。
+    """
+
+    from .persistent_repository import PersistentLedgerRepository
+
+    return PersistentLedgerRepository(
+        session_factory=session_factory,
+        projection_updater=projection_updater,
+    )

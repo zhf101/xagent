@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Literal, Optional
 from uuid import uuid4
 
@@ -74,7 +74,7 @@ class InteractionTicket(BaseModel):
         description="交互票据附加元数据。这里只保留真正非核心、可选的扩展信息。",
     )
     created_at: datetime = Field(
-        default_factory=datetime.utcnow,
+        default_factory=lambda: datetime.now(timezone.utc),
         description="交互工单创建时间。",
     )
     answered_at: Optional[datetime] = Field(
@@ -142,7 +142,7 @@ class ApprovalTicket(BaseModel):
         description="审批票据附加元数据。这里只保留真正非核心、可选的扩展信息。",
     )
     created_at: datetime = Field(
-        default_factory=datetime.utcnow,
+        default_factory=lambda: datetime.now(timezone.utc),
         description="审批工单创建时间。",
     )
     resolved_at: Optional[datetime] = Field(

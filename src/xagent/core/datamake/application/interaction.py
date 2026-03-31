@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from ..contracts.decision import NextActionDecision
@@ -76,7 +76,7 @@ class InteractionBridge:
             reply.strip() if isinstance(reply, str) else str(reply)
         )
         ticket.status = "answered"
-        ticket.answered_at = datetime.utcnow()
+        ticket.answered_at = datetime.now(timezone.utc)
 
         return ObservationEnvelope(
             observation_type="interaction",

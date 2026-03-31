@@ -12,6 +12,7 @@ from typing import Any, Optional
 
 from ...agent.context import AgentContext
 from ..ledger.snapshots import SnapshotBuilder
+from ..services.draft_service import DraftService
 from ..services.recall_service import RecallService
 
 
@@ -33,9 +34,11 @@ class DecisionBuilder:
         self,
         snapshot_builder: SnapshotBuilder,
         recall_service: Optional[RecallService] = None,
+        draft_service: Optional[DraftService] = None,
     ) -> None:
         self.snapshot_builder = snapshot_builder
         self.recall_service = recall_service
+        self.draft_service = draft_service
 
     async def build_round_context(
         self,
@@ -54,9 +57,19 @@ class DecisionBuilder:
 
         ledger_snapshot = await self.snapshot_builder.build(context.task_id)
         recall_results: list[dict[str, Any]] = []
+        persisted_draft: dict[str, Any] = {}
 
         if self.recall_service is not None:
             recall_results = await self.recall_service.search(task)
+        if self.draft_service is not None:
+            loaded_draft = await self.draft_service.load(context.task_id)
+            if loaded_draft is not None:
+                persisted_draft = loaded_draft.model_dump(mode="json")
+
+        flow_draft = dict(persisted_draft)
+        state_draft = context.state.get("flow_draft")
+        if isinstance(state_draft, dict):
+            flow_draft.update(state_draft)
 
         return {
             "task_id": context.task_id,
@@ -64,7 +77,7 @@ class DecisionBuilder:
             "task": task,
             "user_id": context.user_id,
             "system_prompt": context.state.get("system_prompt"),
-            "flow_draft": context.state.get("flow_draft", {}),
+            "flow_draft": flow_draft,
             "context_state": context.state,
             "history": list(context.history),
             "recall_results": recall_results,

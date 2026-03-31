@@ -68,7 +68,12 @@ from ...datamake.runtime.compiler import ExecutionCompiler
 from ...datamake.runtime.execution import ActionExecutor
 from ...datamake.runtime.executor import RuntimeExecutor
 from ...datamake.runtime.probe import ProbeExecutor
+from ...datamake.runtime.recovery import RecoveryCoordinator
+from ...datamake.runtime.resume_token import build_resume_token
 from ...datamake.services.recall_service import RecallService
+from ...datamake.services.approval_service import ApprovalService
+from ...datamake.services.draft_service import DraftService
+from ...datamake.services.models import FlowDraftState
 from .base import AgentPattern
 
 logger = logging.getLogger(__name__)
@@ -114,13 +119,24 @@ class DataMakeReActPattern(AgentPattern):
             threshold=compact_threshold or CompactConfig().threshold,
         )
         self._compact_stats = {"total_compacts": 0, "tokens_saved": 0}
+        # 记录上一次 run() 的注册上下文签名。
+        # 同一 task 虽然可能跨轮次恢复，但只要 tools / resource_actions 发生变化，
+        # 注册表也必须重建，避免出现“上下文变了，注册表还沿用旧能力”的污染。
+        self._last_run_registration_signature: Optional[str] = None
 
         # 下面这些组件一起构成第一阶段最小闭环。
         # 它们都尽量贴着你的五层架构来组织，而不是重新回退成“大 Pattern 全包”。
         self.snapshot_builder = SnapshotBuilder(self.ledger_repository)
         self.termination_resolver = TerminationResolver()
+        self.approval_service = None
+        self.draft_service = None
+        if hasattr(self.ledger_repository, "session_factory"):
+            self.approval_service = ApprovalService(
+                self.ledger_repository.session_factory
+            )
+            self.draft_service = DraftService(self.ledger_repository.session_factory)
         self.interaction_bridge = InteractionBridge()
-        self.supervision_bridge = SupervisionBridge()
+        self.supervision_bridge = SupervisionBridge(self.approval_service)
         self.ui_response_mapper = UiResponseMapper()
 
         self.sql_adapter = SqlResourceAdapter()
@@ -139,6 +155,7 @@ class DataMakeReActPattern(AgentPattern):
             self.probe_executor,
             self.action_executor,
         )
+        self.recovery_coordinator = RecoveryCoordinator(self.ledger_repository)
         self.readiness_checker = ReadinessChecker(self.resource_catalog)
         self.risk_policy = RiskPolicy()
         self.approval_policy = ApprovalPolicy()
@@ -202,10 +219,23 @@ class DataMakeReActPattern(AgentPattern):
 
         try:
             self.resource_catalog.set_tools(tools)
-            self.resource_catalog.clear_actions()
-            self._register_resource_actions_from_context(context)
+            registration_signature = self._build_registration_signature(context, tools)
+            # 【重要】资源动作注册表的清空策略：
+            # - 同一 task 在 waiting_user / waiting_human 恢复时不应无脑清空注册表。
+            # - 但只要 tools / resource_actions 变了，就必须重建注册表，
+            #   否则 readiness / dispatch 会看到过期能力。
+            if registration_signature != self._last_run_registration_signature:
+                self.resource_catalog.clear_actions()
+                self._register_resource_actions_from_context(context)
+                self._last_run_registration_signature = registration_signature
+            elif not self.resource_catalog.registry.list_all():
+                self._register_resource_actions_from_context(context)
             recall_service = RecallService(memory)
-            decision_builder = DecisionBuilder(self.snapshot_builder, recall_service)
+            decision_builder = DecisionBuilder(
+                self.snapshot_builder,
+                recall_service,
+                self.draft_service,
+            )
 
             for _ in range(self.max_iterations):
                 handled_pending, early_result = await self._consume_pending_replies(context)
@@ -227,6 +257,27 @@ class DataMakeReActPattern(AgentPattern):
                     # 当前轮已经消费了外部回复，并写回 observation。
                     # 这里不直接返回，而是继续下一次决策，保持“结果回流后主脑重决策”的设计。
                     pass
+
+                await self._persist_flow_draft_if_present(context)
+
+                recovered_waiting = None
+                if not handled_pending:
+                    recovered_waiting = await self._recover_waiting_state(context)
+                if recovered_waiting is not None:
+                    await self._trace_run_result(task_id, recovered_waiting)
+                    await trace_task_end(
+                        self.tracer,
+                        task_id,
+                        TraceCategory.REACT,
+                        data={
+                            "status": recovered_waiting.get("status"),
+                            "paused": True,
+                            "step_id": step_id,
+                            "step_name": step_name,
+                            "recovered": True,
+                        },
+                    )
+                    return recovered_waiting
 
                 round_context = await decision_builder.build_round_context(task, context)
                 round_id = int(round_context["ledger_snapshot"]["next_round_id"])
@@ -250,13 +301,18 @@ class DataMakeReActPattern(AgentPattern):
                         cause=exc,
                     ) from exc
 
+                # 【重要】_hydrate_internal_decision_state 必须在 append_decision 之前调用。
+                # 它负责把运行期系统内部状态（如 _system_approval_grants）注入 decision.params，
+                # 这些字段需要一并持久化到账本，供后续审批审计和回放使用。
+                # 如果先调 append_decision 再注入，账本记录就永远缺少这些字段，
+                # 重放时会无法还原授权状态，导致审批逻辑误判。
+                self._hydrate_internal_decision_state(decision, context)
                 await self._trace_decision_output(task_id, decision, round_id)
                 await self.ledger_repository.append_decision(
                     task_id=context.task_id,
                     round_id=round_id,
                     decision=decision,
                 )
-                self._hydrate_internal_decision_state(decision, context)
 
                 try:
                     dispatch_outcome = await self.dispatcher.dispatch(
@@ -589,6 +645,58 @@ class DataMakeReActPattern(AgentPattern):
 
         return self._parse_decision_payload(response)
 
+    async def _recover_waiting_state(
+        self,
+        context: AgentContext,
+    ) -> dict[str, Any] | None:
+        """
+        当任务已有持久化 pending 状态但当前轮没有新输入时，重建等待态返回。
+
+        这里做的是技术态恢复，不替 Agent 选择新的业务动作。
+        """
+
+        recovered = await self.recovery_coordinator.resume(
+            build_resume_token(
+                task_id=context.task_id,
+                reason="recover_waiting_state",
+            )
+        )
+
+        if recovered["kind"] == "waiting_user":
+            ticket: InteractionTicket = recovered["ticket"]
+            return {
+                "success": True,
+                "status": "waiting_user",
+                "need_user_input": True,
+                "question": "\n".join(ticket.questions),
+                "field": ticket.response_field,
+                "chat_response": self.ui_response_mapper.to_chat_payload(ticket),
+                "ticket_id": ticket.ticket_id,
+                "resume_token": build_resume_token(
+                    task_id=context.task_id,
+                    round_id=ticket.round_id,
+                    reason="pending_interaction",
+                ),
+            }
+
+        if recovered["kind"] == "waiting_human":
+            ticket: ApprovalTicket = recovered["ticket"]
+            return {
+                "success": True,
+                "status": "waiting_human",
+                "need_user_input": True,
+                "question": self.supervision_bridge.build_waiting_question(ticket),
+                "field": ticket.response_field,
+                "approval_id": ticket.approval_id,
+                "resume_token": build_resume_token(
+                    task_id=context.task_id,
+                    round_id=ticket.round_id,
+                    reason="pending_approval",
+                ),
+            }
+
+        return None
+
     def _build_llm_messages(
         self,
         task: str,
@@ -729,6 +837,61 @@ class DataMakeReActPattern(AgentPattern):
                     self.resource_catalog.register_action(definition)
             except Exception as exc:
                 logger.warning("注册 datamake_resource_actions 项失败: %s", exc)
+
+    def _build_registration_signature(
+        self,
+        context: AgentContext,
+        tools: list[Tool],
+    ) -> str:
+        """
+        生成当前注册上下文签名。
+
+        这个签名只用于判断“是否要重建资源动作注册表”，
+        不参与任何业务决策。
+        """
+
+        tool_names = sorted(tool.metadata.name for tool in tools)
+        resource_actions = context.state.get("datamake_resource_actions", [])
+        if not isinstance(resource_actions, list):
+            resource_actions = []
+        return json.dumps(
+            {
+                "task_id": context.task_id,
+                "tool_names": tool_names,
+                "resource_actions": resource_actions,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        )
+
+    async def _persist_flow_draft_if_present(self, context: AgentContext) -> None:
+        """
+        若当前上下文已携带 flow_draft，则把它持久化为工作记忆视图。
+
+        这里只做“把已有草稿写入 Memory/Ledger”，不推导、不补齐新的业务状态。
+        """
+
+        if self.draft_service is None:
+            return
+
+        state_draft = context.state.get("flow_draft")
+        if not isinstance(state_draft, dict):
+            return
+
+        persisted_draft = await self.draft_service.load(context.task_id)
+        draft_payload = (
+            persisted_draft.model_dump(mode="json")
+            if persisted_draft is not None
+            else {}
+        )
+        draft_payload.update(state_draft)
+        draft_payload.setdefault("task_id", context.task_id)
+        draft_payload.setdefault(
+            "version",
+            persisted_draft.version if persisted_draft is not None else 1,
+        )
+        await self.draft_service.save(FlowDraftState.model_validate(draft_payload))
 
     def _estimate_message_tokens(self, messages: list[dict[str, str]]) -> int:
         """

@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from pydantic import ValidationError
@@ -22,6 +22,7 @@ from ..contracts.interaction import (
     ApprovalTicket,
 )
 from ..contracts.observation import ObservationActor, ObservationEnvelope
+from ..services.approval_service import ApprovalService
 
 
 class InvalidApprovalPayloadError(ValueError):
@@ -41,6 +42,9 @@ class SupervisionBridge:
     先不扩展成复杂人工工作台。
     """
 
+    def __init__(self, approval_service: ApprovalService | None = None) -> None:
+        self.approval_service = approval_service
+
     async def open_approval(
         self,
         task_id: str,
@@ -52,7 +56,7 @@ class SupervisionBridge:
         创建一条审批工单。
         """
 
-        return ApprovalTicket(
+        ticket = ApprovalTicket(
             task_id=task_id,
             session_id=session_id,
             round_id=round_id,
@@ -83,6 +87,9 @@ class SupervisionBridge:
                 "response_contract": "ApprovalResolution",
             },
         )
+        if self.approval_service is not None:
+            return await self.approval_service.create(ticket)
+        return ticket
 
     def build_waiting_question(self, ticket: ApprovalTicket) -> str:
         """
@@ -121,9 +128,15 @@ class SupervisionBridge:
         """
 
         resolution = self._parse_approval_result(approval_result)
-        resolved_at = resolution.resolved_at or datetime.utcnow()
+        resolved_at = resolution.resolved_at or datetime.now(timezone.utc)
+        resolution = resolution.model_copy(update={"resolved_at": resolved_at})
         ticket.status = "approved" if resolution.approved else "rejected"
         ticket.resolved_at = resolved_at
+        if self.approval_service is not None:
+            await self.approval_service.resolve(
+                ticket.approval_id,
+                resolution,
+            )
 
         return ObservationEnvelope(
             observation_type="supervision",

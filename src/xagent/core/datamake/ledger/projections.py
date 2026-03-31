@@ -8,6 +8,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from sqlalchemy.orm import Session
+
+from .sql_models import DataMakeTaskProjection
+
 
 class ProjectionUpdater:
     """
@@ -24,10 +28,52 @@ class ProjectionUpdater:
     - 让控制台、查询接口不需要每次全量回放账本。
     """
 
-    async def update(self, record: Any) -> None:
+    def update(
+        self,
+        *,
+        session: Session,
+        task_id: str,
+        round_id: int,
+        record_type: str,
+        payload_json: dict[str, Any],
+    ) -> DataMakeTaskProjection:
         """
         根据账本记录刷新投影。
 
         这里更新的是派生视图，不应反向修改账本原始事实。
         """
-        raise NotImplementedError("ProjectionUpdater.update 尚未实现")
+
+        projection = self._get_or_create_projection(session, task_id)
+
+        if record_type == "decision":
+            projection.latest_decision_json = payload_json
+        elif record_type == "observation":
+            projection.latest_observation_json = payload_json
+            status = payload_json.get("status")
+            if isinstance(status, str) and status:
+                projection.task_status = status
+        elif record_type == "interaction_ticket":
+            projection.pending_interaction_json = payload_json
+            projection.task_status = "waiting_user"
+        elif record_type == "approval_ticket":
+            projection.pending_approval_json = payload_json
+            projection.task_status = "waiting_human"
+        elif record_type == "interaction_ticket_resolved":
+            projection.pending_interaction_json = None
+        elif record_type == "approval_ticket_resolved":
+            projection.pending_approval_json = None
+
+        projection.next_round_id = max(int(projection.next_round_id), round_id + 1)
+        return projection
+
+    def _get_or_create_projection(
+        self,
+        session: Session,
+        task_id: str,
+    ) -> DataMakeTaskProjection:
+        projection = session.get(DataMakeTaskProjection, task_id)
+        if projection is None:
+            projection = DataMakeTaskProjection(task_id=task_id, next_round_id=1)
+            session.add(projection)
+            session.flush()
+        return projection
