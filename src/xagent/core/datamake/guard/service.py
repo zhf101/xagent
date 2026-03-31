@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -179,9 +180,16 @@ class GuardService:
         避免同一个动作在审批通过后又再次被 Guard 误判为还需要审批。
         """
 
+        def _stable(obj: Any) -> Any:
+            if isinstance(obj, dict):
+                return {k: _stable(v) for k, v in sorted(obj.items())}
+            if isinstance(obj, list):
+                return [_stable(i) for i in sorted((json.dumps(i, ensure_ascii=False, sort_keys=True) for i in obj))]
+            return obj
+
         approval_payload = {
             "resource_key": action.params.get("resource_key"),
             "operation_key": action.params.get("operation_key"),
-            "tool_args": action.params.get("tool_args", {}),
+            "tool_args": _stable(action.params.get("tool_args", {})),
         }
-        return json.dumps(approval_payload, ensure_ascii=False, sort_keys=True)
+        return "v1:" + json.dumps(approval_payload, ensure_ascii=False, sort_keys=True)

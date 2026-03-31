@@ -7,7 +7,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable, Optional
+from contextlib import contextmanager
+from typing import Any, Callable, Generator, Optional
 
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -241,15 +242,22 @@ class PersistentLedgerRepository(LedgerRepository):
             return 1
         return int(projection.next_round_id)
 
-    def _new_session(self) -> Session:
+    @contextmanager
+    def _new_session(self) -> Generator[Session, None, None]:
         """
-        兼容 sessionmaker 和无参 session factory。
+        兼容 sessionmaker 和无参 session factory，并保证异常时自动 rollback。
         """
 
         session = self.session_factory()
         if not isinstance(session, Session):
             raise TypeError("PersistentLedgerRepository 需要返回 SQLAlchemy Session 的 session_factory")
-        return session
+        try:
+            yield session
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
 
     def _insert_record(
         self,

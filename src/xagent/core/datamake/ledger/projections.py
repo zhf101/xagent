@@ -52,6 +52,9 @@ class ProjectionUpdater:
             status = payload_json.get("status")
             if isinstance(status, str) and status:
                 projection.task_status = status
+            elif projection.task_status in ("waiting_user", "waiting_human"):
+                # observation 到达意味着等待态已经被消费，状态应回到 running
+                projection.task_status = "running"
         elif record_type == "interaction_ticket":
             projection.pending_interaction_json = payload_json
             projection.task_status = "waiting_user"

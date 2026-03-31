@@ -112,6 +112,11 @@ class DataMakeReActPattern(AgentPattern):
         self.max_iterations = max_iterations
         self.tracer = tracer or Tracer()
         self.ledger_repository = ledger_repository or LedgerRepository()
+        if ledger_repository is None:
+            logger.warning(
+                "DataMakeReActPattern: ledger_repository 未传入，使用内存模式。"
+                "进程重启后账本记录将丢失，生产环境请传入 PersistentLedgerRepository。"
+            )
         self.resource_catalog = resource_catalog or ResourceCatalog()
         self.compact_llm = compact_llm or llm
         self.compact_config = CompactConfig(
