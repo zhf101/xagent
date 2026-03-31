@@ -51,6 +51,7 @@ const en = {
     history: "All Tasks",
     search: "Search Tasks",
     templates: "Templates",
+    datamake: "Smart Data Make",
     sections: {
       agentDevelopment: "Agent Development",
       resources: "Resources",

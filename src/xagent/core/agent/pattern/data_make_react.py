@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any, Optional
@@ -61,9 +62,12 @@ from ...datamake.guard.service import GuardService
 from ...datamake.ledger.repository import LedgerRepository
 from ...datamake.ledger.snapshots import SnapshotBuilder
 from ...datamake.resources.catalog import ResourceCatalog
+from ...datamake.resources.sql_datasource_resolver import SqlDatasourceResolver
 from ...datamake.resources.http_adapter import HttpResourceAdapter
 from ...datamake.resources.registry import ResourceActionDefinition
+from ...datamake.resources.sql_brain_gateway import SqlBrainGateway
 from ...datamake.resources.sql_adapter import SqlResourceAdapter
+from ...datamake.resources.sql_schema_provider import SqlSchemaProvider
 from ...datamake.runtime.compiler import ExecutionCompiler
 from ...datamake.runtime.execution import ActionExecutor
 from ...datamake.runtime.executor import RuntimeExecutor
@@ -115,7 +119,7 @@ class DataMakeReActPattern(AgentPattern):
         if ledger_repository is None:
             logger.warning(
                 "DataMakeReActPattern: ledger_repository 未传入，使用内存模式。"
-                "进程重启后账本记录将丢失，生产环境请传入 PersistentLedgerRepository。"
+                " 进程重启后账本记录将丢失，生产环境请传入 PersistentLedgerRepository。"
             )
         self.resource_catalog = resource_catalog or ResourceCatalog()
         self.compact_llm = compact_llm or llm
@@ -144,11 +148,20 @@ class DataMakeReActPattern(AgentPattern):
         self.supervision_bridge = SupervisionBridge(self.approval_service)
         self.ui_response_mapper = UiResponseMapper()
 
-        self.sql_adapter = SqlResourceAdapter()
+        self.sql_datasource_resolver = SqlDatasourceResolver()
+        self.sql_schema_provider = SqlSchemaProvider(self.sql_datasource_resolver)
+        self.sql_brain_gateway = SqlBrainGateway(
+            llm=llm,
+            schema_provider=self.sql_schema_provider,
+            datasource_resolver=self.sql_datasource_resolver,
+        )
+        self.sql_adapter = SqlResourceAdapter(self.sql_brain_gateway)
         self.http_adapter = HttpResourceAdapter()
         self.execution_compiler = ExecutionCompiler(self.resource_catalog)
         self.probe_executor = ProbeExecutor(
             self.resource_catalog,
+            self.sql_brain_gateway,
+            self.sql_datasource_resolver,
         )
         self.action_executor = ActionExecutor(
             self.resource_catalog,
@@ -170,6 +183,8 @@ class DataMakeReActPattern(AgentPattern):
             readiness_checker=self.readiness_checker,
             risk_policy=self.risk_policy,
             approval_policy=self.approval_policy,
+            sql_brain_gateway=self.sql_brain_gateway,
+            sql_datasource_resolver=self.sql_datasource_resolver,
         )
         self.dispatcher = ActionDispatcher(
             interaction_bridge=self.interaction_bridge,
@@ -240,7 +255,13 @@ class DataMakeReActPattern(AgentPattern):
                 self.snapshot_builder,
                 recall_service,
                 self.draft_service,
+                self.resource_catalog,
             )
+
+            # 连续失败计数器：同一类错误连续失败超过上限时，提前终止并返回友好提示，
+            # 避免 403 / 号池耗尽等持续性错误无限重试耗尽全部迭代轮次。
+            _consecutive_failures = 0
+            _max_consecutive_failures = 5
 
             for _ in range(self.max_iterations):
                 handled_pending, early_result = await self._consume_pending_replies(context)
@@ -298,13 +319,55 @@ class DataMakeReActPattern(AgentPattern):
                 except LLMNotAvailableError:
                     raise
                 except Exception as exc:
-                    raise PatternExecutionError(
-                        pattern_name="DataMakeReAct",
-                        message="生成下一动作决策失败",
-                        iteration=round_id,
-                        context={"task": task[:200], "round_id": round_id},
-                        cause=exc,
-                    ) from exc
+                    _consecutive_failures += 1
+                    logger.warning(
+                        f"Round {round_id} 决策生成失败 "
+                        f"({_consecutive_failures}/{_max_consecutive_failures}): {exc}"
+                    )
+                    await trace_error(
+                        self.tracer,
+                        task_id,
+                        step_id,
+                        error_type=type(exc).__name__,
+                        error_message=f"Round {round_id} 决策失败: {str(exc)}",
+                        data={
+                            "round_id": round_id,
+                            "retryable": _consecutive_failures < _max_consecutive_failures,
+                            "attempt": _consecutive_failures,
+                        },
+                    )
+                    if _consecutive_failures >= _max_consecutive_failures:
+                        # 连续失败达上限，返回友好提示让用户稍后重试
+                        error_result = {
+                            "success": False,
+                            "status": "error",
+                            "need_user_input": True,
+                            "question": (
+                                f"模型服务连续 {_consecutive_failures} 次调用失败，"
+                                f"最近错误：{str(exc)[:200]}。\n"
+                                "请稍后重试，或联系管理员检查模型服务状态。"
+                            ),
+                            "field": "datamake_retry_confirm",
+                            "error_type": type(exc).__name__,
+                        }
+                        await self._trace_run_result(task_id, error_result)
+                        await trace_task_end(
+                            self.tracer,
+                            task_id,
+                            TraceCategory.REACT,
+                            data={
+                                "status": "error",
+                                "consecutive_failures": _consecutive_failures,
+                                "step_id": step_id,
+                                "step_name": step_name,
+                            },
+                        )
+                        return error_result
+                    await asyncio.sleep(2)
+                    continue
+
+                # 决策成功，重置连续失败计数
+                _consecutive_failures = 0
 
                 # 【重要】_hydrate_internal_decision_state 必须在 append_decision 之前调用。
                 # 它负责把运行期系统内部状态（如 _system_approval_grants）注入 decision.params，
@@ -327,19 +390,52 @@ class DataMakeReActPattern(AgentPattern):
                         decision=decision,
                     )
                 except Exception as exc:
-                    raise PatternExecutionError(
-                        pattern_name="DataMakeReAct",
-                        message="动作分发失败",
-                        iteration=round_id,
-                        context={
-                            "task": task[:200],
+                    _consecutive_failures += 1
+                    logger.warning(
+                        f"Round {round_id} 动作分发失败 "
+                        f"({_consecutive_failures}/{_max_consecutive_failures}): {exc}"
+                    )
+                    await trace_error(
+                        self.tracer,
+                        task_id,
+                        step_id,
+                        error_type=type(exc).__name__,
+                        error_message=f"Round {round_id} 分发失败: {str(exc)}",
+                        data={
                             "round_id": round_id,
-                            "decision_mode": decision.decision_mode,
-                            "action_kind": decision.action_kind,
                             "action": decision.action,
+                            "retryable": _consecutive_failures < _max_consecutive_failures,
+                            "attempt": _consecutive_failures,
                         },
-                        cause=exc,
-                    ) from exc
+                    )
+                    if _consecutive_failures >= _max_consecutive_failures:
+                        error_result = {
+                            "success": False,
+                            "status": "error",
+                            "need_user_input": True,
+                            "question": (
+                                f"动作执行连续 {_consecutive_failures} 次失败，"
+                                f"最近错误：{str(exc)[:200]}。\n"
+                                "请稍后重试，或联系管理员检查服务状态。"
+                            ),
+                            "field": "datamake_retry_confirm",
+                            "error_type": type(exc).__name__,
+                        }
+                        await self._trace_run_result(task_id, error_result)
+                        await trace_task_end(
+                            self.tracer,
+                            task_id,
+                            TraceCategory.REACT,
+                            data={
+                                "status": "error",
+                                "consecutive_failures": _consecutive_failures,
+                                "step_id": step_id,
+                                "step_name": step_name,
+                            },
+                        )
+                        return error_result
+                    await asyncio.sleep(2)
+                    continue
 
                 if dispatch_outcome.kind == "final":
                     payload = dispatch_outcome.payload
@@ -715,34 +811,84 @@ class DataMakeReActPattern(AgentPattern):
         - 强制要求返回 JSON 对象
         """
 
-        system_prompt = (
-            "你是智能造数平台的顶层业务决策 Agent。"
-            "你必须基于当前上下文输出严格 JSON，结构符合 NextActionDecision。"
-            "你不能直接调用工具，也不能假设 Guard/Runtime 会替你做业务判断。"
-            "若信息不足，优先输出 interaction_action。"
-            "若需要人工确认，输出 supervision_action。"
-            "若信息充分且动作已知，输出 execution_action。"
-            "若任务已经完成或无法继续，输出 terminate。"
-            "\nFILE REFERENCES:\n"
+        base_system_prompt = (
+            "你是智能造数平台的顶层业务决策 Agent。\n"
+            "你必须基于当前上下文输出严格 JSON，结构符合 NextActionDecision。\n"
+            "你不能直接调用工具，也不能假设 Guard/Runtime 会替你做业务判断。\n"
+            "\n"
+            "## 决策优先级\n"
+            "1. 若 flow_draft.open_questions 非空，或召回命中不确定，优先 interaction_action 补全信息。\n"
+            "2. 若 flow_draft 已有 confirmed_params 且 available_resources 已知，可直接 execution_action。\n"
+            "3. 若动作 risk_level=high/critical 或 requires_approval=true，必须 supervision_action。\n"
+            "4. 若任务目标已完成或无法继续，输出 terminate。\n"
+            "\n"
+            "## execution_action 使用约束\n"
+            "- params.resource_key 和 params.operation_key 必须来自 available_resources，不得凭空编造。\n"
+            "- params.tool_args 只能包含该资源动作 result_contract 中声明的字段。\n"
+            "- 若你决定采用某个资源的 sql_context_hints，必须显式写入 params.sql_context。\n"
+            "- 若你采用了哪些 sql_context source，也必须显式写入 params.sql_context_sources。\n"
+            "- params.sql_context 只是提供给 SQL Brain 的补充材料，不等于系统确认事实。\n"
+            "\n"
+            "## recall_results 使用约束\n"
+            "- recall_results 是辅助参考，不是业务事实。命中相似历史不代表当前场景完全一致。\n"
+            "- 若 recall_results 与当前 flow_draft 有冲突，以 flow_draft.confirmed_params 为准。\n"
+            "\n"
+            "## FILE REFERENCES\n"
             "- 你可能会看到形如 [filename](file://fileId) 的文件引用。\n"
             "- 其中真正可用于读取文件的标识是 fileId，而不是 filename。\n"
             "- uploaded_files / file_info 中的内容只是文件上下文，不代表你可以自由猜测文件内容。\n"
         )
 
         if round_context.get("system_prompt"):
-            system_prompt = f"{round_context['system_prompt']}\n\n{system_prompt}"
+            system_prompt = f"{round_context['system_prompt']}\n\n{base_system_prompt}"
+        else:
+            system_prompt = base_system_prompt
+
+        # 从 round_context 中抽取关键摘要，避免把整个 context_state 全量喂给 LLM
+        flow_draft = round_context.get("flow_draft") or {}
+        available_resources = round_context.get("available_resources") or []
+        recall_results = round_context.get("recall_results") or []
+        ledger_snapshot = round_context.get("ledger_snapshot") or {}
 
         user_prompt = {
             "task": task,
-            "round_context": round_context,
+            "flow_draft": flow_draft,
+            "available_resources": available_resources,
+            "recall_results": recall_results,
+            "ledger_summary": {
+                "next_round_id": ledger_snapshot.get("next_round_id"),
+                "latest_decision": ledger_snapshot.get("latest_decision"),
+                "latest_observation": ledger_snapshot.get("latest_observation"),
+                "pending_interaction": ledger_snapshot.get("pending_interaction"),
+                "pending_approval": ledger_snapshot.get("pending_approval"),
+            },
+            CONTEXT_KEY_FILE_INFO: round_context.get(CONTEXT_KEY_FILE_INFO),
+            CONTEXT_KEY_UPLOADED_FILES: round_context.get(CONTEXT_KEY_UPLOADED_FILES),
             "response_contract": {
                 "decision_mode": "action|terminate",
                 "action_kind": "interaction_action|supervision_action|execution_action|null",
                 "action": "string|null",
-                "reasoning": "string",
-                "goal_delta": "string",
-                "params": {},
-                "expected": {},
+                "reasoning": "string（解释为什么现在选这个动作）",
+                "goal_delta": "string（本轮推进了目标的哪一步）",
+                "params": {
+                    "（execution_action 时）resource_key": "来自 available_resources",
+                    "（execution_action 时）operation_key": "来自 available_resources",
+                    "（execution_action 时）tool_args": "{}",
+                    "（execution_action 可选）sql_context": {
+                        "schema_ddl": [],
+                        "example_sqls": [],
+                        "documentation_snippets": [],
+                    },
+                    "（execution_action 可选）sql_context_sources": [
+                        {
+                            "source_type": "memory_recall",
+                            "source_id": "string|null",
+                            "match_reason": "string",
+                            "summary": "string|null",
+                        }
+                    ],
+                    "（interaction_action 时）questions": ["string"],
+                },
                 "risk_level": "low|medium|high|critical",
                 "requires_approval": False,
                 "user_visible": {
@@ -751,11 +897,9 @@ class DataMakeReActPattern(AgentPattern):
                     "details": [],
                     "questions": [],
                 },
-                "final_status": None,
-                "final_message": None,
+                "final_status": "completed|failed|cancelled（terminate 时填写）",
+                "final_message": "string（terminate 时填写）",
             },
-            CONTEXT_KEY_FILE_INFO: round_context.get(CONTEXT_KEY_FILE_INFO),
-            CONTEXT_KEY_UPLOADED_FILES: round_context.get(CONTEXT_KEY_UPLOADED_FILES),
         }
 
         return [

@@ -18,6 +18,7 @@ from ..contracts.observation import ObservationEnvelope
 from .projections import ProjectionUpdater
 from .repository import LedgerRepository
 from .sql_models import (
+    DataMakeApprovalState,
     DataMakeLedgerRecord,
     DataMakeTaskProjection,
 )
@@ -127,6 +128,11 @@ class PersistentLedgerRepository(LedgerRepository):
         payload = ticket.model_dump(mode="json")
 
         with self._new_session() as session:
+            if isinstance(ticket, ApprovalTicket):
+                self._upsert_approval_state_from_ticket(
+                    session=session,
+                    ticket=ticket,
+                )
             self._insert_record(
                 session=session,
                 task_id=task_id,
@@ -140,6 +146,108 @@ class PersistentLedgerRepository(LedgerRepository):
                 round_id=round_id,
                 record_type=record_type,
                 payload_json=payload,
+            )
+            session.commit()
+
+    async def consume_interaction_reply(
+        self,
+        task_id: str,
+        ticket: InteractionTicket,
+        observation: ObservationEnvelope,
+    ) -> None:
+        """
+        原子消费一条交互回复。
+
+        持久化场景下，这里必须保证“清 pending ticket”和
+        “写回 observation”处于同一个数据库事务里，
+        否则进程崩溃时会出现回复事实永久丢失。
+        """
+
+        ticket_payload = ticket.model_dump(mode="json")
+        observation_payload = observation.model_dump(mode="json")
+        with self._new_session() as session:
+            self._insert_record(
+                session=session,
+                task_id=task_id,
+                round_id=ticket.round_id,
+                record_type="interaction_ticket_resolved",
+                payload_json=ticket_payload,
+            )
+            self._update_projection(
+                session=session,
+                task_id=task_id,
+                round_id=ticket.round_id,
+                record_type="interaction_ticket_resolved",
+                payload_json=ticket_payload,
+            )
+            self._insert_record(
+                session=session,
+                task_id=task_id,
+                round_id=ticket.round_id,
+                record_type="observation",
+                payload_json=observation_payload,
+            )
+            self._update_projection(
+                session=session,
+                task_id=task_id,
+                round_id=ticket.round_id,
+                record_type="observation",
+                payload_json=observation_payload,
+            )
+            session.commit()
+
+    async def consume_approval_reply(
+        self,
+        task_id: str,
+        ticket: ApprovalTicket,
+        observation: ObservationEnvelope,
+    ) -> None:
+        """
+        原子消费一条审批回复。
+
+        这里把三件事绑定到同一个事务：
+        - 更新 `datamake_approval_states`
+        - 清理 projection 中的 pending approval
+        - 写入 supervision observation
+
+        这样恢复链才能稳定看到“要么整条回复已消费，要么完全未消费”。
+        """
+
+        ticket_payload = ticket.model_dump(mode="json")
+        observation_payload = observation.model_dump(mode="json")
+        with self._new_session() as session:
+            self._upsert_approval_state_from_resolution(
+                session=session,
+                ticket=ticket,
+                observation=observation,
+            )
+            self._insert_record(
+                session=session,
+                task_id=task_id,
+                round_id=ticket.round_id,
+                record_type="approval_ticket_resolved",
+                payload_json=ticket_payload,
+            )
+            self._update_projection(
+                session=session,
+                task_id=task_id,
+                round_id=ticket.round_id,
+                record_type="approval_ticket_resolved",
+                payload_json=ticket_payload,
+            )
+            self._insert_record(
+                session=session,
+                task_id=task_id,
+                round_id=ticket.round_id,
+                record_type="observation",
+                payload_json=observation_payload,
+            )
+            self._update_projection(
+                session=session,
+                task_id=task_id,
+                round_id=ticket.round_id,
+                record_type="observation",
+                payload_json=observation_payload,
             )
             session.commit()
 
@@ -295,6 +403,64 @@ class PersistentLedgerRepository(LedgerRepository):
             record_type=record_type,
             payload_json=payload_json,
         )
+
+    def _upsert_approval_state_from_ticket(
+        self,
+        *,
+        session: Session,
+        ticket: ApprovalTicket,
+    ) -> None:
+        """
+        以审批票据快照刷新审批状态表。
+
+        这里属于 Ledger/Projection 的持久化职责，不让上层 bridge/service
+        再做一次独立提交，避免 pending 审批单与 projection 脱节。
+        """
+
+        state = session.get(DataMakeApprovalState, ticket.approval_id)
+        if state is None:
+            state = DataMakeApprovalState(
+                approval_id=ticket.approval_id,
+                task_id=ticket.task_id,
+                round_id=ticket.round_id,
+            )
+            session.add(state)
+
+        state.status = ticket.status
+        state.approval_key = ticket.approval_key
+        state.ticket_json = ticket.model_dump(mode="json")
+        if ticket.status == "pending":
+            state.resolved_result_json = None
+            state.resolved_at = None
+        else:
+            state.resolved_at = ticket.resolved_at
+
+    def _upsert_approval_state_from_resolution(
+        self,
+        *,
+        session: Session,
+        ticket: ApprovalTicket,
+        observation: ObservationEnvelope,
+    ) -> None:
+        """
+        用已消费的审批结果更新审批状态表。
+
+        这里优先信任 supervision observation 中的结构化裁决事实，
+        避免再从原始输入重复解析一遍。
+        """
+
+        self._upsert_approval_state_from_ticket(session=session, ticket=ticket)
+        state = session.get(DataMakeApprovalState, ticket.approval_id)
+        if state is None:
+            raise ValueError(f"审批记录不存在：approval_id={ticket.approval_id}")
+
+        approval_result = observation.payload.get("approval_result")
+        state.status = ticket.status
+        state.ticket_json = ticket.model_dump(mode="json")
+        state.resolved_result_json = (
+            dict(approval_result) if isinstance(approval_result, dict) else None
+        )
+        state.resolved_at = ticket.resolved_at
 
     def _load_projection(self, task_id: str) -> DataMakeTaskProjection | None:
         with self._new_session() as session:

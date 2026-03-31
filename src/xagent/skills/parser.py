@@ -112,8 +112,10 @@ class SkillParser:
         candidate_encodings = (
             "utf-8",
             "utf-8-sig",
-            "cp1252",
             "gb18030",
+            # `cp1252` 基本不会抛解码错误，必须放在更具体的编码之后，
+            # 否则会把东亚文本“错误但成功”地解成乱码。
+            "cp1252",
         )
         last_error: UnicodeDecodeError | None = None
 

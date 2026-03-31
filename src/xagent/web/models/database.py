@@ -106,5 +106,10 @@ def init_db(db_url: str | None = None) -> None:
     # Create all tables
     Base.metadata.create_all(bind=_engine)
 
+    # Initialize datamake specific tables
+    from ...core.datamake.ledger.sql_models import DataMakeBase
+
+    DataMakeBase.metadata.create_all(bind=_engine)
+
     logger = logging.getLogger(__name__)
     logger.info("Database initialized. Waiting for first admin setup.")

@@ -25,6 +25,7 @@ from .api.templates import router as templates_router
 from .api.text2sql import text2sql_router
 from .api.tools import tools_router
 from .api.websocket import ws_router
+from .api.datamake import router as datamake_router
 from .config import UPLOADS_DIR
 from .dynamic_memory_store import get_memory_store
 from .models.database import init_db
@@ -146,6 +147,7 @@ app.include_router(skills_router)
 app.include_router(system_router)
 app.include_router(templates_router)
 app.include_router(agents_router)
+app.include_router(datamake_router)
 
 
 # 初始化数据库

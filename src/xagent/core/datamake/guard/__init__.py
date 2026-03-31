@@ -8,3 +8,9 @@
 
 它负责的是“执行治理”，不是“业务思考”。
 """
+
+from .sql_verifier import SqlVerifier
+
+__all__ = [
+    "SqlVerifier",
+]

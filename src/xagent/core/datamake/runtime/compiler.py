@@ -46,5 +46,6 @@ class ExecutionCompiler:
                 "description": resource_action.description,
                 "result_normalizer": resource_action.result_normalizer,
                 "result_contract": dict(resource_action.result_contract),
+                "resource_metadata": dict(resource_action.metadata),
             },
         )

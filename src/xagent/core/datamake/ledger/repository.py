@@ -10,6 +10,7 @@
 - append_observation
 - append_ticket
 - resolve_ticket
+- consume_*_reply
 - build_runtime_snapshot
 """
 
@@ -181,6 +182,75 @@ class LedgerRepository:
             }
         )
 
+    async def consume_interaction_reply(
+        self,
+        task_id: str,
+        ticket: InteractionTicket,
+        observation: ObservationEnvelope,
+    ) -> None:
+        """
+        原子消费一条用户交互回复。
+
+        业务语义上，“交互工单已回答”与“回答结果回流为 observation”
+        属于同一个状态跃迁，因此这里提供一个统一入口，避免上层把它拆成
+        多次持久化动作。
+        """
+
+        self._pending_interactions.pop(task_id, None)
+        self._records_by_task[task_id].append(
+            {
+                "record_type": "interaction_ticket_resolved",
+                "task_id": task_id,
+                "round_id": ticket.round_id,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "ticket": ticket.model_dump(mode="json"),
+            }
+        )
+        self._records_by_task[task_id].append(
+            {
+                "record_type": "observation",
+                "task_id": task_id,
+                "round_id": ticket.round_id,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "observation": observation.model_dump(mode="json"),
+            }
+        )
+
+    async def consume_approval_reply(
+        self,
+        task_id: str,
+        ticket: ApprovalTicket,
+        observation: ObservationEnvelope,
+    ) -> None:
+        """
+        原子消费一条审批回复。
+
+        与交互回复同理，这里把：
+        - 审批工单从 pending 变为 resolved
+        - 审批结果回流为 supervision observation
+        视为一次业务状态跃迁。
+        """
+
+        self._pending_approvals.pop(task_id, None)
+        self._records_by_task[task_id].append(
+            {
+                "record_type": "approval_ticket_resolved",
+                "task_id": task_id,
+                "round_id": ticket.round_id,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "ticket": ticket.model_dump(mode="json"),
+            }
+        )
+        self._records_by_task[task_id].append(
+            {
+                "record_type": "observation",
+                "task_id": task_id,
+                "round_id": ticket.round_id,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "observation": observation.model_dump(mode="json"),
+            }
+        )
+
     async def load_pending_interaction(
         self, task_id: str
     ) -> Optional[InteractionTicket]:
@@ -298,7 +368,7 @@ class LedgerRepository:
 def create_persistent_ledger_repository(
     session_factory: Any,
     projection_updater: Any | None = None,
-) -> "PersistentLedgerRepository":
+) -> Any:
     """
     创建持久化版 ledger repository。
 

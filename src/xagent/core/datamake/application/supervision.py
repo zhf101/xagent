@@ -87,8 +87,6 @@ class SupervisionBridge:
                 "response_contract": "ApprovalResolution",
             },
         )
-        if self.approval_service is not None:
-            return await self.approval_service.create(ticket)
         return ticket
 
     def build_waiting_question(self, ticket: ApprovalTicket) -> str:
@@ -132,11 +130,6 @@ class SupervisionBridge:
         resolution = resolution.model_copy(update={"resolved_at": resolved_at})
         ticket.status = "approved" if resolution.approved else "rejected"
         ticket.resolved_at = resolved_at
-        if self.approval_service is not None:
-            await self.approval_service.resolve(
-                ticket.approval_id,
-                resolution,
-            )
 
         return ObservationEnvelope(
             observation_type="supervision",

@@ -6,7 +6,8 @@
 
 from __future__ import annotations
 
-from typing import Any
+from contextlib import contextmanager
+from typing import Any, Generator
 
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -72,8 +73,15 @@ class DraftService:
             row.summary = draft_state.goal_summary
             session.commit()
 
-    def _new_session(self) -> Session:
+    @contextmanager
+    def _new_session(self) -> Generator[Session, None, None]:
         session = self.session_factory()
         if not isinstance(session, Session):
             raise TypeError("DraftService 需要返回 SQLAlchemy Session 的 session_factory")
-        return session
+        try:
+            yield session
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()

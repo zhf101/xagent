@@ -46,6 +46,7 @@ import {
   Star,
   MoreHorizontal,
   Edit2,
+  Database,
 } from "lucide-react"
 import {
   Dialog,
@@ -122,6 +123,13 @@ const navigationGroups: NavigationGroup[] = [
         href: "/templates",
         icon: LayoutTemplate,
         color: "text-purple-400"
+      },
+      {
+        name: "Smart Data Make",
+        nameKey: "nav.datamake",
+        href: "/datamake",
+        icon: Database,
+        color: "text-green-500"
       },
     ]
   },

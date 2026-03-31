@@ -60,8 +60,10 @@ class AgentType(enum.Enum):
 
     STANDARD = "standard"  # Standard purpose agent
     TEXT2SQL = "text2sql"  # Text2SQL agent
+    DATAMAKE = "datamake"  # Smart data making agent
     # Future agent types can be added here
     # CODE_ASSISTANT = "code_assistant"
+    # DATA_ANALYSIS = "data_analysis"
     # DATA_ANALYSIS = "data_analysis"
 
 

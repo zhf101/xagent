@@ -10,3 +10,21 @@
 当前阶段你明确要求“先不要补核心数据模型”，
 所以这里先放契约占位类和职责注释，不急着一次写完字段细节。
 """
+
+from .sql_plan import (
+    SqlPlanContext,
+    SqlPlanResult,
+    SqlProbeResult,
+    SqlProbeTarget,
+    SqlRepairResult,
+    SqlVerificationResult,
+)
+
+__all__ = [
+    "SqlPlanContext",
+    "SqlPlanResult",
+    "SqlVerificationResult",
+    "SqlProbeTarget",
+    "SqlProbeResult",
+    "SqlRepairResult",
+]

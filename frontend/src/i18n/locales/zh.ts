@@ -51,6 +51,7 @@ const zh = {
     history: "全部任务",
     search: "搜索任务",
     templates: "模板",
+    datamake: "智能造数",
     sections: {
       agentDevelopment: "Agent 开发",
       resources: "资源",

@@ -14,13 +14,42 @@ function normalizeBaseUrl(url: string | undefined): string {
   return url.trim().replace(/\/+$/, "")
 }
 
+function isLoopbackHost(hostname: string): boolean {
+  return LOCAL_DEVELOPMENT_HOSTS.has(hostname)
+}
+
+function rewriteLoopbackBaseUrlForBrowser(url: string): string {
+  if (!url || typeof window === "undefined") {
+    return url
+  }
+
+  try {
+    const parsedUrl = new URL(url)
+    const browserHostname = window.location.hostname
+
+    // 构建阶段常把 API / WS 地址写成 localhost，方便“前端和浏览器都在同一台机器”调试。
+    // 但一旦页面是通过局域网 IP、容器域名或反向代理域名访问，浏览器里的 localhost
+    // 就会指向“访问者自己的机器”，从而让登录等请求直接报 Failed to fetch。
+    // 这里仅在“配置值是 loopback，而当前页面 host 不是 loopback”时，把目标主机改写成
+    // 当前页面所在主机，端口和协议保持不变，尽量兼容远程调试/局域网访问场景。
+    if (!browserHostname || isLoopbackHost(browserHostname) || !isLoopbackHost(parsedUrl.hostname)) {
+      return url
+    }
+
+    parsedUrl.hostname = browserHostname
+    return normalizeBaseUrl(parsedUrl.toString())
+  } catch {
+    return url
+  }
+}
+
 function resolveLocalBackendBaseUrl(protocol: "http" | "ws"): string {
   if (typeof window === "undefined") {
     return ""
   }
 
   const { hostname } = window.location
-  if (!LOCAL_DEVELOPMENT_HOSTS.has(hostname)) {
+  if (!isLoopbackHost(hostname)) {
     return ""
   }
 
@@ -30,10 +59,24 @@ function resolveLocalBackendBaseUrl(protocol: "http" | "ws"): string {
   return `${protocol}://${hostname}:8000`
 }
 
+function resolveSameOriginWebSocketBaseUrl(): string {
+  if (typeof window === "undefined") {
+    return ""
+  }
+
+  const { protocol, host } = window.location
+  if (!host) {
+    return ""
+  }
+
+  const wsProtocol = protocol === "https:" ? "wss" : "ws"
+  return `${wsProtocol}://${host}`
+}
+
 export function getApiUrl(): string {
   const configuredApiUrl = normalizeBaseUrl(process.env.NEXT_PUBLIC_API_URL)
   if (configuredApiUrl) {
-    return configuredApiUrl
+    return rewriteLoopbackBaseUrlForBrowser(configuredApiUrl)
   }
 
   return resolveLocalBackendBaseUrl("http")
@@ -49,7 +92,7 @@ export function getAuthHeaders(token: string | null): Record<string, string> {
 export function getWsUrl(): string {
   const configuredWsUrl = normalizeBaseUrl(process.env.NEXT_PUBLIC_WS_URL)
   if (configuredWsUrl) {
-    return configuredWsUrl
+    return rewriteLoopbackBaseUrlForBrowser(configuredWsUrl)
   }
 
   const localWsUrl = resolveLocalBackendBaseUrl("ws")
@@ -57,10 +100,9 @@ export function getWsUrl(): string {
     return localWsUrl
   }
 
-  // 非本地开发环境如果没有显式配置，就继续返回空串。
-  // 这样生产环境可以通过反向代理（reverse proxy）走同域部署，
-  // 同时也避免在未知主机上擅自猜测后端地址。
-  return ""
+  // 非本地环境默认回退到当前页面同域的 WebSocket 基址。
+  // 这样可以继续兼容“前端页面 + /ws/* 反向代理到后端”的既有部署方式。
+  return resolveSameOriginWebSocketBaseUrl()
 }
 
 export async function fetchWithAuth(url: string, token: string | null, options: RequestInit = {}): Promise<Response> {

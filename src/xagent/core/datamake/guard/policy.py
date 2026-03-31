@@ -38,6 +38,21 @@ class RiskPolicy:
             return resource_risk
         return action_risk
 
+    def merge_risk_levels(self, *risk_levels: str | None) -> str:
+        """
+        合并多个风险等级，返回其中最高等级。
+
+        这个方法主要给 Guard 在叠加静态 SQL 校验风险、资源定义风险、
+        主脑自评风险时使用，避免在多个模块里重复维护一套风险顺序表。
+        """
+
+        normalized_levels = [
+            self._normalize_risk_level(risk_level) for risk_level in risk_levels
+        ]
+        if not normalized_levels:
+            return "low"
+        return max(normalized_levels, key=self._risk_score)
+
     def _normalize_risk_level(self, risk_level: str | None) -> str:
         """
         统一清洗风险等级文本，未知值回退为 low。
