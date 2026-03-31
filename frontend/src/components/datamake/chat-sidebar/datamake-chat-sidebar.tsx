@@ -20,7 +20,7 @@ export function DataMakeChatSidebar({ taskId }: { taskId?: number }) {
   }
 
   return (
-    <div className="flex flex-col h-full w-80 border-r bg-slate-50">
+    <div className="flex flex-col h-full w-80 border-r bg-background">
       <div className="p-4 border-b font-bold shrink-0">造数交互台</div>
       
       <div className="flex-1 overflow-auto p-4 space-y-4">
@@ -34,7 +34,7 @@ export function DataMakeChatSidebar({ taskId }: { taskId?: number }) {
         ))}
 
         {state.status === "running" && (
-          <div className="p-3 bg-gray-100 text-sm text-gray-500 rounded-lg animate-pulse">
+          <div className="p-3 border border-border bg-background text-sm text-muted-foreground rounded-lg animate-pulse">
             Agent 思考推导中...
           </div>
         )}

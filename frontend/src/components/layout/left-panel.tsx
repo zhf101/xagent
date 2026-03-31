@@ -120,9 +120,9 @@ export function LeftPanel({ onSendMessage, onPauseTask, onResumeTask, messages, 
 
 
   return (
-    <div className="flex flex-col h-full bg-card/30">
+    <div className="flex flex-col h-full bg-background">
       {/* Header */}
-      <div className="p-4 border-b border-border bg-card/50 flex-shrink-0">
+      <div className="p-4 border-b border-border bg-background flex-shrink-0">
         <div className="flex items-center justify-between">
           <h2 className="text-xl font-semibold text-foreground">{t("agent.layout.left.title")}</h2>
           {currentTask && (
@@ -161,7 +161,7 @@ export function LeftPanel({ onSendMessage, onPauseTask, onResumeTask, messages, 
                     ? "bg-green-500/20 border border-green-500/50 text-foreground backdrop-blur-sm"
                     : message.isFileOutput
                     ? "bg-primary/10 border border-primary/30 text-foreground backdrop-blur-sm"
-                    : "bg-muted backdrop-blur-sm"
+                    : "border border-border bg-background"
                 )}
               >
                 <div className="flex items-center gap-2 mb-1">
@@ -206,7 +206,7 @@ export function LeftPanel({ onSendMessage, onPauseTask, onResumeTask, messages, 
       </ScrollArea>
 
       {/* Input Area */}
-      <div className="p-4 border-t border-border bg-card/50">
+      <div className="p-4 border-t border-border bg-background">
         <AgentInput
           value={inputMessage}
           onChange={(value) => setInputMessage(value)}

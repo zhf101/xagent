@@ -147,7 +147,7 @@ export function ContextDrawer({ taskId }: { taskId?: number }) {
   const taskStatus = context?.task_status
 
   return (
-    <div className="flex flex-col h-full w-96 border-l bg-slate-50 overflow-y-auto">
+    <div className="flex flex-col h-full w-96 border-l bg-background overflow-y-auto">
       <div className="p-4 border-b font-bold bg-white sticky top-0">
         <div>执行上下文与审计</div>
         {taskStatus && (
@@ -161,15 +161,15 @@ export function ContextDrawer({ taskId }: { taskId?: number }) {
         <div className="bg-white p-3 border rounded shadow-sm">
           <h4 className="text-xs font-bold text-gray-500 mb-2 uppercase tracking-wide">Flow Draft (活动草稿)</h4>
           {loading ? (
-            <div className="text-xs text-slate-500 bg-gray-50 p-3 rounded border border-dashed">
+            <div className="text-xs text-muted-foreground bg-background p-3 rounded border border-dashed">
               正在加载...
             </div>
           ) : flowDraft ? (
-            <pre className="text-xs overflow-x-auto bg-gray-50 p-2 rounded border">
+            <pre className="text-xs overflow-x-auto bg-background p-2 rounded border">
               {JSON.stringify(flowDraft, null, 2)}
             </pre>
           ) : (
-            <div className="text-xs text-slate-500 bg-gray-50 p-3 rounded border border-dashed">
+            <div className="text-xs text-muted-foreground bg-background p-3 rounded border border-dashed">
               当前任务还没有持久化的 Flow Draft。
             </div>
           )}
@@ -188,7 +188,7 @@ export function ContextDrawer({ taskId }: { taskId?: number }) {
                 return (
                   <div
                     key={`${item.record_id ?? "record"}-${item.round_id ?? "round"}`}
-                    className={`border-l-2 ${tone.border} pl-3 py-1 bg-slate-50 rounded-r`}
+                    className={`border-l-2 ${tone.border} pl-3 py-1 bg-background rounded-r`}
                   >
                     <div className={`text-xs font-bold ${tone.titleColor}`}>{tone.title}</div>
                     <div className="text-xs text-slate-700 mt-1">
@@ -254,7 +254,7 @@ export function ContextDrawer({ taskId }: { taskId?: number }) {
               ))}
             </div>
           ) : (
-            <div className="text-xs text-slate-500 bg-gray-50 p-3 rounded border border-dashed">
+            <div className="text-xs text-muted-foreground bg-background p-3 rounded border border-dashed">
               当前任务没有最近错误记录。
             </div>
           )}

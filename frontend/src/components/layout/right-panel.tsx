@@ -511,9 +511,9 @@ export function RightPanel({
   const stepEvents = traceEvents.filter(event => event.step_id === selectedStepId)
 
   return (
-    <div className="flex flex-col h-full bg-card/30 min-w-[400px]">
+    <div className="flex flex-col h-full bg-background min-w-[400px]">
       {/* Header */}
-      <div className="p-4 border-b border-border bg-card/50 backdrop-blur-sm">
+      <div className="p-4 border-b border-border bg-background">
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-xl font-semibold text-foreground">{t("agent.layout.right.titles.stepDetail")}</h2>
         </div>
@@ -535,7 +535,7 @@ export function RightPanel({
                 }
               }}
               disabled={!selectedStepId || steps.findIndex(s => s.id === selectedStepId) === 0 || isTransitioning}
-              className="p-1 text-sm bg-muted border border-border rounded hover:bg-accent disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
+              className="p-1 text-sm bg-background border border-border rounded hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
             >
               ← {t("agent.layout.right.buttons.prevStep")}
             </button>
@@ -555,7 +555,7 @@ export function RightPanel({
                 }
               }}
               disabled={!selectedStepId || steps.findIndex(s => s.id === selectedStepId) === steps.length - 1 || isTransitioning}
-              className="p-1 text-sm bg-muted border border-border rounded hover:bg-accent disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
+              className="p-1 text-sm bg-background border border-border rounded hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
             >
               {t("agent.layout.right.buttons.nextStep")} →
             </button>
@@ -572,7 +572,7 @@ export function RightPanel({
           <div className="p-4 space-y-4">
             {/* Step Summary */}
             {selectedStep && (
-              <Card className="bg-card/50 border-border">
+              <Card className="bg-background border-border">
                 <div className="p-4">
                   <StepSummary step={selectedStep} />
                 </div>
@@ -586,7 +586,7 @@ export function RightPanel({
 
             {/* Trace Events */}
             {stepEvents.length > 0 && (
-              <Card className="bg-card/50 border-border">
+              <Card className="bg-background border-border">
                 <div className="p-4">
                   <div className="flex items-center justify-between mb-3">
                     <h3 className="text-base font-medium text-foreground">{t("agent.layout.right.titles.executionLogs")}</h3>

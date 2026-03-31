@@ -19,17 +19,17 @@ export function ThreeColumnLayout({
   return (
     <div className={cn("flex w-full h-full bg-background overflow-hidden", className)}>
       {/* Left Panel - User Interaction & Results */}
-      <div className="flex-[1] border-r border-border bg-card/50 backdrop-blur-sm flex flex-col min-w-0 overflow-hidden">
+      <div className="flex-[1] border-r border-border bg-background flex flex-col min-w-0 overflow-hidden">
         {leftPanel}
       </div>
 
       {/* Center Panel - DAG Visualization */}
-      <div className="flex-[1.2] border-r border-border bg-background/80 backdrop-blur-sm flex flex-col min-w-0 overflow-hidden">
+      <div className="flex-[1.2] border-r border-border bg-background flex flex-col min-w-0 overflow-hidden">
         {centerPanel}
       </div>
 
       {/* Right Panel - Step Details */}
-      <div className="flex-1 bg-card/50 backdrop-blur-sm flex flex-col min-w-[400px] overflow-hidden">
+      <div className="flex-1 bg-background flex flex-col min-w-[400px] overflow-hidden">
         {rightPanel}
       </div>
     </div>

@@ -83,24 +83,24 @@ export const themes: Record<string, Theme> = {
     name: 'Light',
     mode: 'light',
     colors: {
-      background: '0 33.3% 98.8%',        // #fdfbfb 暖白
+      background: '0 0% 100%',            // 纯白主背景
       foreground: '0 2.0% 19.6%',         // #333131 主文字
-      card: '0 9.1% 95.7%',               // #f5f3f3 浅灰卡片
+      card: '0 0% 100%',                  // 纯白卡片，去掉灰蒙层
       cardForeground: '0 2.0% 19.6%',
-      popover: '0 33.3% 98.8%',
+      popover: '0 0% 100%',
       popoverForeground: '0 2.0% 19.6%',
       primary: '3.4 64.7% 51.2%',         // #d33b32 深红
       primaryForeground: '0 0% 100%',
-      secondary: '0 9.1% 95.7%',          // #f5f3f3
+      secondary: '0 0% 100%',             // 次级容器统一亮白
       secondaryForeground: '0 1.4% 59.4%',// #999696 中灰
-      muted: '0 9.1% 95.7%',              // #f5f3f3
+      muted: '0 0% 99.2%',                // 极轻层级，视觉仍接近白色
       mutedForeground: '0 1.4% 59.4%',    // #999696 中灰
-      accent: '0 9.1% 95.7%',
+      accent: '0 0% 100%',
       accentForeground: '0 2.0% 19.6%',
       destructive: '6 81.3% 58%',         // #eb4e3d 警示红
       destructiveForeground: '0 0% 100%',
-      border: '0 4.3% 91%',               // #e9e7e7 浅灰分割线
-      input: '0 4.3% 91%',
+      border: '0 0% 92%',                 // 更轻的冷白边框
+      input: '0 0% 92%',
       ring: '206 17% 57%',                // #8294a2 冷灰蓝
       // Extended colors
       gradientFrom: '3.4 64.7% 51.2%',

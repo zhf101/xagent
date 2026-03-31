@@ -532,16 +532,16 @@ function CenterPanelInner({
 
 
   return (
-    <div className="flex flex-col h-full bg-background/80">
+    <div className="flex flex-col h-full bg-background">
       {/* Header */}
-      <div className="p-4 border-b border-border bg-card/50 backdrop-blur-sm">
+      <div className="p-4 border-b border-border bg-background">
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-semibold text-foreground">{t("agent.layout.center.titles.dag")}</h2>
 
           {/* Layout Controls */}
           {dagNodes.length > 0 && (
             <div className="flex items-center gap-2">
-              <div className="flex items-center gap-1 bg-muted/50 rounded-md p-1">
+              <div className="flex items-center gap-1 rounded-md border border-border bg-background p-1">
                 <Button
                   variant={dagLayout === 'TB' ? 'default' : 'ghost'}
                   size="sm"
@@ -580,7 +580,7 @@ function CenterPanelInner({
         </div>
 
       {/* DAG Visualization */}
-      <div className="flex-1 relative bg-slate-50 dark:bg-muted/20 w-full h-full min-h-[500px]">
+      <div className="flex-1 relative bg-background w-full h-full min-h-[500px]">
         {hasError ? (
           <ErrorState />
         ) : isPlanning ? (
@@ -637,7 +637,7 @@ function CenterPanelInner({
       {/* Node Details Panel */}
       {selectedNode && (
         <div className="absolute bottom-4 left-4 right-4 z-10">
-          <Card className="bg-card/95 backdrop-blur-sm border-border shadow-2xl">
+          <Card className="bg-background border-border shadow-2xl">
             <CardHeader className="pb-3">
               <CardTitle className="text-sm flex items-center justify-between text-foreground">
                 {selectedNode.data.label}

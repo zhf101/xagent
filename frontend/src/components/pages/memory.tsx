@@ -384,7 +384,7 @@ export function MemoryPage() {
       {/* Content Area */}
       <div className="flex flex-1 overflow-hidden">
         {/* Left Sidebar */}
-        <aside className="w-64 border-r bg-muted/10 flex flex-col flex-shrink-0 overflow-y-auto">
+        <aside className="w-64 border-r bg-background flex flex-col flex-shrink-0 overflow-y-auto">
           <div className="p-6 space-y-8">
             <div className="space-y-3">
               <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider px-2">
@@ -433,7 +433,7 @@ export function MemoryPage() {
         </aside>
 
         {/* Main Content */}
-        <main className="flex-1 flex flex-col bg-slate-50/50 dark:bg-background overflow-hidden">
+        <main className="flex-1 flex flex-col bg-background overflow-hidden">
           {/* Main Content Header */}
           <div className="h-24 flex items-center justify-between px-8 bg-card flex-shrink-0">
             <div className="flex items-center gap-3">
