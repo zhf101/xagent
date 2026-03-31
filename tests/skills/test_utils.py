@@ -41,22 +41,27 @@ class TestParseSkillDirs:
                 assert result[1] == Path(tmpdir2)
 
     def test_nonexistent_directory(self):
-        """Test nonexistent directory is skipped"""
+        """Test nonexistent directory is still added (may be created later)"""
         result = _parse_skill_dirs("/nonexistent/path")
-        assert result == []
+        assert len(result) == 1
+        assert result[0] == Path("/nonexistent/path")
 
     def test_mixed_valid_invalid(self):
         """Test mix of valid and invalid directories"""
         with tempfile.TemporaryDirectory() as tmpdir:
             result = _parse_skill_dirs(f"{tmpdir},/nonexistent,/another/nonexistent")
-            assert len(result) == 1
+            # All paths are added (nonexistent dirs may be created later)
+            assert len(result) == 3
             assert result[0] == Path(tmpdir)
+            assert result[1] == Path("/nonexistent")
+            assert result[2] == Path("/another/nonexistent")
 
     def test_path_expansion_tilde(self):
         """Test tilde expansion"""
         result = _parse_skill_dirs("~/test")
-        # Note: ~/test doesn't exist, but path should be expanded
-        assert len(result) == 0  # Directory doesn't exist
+        # Path is expanded and added even if it doesn't exist yet
+        assert len(result) == 1
+        assert result[0] == Path.home() / "test"
 
     def test_path_expansion_environment_variable(self):
         """Test environment variable expansion"""
@@ -86,13 +91,15 @@ class TestParseSkillDirs:
         result = _parse_skill_dirs("s3://bucket/skills,nfs://server/skills")
         assert result == []  # URLs should be rejected
 
-    def test_file_path_rejected(self):
-        """Test file paths are rejected (only directories allowed)"""
+    def test_file_path_accepted(self):
+        """Test file paths are accepted (may be replaced with directory later)"""
         with tempfile.NamedTemporaryFile(delete=False) as tmpfile:
             tmpfile_path = tmpfile.name
         try:
             result = _parse_skill_dirs(tmpfile_path)
-            assert result == []  # Files should be rejected
+            # File paths are now accepted (admin may delete file and create dir)
+            assert len(result) == 1
+            assert result[0] == Path(tmpfile_path)
         finally:
             # Clean up the file
             try:
@@ -104,20 +111,26 @@ class TestParseSkillDirs:
 class TestGetDefaultSkillDirs:
     """Tests for _get_default_skill_dirs function"""
 
-    def test_returns_two_directories(self):
-        """Test returns exactly two directories"""
+    def test_returns_three_directories(self):
+        """Test returns exactly three directories"""
         result = _get_default_skill_dirs()
-        assert len(result) == 2
+        assert len(result) == 3
 
     def test_builtin_directory_exists(self):
         """Test builtin directory exists"""
         result = _get_default_skill_dirs()
         assert result[0].exists()
 
-    def test_user_directory_created(self):
-        """Test user directory is created"""
+    def test_project_directory_is_relative(self):
+        """Test project directory is relative path './skills/'"""
         result = _get_default_skill_dirs()
-        assert result[1].exists()  # Should be created automatically
+        assert result[1] == Path("skills")
+
+    def test_user_directory_path(self):
+        """Test user directory is ~/.xagent/skills"""
+        result = _get_default_skill_dirs()
+        assert result[2].name == "skills"
+        # Parent should be .xagent (or whatever get_storage_root returns)
 
 
 class TestCreateSkillManager:
@@ -128,8 +141,8 @@ class TestCreateSkillManager:
         with patch.dict(os.environ, {}, clear=True):
             manager = create_skill_manager()
             assert manager is not None
-            # Should use default directories
-            assert len(manager.skills_roots) == 2
+            # Should use default directories (builtin, project, user)
+            assert len(manager.skills_roots) == 3
 
     def test_with_environment_variable(self):
         """Test with XAGENT_EXTERNAL_SKILLS_LIBRARY_DIRS set"""
@@ -139,10 +152,10 @@ class TestCreateSkillManager:
             ):
                 manager = create_skill_manager()
                 assert manager is not None
-                # Should have 2 default dirs + 1 external dir
-                assert len(manager.skills_roots) == 3
+                # Should have 3 default dirs + 1 external dir
+                assert len(manager.skills_roots) == 4
                 # Last one should be the external dir
-                assert manager.skills_roots[2] == Path(tmpdir)
+                assert manager.skills_roots[3] == Path(tmpdir)
 
     def test_with_multiple_directories(self):
         """Test with multiple directories in environment variable"""
@@ -154,32 +167,35 @@ class TestCreateSkillManager:
                 ):
                     manager = create_skill_manager()
                     assert manager is not None
-                    # Should have 2 default dirs + 2 external dirs
-                    assert len(manager.skills_roots) == 4
+                    # Should have 3 default dirs + 2 external dirs
+                    assert len(manager.skills_roots) == 5
                     # Last two should be the external dirs
-                    assert manager.skills_roots[2] == Path(tmpdir1)
-                    assert manager.skills_roots[3] == Path(tmpdir2)
+                    assert manager.skills_roots[3] == Path(tmpdir1)
+                    assert manager.skills_roots[4] == Path(tmpdir2)
 
     def test_with_invalid_environment_variable_falls_back_to_default(self):
-        """Test invalid external paths are skipped but defaults remain"""
+        """Test external paths are added even if they don't exist yet"""
         with patch.dict(
             os.environ, {"XAGENT_EXTERNAL_SKILLS_LIBRARY_DIRS": "/nonexistent/path"}
         ):
             manager = create_skill_manager()
             assert manager is not None
-            # Should have default dirs (external path is skipped)
-            assert len(manager.skills_roots) == 2
+            # Should have 3 default dirs + 1 external dir (nonexistent dirs are still added)
+            assert len(manager.skills_roots) == 4
+            assert manager.skills_roots[3] == Path("/nonexistent/path")
 
     def test_explicit_skills_roots_parameter(self):
-        """Test explicit skills_roots parameter overrides environment"""
+        """Test explicit skills_roots parameter is used and env var is appended"""
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch.dict(
                 os.environ, {"XAGENT_EXTERNAL_SKILLS_LIBRARY_DIRS": "/other/path"}
             ):
                 manager = create_skill_manager(skills_roots=[Path(tmpdir)])
                 assert manager is not None
-                assert len(manager.skills_roots) == 1
+                # User-provided skills_roots + env var
+                assert len(manager.skills_roots) == 2
                 assert manager.skills_roots[0] == Path(tmpdir)
+                assert manager.skills_roots[1] == Path("/other/path")
 
     def test_url_paths_in_environment_variable(self):
         """Test URL paths in environment variable are skipped"""
@@ -190,9 +206,9 @@ class TestCreateSkillManager:
             ):
                 manager = create_skill_manager()
                 assert manager is not None
-                # Should have 2 default dirs + 1 valid external dir (URLs skipped)
-                assert len(manager.skills_roots) == 3
-                assert manager.skills_roots[2] == Path(tmpdir)
+                # Should have 3 default dirs + 1 valid external dir (URLs skipped)
+                assert len(manager.skills_roots) == 4
+                assert manager.skills_roots[3] == Path(tmpdir)
 
     def test_path_expansion_in_environment_variable(self):
         """Test path expansion works in environment variable"""
@@ -206,9 +222,9 @@ class TestCreateSkillManager:
             ):
                 manager = create_skill_manager()
                 assert manager is not None
-                # Should have 2 default dirs + 1 external dir
-                assert len(manager.skills_roots) == 3
-                assert manager.skills_roots[2] == test_dir
+                # Should have 3 default dirs + 1 external dir
+                assert len(manager.skills_roots) == 4
+                assert manager.skills_roots[3] == test_dir
         finally:
             test_dir.rmdir()
 

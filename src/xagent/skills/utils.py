@@ -7,37 +7,39 @@ import os
 from pathlib import Path
 from typing import List, Optional
 
+from ..core.storage.manager import get_storage_root
 from .manager import SkillManager
 
 logger = logging.getLogger(__name__)
 
 
-def create_skill_manager(skills_roots: Optional[List[Path]] = None) -> SkillManager:
+def create_skill_manager(
+    skills_roots: Optional[List[Path]] = None,
+) -> "SkillManager":
     """
     Create skill_manager (not initialized)
 
     Args:
-        skills_roots: Optional list of skills directories, defaults to:
-                     1. Built-in and user directories (always included)
-                     2. XAGENT_EXTERNAL_SKILLS_LIBRARY_DIRS env var (appended if set)
+        skills_roots: Optional list of skills directories. If None, uses defaults:
+                     - builtin, project (./skills/), user (~/.xagent/skills/)
+                     - XAGENT_EXTERNAL_SKILLS_LIBRARY_DIRS env var is always appended if set, regardless of this parameter.
 
     Returns:
         SkillManager instance (not initialized)
     """
 
     if skills_roots is None:
-        # Always start with default directories
+        # Start with default directories if not specified
         skills_roots = _get_default_skill_dirs()
 
-        # Append external directories if configured
-        env_dirs = os.getenv("XAGENT_EXTERNAL_SKILLS_LIBRARY_DIRS", "")
-        if env_dirs:
-            external_dirs = _parse_skill_dirs(env_dirs)
-            if external_dirs:
-                skills_roots = skills_roots + external_dirs
-                logger.info(
-                    f"Appended {len(external_dirs)} external skill directories to defaults"
-                )
+    # Always append external directories from environment variable
+    if env_dirs := os.getenv("XAGENT_EXTERNAL_SKILLS_LIBRARY_DIRS", ""):
+        if external_dirs := _parse_skill_dirs(env_dirs):
+            skills_roots = skills_roots + external_dirs
+            logger.info(f"Appended {len(external_dirs)} external skill directories")
+
+    # Import here to avoid circular import
+    from .manager import SkillManager
 
     # Create skill_manager (not initialized)
     skill_manager = SkillManager(skills_roots=skills_roots)
@@ -68,31 +70,30 @@ def _parse_skill_dirs(env_value: str) -> List[Path]:
             continue
 
         # Expand environment variables and user home directory
-        expanded_path = os.path.expandvars(dir_path)
+        expanded_path = os.path.expanduser(os.path.expandvars(dir_path))
         path = Path(expanded_path).expanduser()
 
-        # Validate and add path
-        if path.exists():
-            if path.is_dir():
-                skills_roots.append(path)
-                logger.info(f"Added skills directory: {path}")
-            else:
-                logger.warning(f"Path is not a directory: {path}")
-        else:
-            logger.warning(f"Skills directory does not exist: {path}")
+        # Add path (directory may be created or replaced after xagent starts)
+        skills_roots.append(path)
+        logger.info(f"Added skills directory: {path}")
 
     return skills_roots
 
 
 def _get_default_skill_dirs() -> List[Path]:
     """
-    Get default skill directories
+    Get default skill directories.
+
+    Load order (later skills override earlier ones with the same name):
+    1. Built-in skills (read-only, shipped with xagent)
+    2. Project skills (./skills/ in current working directory)
+    3. User skills (~/.xagent/skills/, created if needed)
 
     Returns:
         List of default skill directory paths
     """
-    builtin_skills_dir = Path(__file__).parent / "builtin"
-    user_skills_dir = Path(".xagent/skills")
-    user_skills_dir.mkdir(parents=True, exist_ok=True)
+    builtin_skills_dir = SkillManager.get_builtin_root()
+    project_skills_dir = Path("skills")
+    user_skills_dir = get_storage_root() / "skills"
 
-    return [builtin_skills_dir, user_skills_dir]
+    return [builtin_skills_dir, project_skills_dir, user_skills_dir]
