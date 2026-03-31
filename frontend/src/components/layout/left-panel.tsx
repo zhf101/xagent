@@ -160,7 +160,7 @@ export function LeftPanel({ onSendMessage, onPauseTask, onResumeTask, messages, 
                     : message.isResult
                     ? "bg-green-500/20 border border-green-500/50 text-foreground backdrop-blur-sm"
                     : message.isFileOutput
-                    ? "bg-blue-500/20 border border-blue-500/50 text-foreground backdrop-blur-sm"
+                    ? "bg-primary/10 border border-primary/30 text-foreground backdrop-blur-sm"
                     : "bg-muted backdrop-blur-sm"
                 )}
               >
@@ -170,7 +170,7 @@ export function LeftPanel({ onSendMessage, onPauseTask, onResumeTask, messages, 
                   ) : message.isResult ? (
                     <CheckCircle className="h-3 w-3 text-green-400" />
                   ) : message.isFileOutput ? (
-                    <FileText className="h-3 w-3 text-blue-400" />
+                    <FileText className="h-3 w-3 text-primary" />
                   ) : (
                     <Bot className="h-3 w-3" />
                   )}
@@ -181,7 +181,7 @@ export function LeftPanel({ onSendMessage, onPauseTask, onResumeTask, messages, 
                     <span className="text-sm bg-green-500/20 text-green-600 dark:text-green-300 px-1.5 py-0.5 rounded">{t("agent.layout.left.messageTags.result")}</span>
                   )}
                   {message.isFileOutput && (
-                    <span className="text-sm bg-blue-500/20 text-blue-600 dark:text-blue-300 px-1.5 py-0.5 rounded">{t("agent.layout.left.messageTags.file")}</span>
+                    <span className="text-sm bg-primary/10 text-primary px-1.5 py-0.5 rounded">{t("agent.layout.left.messageTags.file")}</span>
                   )}
                   {message.status && (
                     <div className="h-2 w-2 rounded-full bg-current opacity-70" />

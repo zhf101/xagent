@@ -17,9 +17,9 @@ export const defaultBranding: BrandingConfig = {
   subtitle: 'Next generation agent operating system',
   description: 'AI-powered agent and workflow management system',
   tagline: 'AI agent and workflow automation platform',
-  gradientFrom: 'blue-400',
-  gradientVia: 'blue-500',
-  gradientTo: 'indigo-500',
+  gradientFrom: 'primary/90',
+  gradientVia: 'primary',
+  gradientTo: 'primary/80',
 }
 
 export function getBrandingFromEnv(): BrandingConfig {

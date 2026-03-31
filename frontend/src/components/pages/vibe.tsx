@@ -273,10 +273,10 @@ export function VibePage() {
               <div className="absolute inset-0 rounded-lg border border-transparent group-hover:border-primary/20 transition-all duration-300"></div>
 
               <div className="flex items-center mb-3 relative z-10">
-                <div className="p-2 rounded-lg bg-gray-500/10 mr-3 group-hover:scale-110 group-hover:rotate-6 transition-transform duration-300">
-                  <MoreHorizontal className="h-5 w-5 text-gray-400" />
+                <div className="p-2 rounded-lg bg-secondary mr-3 group-hover:scale-110 group-hover:rotate-6 transition-transform duration-300">
+                  <MoreHorizontal className="h-5 w-5 text-muted-foreground" />
                 </div>
-                <h3 className="font-semibold text-foreground group-hover:text-gray-400 transition-colors">{t('vibe.quick_examples.more.title')}</h3>
+                <h3 className="font-semibold text-foreground group-hover:text-muted-foreground transition-colors">{t('vibe.quick_examples.more.title')}</h3>
               </div>
               <p className="text-sm text-muted-foreground relative z-10 group-hover:text-foreground/80 transition-colors">{t('vibe.quick_examples.more.description')}</p>
             </Card>

@@ -109,7 +109,7 @@ export function DashboardPage() {
       case "completed":
         return <CheckCircle className="h-4 w-4 text-green-500" />
       case "running":
-        return <PlayCircle className="h-4 w-4 text-blue-500" />
+        return <PlayCircle className="h-4 w-4 text-primary" />
       case "failed":
         return <XCircle className="h-4 w-4 text-red-500" />
       default:
@@ -120,9 +120,9 @@ export function DashboardPage() {
   const getStatusBadge = (status: string) => {
     const variants = {
       completed: "bg-green-500/10 text-green-500",
-      running: "bg-blue-500/10 text-blue-500",
-      failed: "bg-red-500/10 text-red-500",
-      pending: "bg-gray-500/10 text-gray-500"
+      running: "bg-primary/10 text-primary",
+      failed: "bg-destructive/10 text-destructive",
+      pending: "bg-secondary text-muted-foreground"
     }
 
     return (
@@ -193,8 +193,8 @@ export function DashboardPage() {
       title: t("dashboard.stats.total_tasks"),
       value: isLoadingStats ? "..." : dashboardStats.totalTasks,
       icon: MessageSquare,
-      color: "text-blue-500",
-      bgColor: "bg-blue-500/10"
+      color: "text-primary",
+      bgColor: "bg-primary/10"
     },
     {
       title: t("dashboard.stats.active_agents"),
@@ -207,8 +207,8 @@ export function DashboardPage() {
       title: t("dashboard.stats.deployed_apps"),
       value: isLoadingStats ? "..." : dashboardStats.deployedApps,
       icon: Server,
-      color: "text-purple-500",
-      bgColor: "bg-purple-500/10"
+      color: "text-primary",
+      bgColor: "bg-primary/10"
     },
     {
       title: t("dashboard.stats.today_calls"),
@@ -226,7 +226,7 @@ export function DashboardPage() {
       description: t("dashboard.features.vibe.description"),
       icon: Wand2,
       href: "/agent",
-      color: "bg-purple-500/10 text-purple-500"
+      color: "bg-primary/10 text-primary"
     },
     {
       title: t("dashboard.features.build.title"),
@@ -247,7 +247,7 @@ export function DashboardPage() {
       description: t("dashboard.features.models.description"),
       icon: Cpu,
       href: "/models",
-      color: "bg-indigo-500/10 text-indigo-500"
+      color: "bg-primary/10 text-primary"
     },
     {
       title: t("dashboard.features.monitoring.title"),
@@ -261,17 +261,17 @@ export function DashboardPage() {
       description: t("dashboard.features.files.description"),
       icon: FileText,
       href: "/files",
-      color: "bg-blue-500/10 text-blue-500"
+      color: "bg-primary/10 text-primary"
     }
   ]
 
   return (
-    <div className="h-full overflow-auto bg-[#0E1117]">
+    <div className="h-full overflow-auto bg-background">
       <div className="p-8">
         {/* Header */}
         <div className="mb-8">
-          <h1 className="text-4xl font-bold text-[#E6EDF3] mb-2">{branding.appName}</h1>
-          <p className="text-lg text-[#8B949E]">{process.env.NEXT_PUBLIC_APP_SUBTITLE ? branding.subtitle : t('branding.subtitle')}</p>
+          <h1 className="text-4xl font-bold text-foreground mb-2">{branding.appName}</h1>
+          <p className="text-lg text-muted-foreground">{process.env.NEXT_PUBLIC_APP_SUBTITLE ? branding.subtitle : t('branding.subtitle')}</p>
         </div>
 
         {/* Statistics cards */}
@@ -279,9 +279,8 @@ export function DashboardPage() {
           {stats.map((stat, index) => {
             // Define different gradient backgrounds for each statistic card
             const getStatGradient = () => {
-              if (stat.color.includes("blue")) return "from-blue-500/10 via-blue-600/5 to-transparent";
+              if (stat.color.includes("primary")) return "from-primary/12 via-primary/6 to-transparent";
               if (stat.color.includes("green")) return "from-green-500/10 via-green-600/5 to-transparent";
-              if (stat.color.includes("purple")) return "from-purple-500/10 via-purple-600/5 to-transparent";
               if (stat.color.includes("orange")) return "from-orange-500/10 via-orange-600/5 to-transparent";
               return "from-primary/10 via-primary/5 to-transparent";
             };
@@ -314,23 +313,21 @@ export function DashboardPage() {
             {mainFeatures.map((feature, index) => {
               // Determine hover text color based on color
               const getHoverColor = () => {
-                if (feature.color.includes("purple")) return "group-hover:text-purple-400";
+                if (feature.color.includes("primary")) return "group-hover:text-primary";
                 if (feature.color.includes("yellow")) return "group-hover:text-yellow-400";
-                if (feature.color.includes("indigo")) return "group-hover:text-indigo-400";
                 if (feature.color.includes("green")) return "group-hover:text-green-400";
                 if (feature.color.includes("orange")) return "group-hover:text-orange-400";
                 if (feature.color.includes("gray")) return "group-hover:text-gray-400";
-                return "group-hover:text-blue-400";
+                return "group-hover:text-primary";
               };
 
               // Define different gradient backgrounds for each feature card
               const getFeatureGradient = () => {
-                if (feature.color.includes("purple")) return "from-purple-500/15 via-purple-600/8 to-indigo-500/5";
+                if (feature.color.includes("primary")) return "from-primary/15 via-primary/8 to-rose-500/5";
                 if (feature.color.includes("yellow")) return "from-yellow-500/15 via-amber-600/8 to-orange-500/5";
-                if (feature.color.includes("indigo")) return "from-indigo-500/15 via-blue-600/8 to-cyan-500/5";
                 if (feature.color.includes("green")) return "from-green-500/15 via-emerald-600/8 to-teal-500/5";
                 if (feature.color.includes("orange")) return "from-orange-500/15 via-red-600/8 to-rose-500/5";
-                return "from-blue-500/15 via-cyan-600/8 to-sky-500/5";
+                return "from-primary/15 via-primary/8 to-rose-500/5";
               };
 
               return (
@@ -417,12 +414,12 @@ export function DashboardPage() {
                         <div className="flex items-center space-x-2">
                           {/* Vibe Mode Badge */}
                           {task.vibe_mode === 'process' ? (
-                            <Badge variant="outline" className="text-xs bg-purple-500/10 text-purple-400 border-purple-500/30">
+                            <Badge variant="outline" className="text-xs bg-primary/10 text-primary border-primary/30">
                               <Workflow className="h-3 w-3 mr-1" />
                               {t('vibe.list.mode.process')}
                             </Badge>
                           ) : (
-                            <Badge variant="outline" className="text-xs bg-blue-500/10 text-blue-400 border-blue-500/30">
+                            <Badge variant="outline" className="text-xs bg-primary/10 text-primary border-primary/30">
                               <Target className="h-3 w-3 mr-1" />
                               {t('vibe.list.mode.task')}
                             </Badge>

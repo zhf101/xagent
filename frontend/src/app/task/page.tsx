@@ -32,16 +32,16 @@ function TaskHomePageContent() {
       title: t("chatPage.cards.dataAnalysis.title"),
       description: t("chatPage.cards.dataAnalysis.description"),
       prompt: t("chatPage.cards.dataAnalysis.prompt"),
-      color: "text-blue-400",
-      bg: "bg-blue-400/10"
+      color: "text-primary",
+      bg: "bg-primary/10"
     },
     {
       icon: ImageIcon,
       title: t("chatPage.cards.designPoster.title"),
       description: t("chatPage.cards.designPoster.description"),
       prompt: t("chatPage.cards.designPoster.prompt"),
-      color: "text-purple-400",
-      bg: "bg-purple-400/10"
+      color: "text-primary",
+      bg: "bg-primary/10"
     },
     {
       icon: Zap,

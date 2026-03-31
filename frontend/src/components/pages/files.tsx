@@ -260,7 +260,7 @@ export function FilesPage() {
     if (['zip', 'rar', '7z', 'tar', 'gz'].includes(ext)) {
       return <Archive className="h-4 w-4 text-yellow-500" />
     }
-    return <FileText className="h-4 w-4 text-slate-500" />
+    return <FileText className="h-4 w-4 text-muted-foreground" />
   }
 
   const filteredFiles = files.filter(file => {

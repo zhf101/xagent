@@ -114,7 +114,7 @@ const ErrorState = () => {
               <span>{t("agent.layout.center.errors.checkLeft")}</span>
             </div>
             <div className="flex items-center space-x-2">
-              <RefreshCw className="h-4 w-4 text-blue-400" />
+              <RefreshCw className="h-4 w-4 text-primary" />
               <span>{t("agent.layout.center.errors.retryTask")}</span>
             </div>
           </div>
@@ -129,8 +129,8 @@ const PlanningLoadingState = () => {
   const { t } = useI18n();
   const [currentStep, setCurrentStep] = useState(0)
   const steps = [
-    { icon: Brain, text: t("agent.layout.center.planning.steps.analyze"), color: "text-blue-400" },
-    { icon: Network, text: t("agent.layout.center.planning.steps.buildGraph"), color: "text-purple-400" },
+    { icon: Brain, text: t("agent.layout.center.planning.steps.analyze"), color: "text-primary" },
+    { icon: Network, text: t("agent.layout.center.planning.steps.buildGraph"), color: "text-primary" },
     { icon: Sparkles, text: t("agent.layout.center.planning.steps.optimizePath"), color: "text-yellow-400" },
   ]
 
@@ -153,8 +153,8 @@ const PlanningLoadingState = () => {
       {/* Background decorations */}
       <div className="absolute inset-0 overflow-hidden pointer-events-none">
         <div className="absolute top-10 left-10 w-32 h-32 bg-primary/10 rounded-full blur-3xl animate-pulse"></div>
-        <div className="absolute bottom-10 right-10 w-40 h-40 bg-purple-500/10 rounded-full blur-3xl animate-pulse delay-1000"></div>
-        <div className="absolute top-1/2 left-1/4 w-24 h-24 bg-blue-500/10 rounded-full blur-2xl animate-pulse delay-500"></div>
+        <div className="absolute bottom-10 right-10 w-40 h-40 bg-primary/8 rounded-full blur-3xl animate-pulse delay-1000"></div>
+        <div className="absolute top-1/2 left-1/4 w-24 h-24 bg-primary/12 rounded-full blur-2xl animate-pulse delay-500"></div>
       </div>
 
       {/* Main content */}
@@ -240,7 +240,7 @@ const PlanningLoadingState = () => {
           {/* Progress bar */}
           <div className="w-full bg-muted rounded-full h-2 overflow-hidden">
             <div
-              className="h-full bg-gradient-to-r from-primary to-purple-500 rounded-full transition-all duration-1000 ease-out"
+              className="h-full bg-gradient-to-r from-primary to-primary/70 rounded-full transition-all duration-1000 ease-out"
               style={{
                 width: `${((currentStep + 1) / steps.length) * 100}%`,
               }}
@@ -272,7 +272,7 @@ const nodeTypes: NodeTypes = {
       running: "",
       completed: "",
       failed: "",
-      skipped: "border-dashed border-gray-500/50 opacity-60 bg-gray-500/5",
+      skipped: "border-dashed border-muted-foreground/50 opacity-60 bg-secondary/50",
     }
 
     const statusBadges = {
@@ -327,7 +327,7 @@ const nodeTypes: NodeTypes = {
             hasTarget ? "opacity-100" : "opacity-0"
           )}
           style={{
-            background: '#3b82f6',
+            background: 'hsl(var(--primary))',
             width: 12,
             height: 6,
             borderRadius: 3,
@@ -347,9 +347,9 @@ const nodeTypes: NodeTypes = {
               <div className={cn(
                 "w-8 h-8 rounded-lg flex items-center justify-center shrink-0",
                 data.status === 'completed' ? 'bg-green-500/10 text-green-600' :
-                data.status === 'running' ? 'bg-blue-500/10 text-blue-600' :
+                data.status === 'running' ? 'bg-primary/10 text-primary' :
                 data.status === 'failed' ? 'bg-red-500/10 text-red-600' :
-                data.status === 'skipped' ? 'bg-gray-500/10 text-gray-500' :
+                data.status === 'skipped' ? 'bg-secondary text-muted-foreground' :
                 'bg-primary/10 text-primary'
               )}>
                 {data.status === 'completed' ? <CheckCircle2 className="w-4 h-4" /> :
@@ -384,9 +384,9 @@ const nodeTypes: NodeTypes = {
 
           {/* Required Branch */}
           {data.required_branch && (
-            <div className="bg-blue-500/5 rounded-lg px-3 py-2 border border-blue-500/10">
-              <div className="text-[10px] font-semibold text-blue-500/70 uppercase tracking-wider mb-0.5">{t("agent.layout.center.labels.requiredBranch")}</div>
-              <div className="text-xs font-medium text-blue-600 dark:text-blue-400">{data.required_branch}</div>
+            <div className="bg-primary/5 rounded-lg px-3 py-2 border border-primary/15">
+              <div className="text-[10px] font-semibold text-primary/70 uppercase tracking-wider mb-0.5">{t("agent.layout.center.labels.requiredBranch")}</div>
+              <div className="text-xs font-medium text-primary">{data.required_branch}</div>
             </div>
           )}
 
@@ -414,7 +414,7 @@ const nodeTypes: NodeTypes = {
             hasSource ? "opacity-100" : "opacity-0"
           )}
           style={{
-            background: '#3b82f6',
+            background: 'hsl(var(--primary))',
             width: 12,
             height: 6,
             borderRadius: 3,
@@ -661,10 +661,10 @@ function CenterPanelInner({
 
               {/* Conditional Branch Indicator */}
               {selectedNode.data.is_conditional && selectedNode.data.conditional_branches && Object.keys(selectedNode.data.conditional_branches).length > 0 && (
-                <div className="flex items-start gap-2 p-2 bg-purple-500/10 border border-purple-500/20 rounded">
-                  <GitBranch className="h-4 w-4 text-purple-400 mt-0.5 flex-shrink-0" />
+                <div className="flex items-start gap-2 p-2 bg-primary/10 border border-primary/20 rounded">
+                  <GitBranch className="h-4 w-4 text-primary mt-0.5 flex-shrink-0" />
                   <div className="flex-1">
-                    <div className="text-sm font-medium text-purple-400 mb-1">{t("agent.layout.center.labels.conditionalBranchNode")}</div>
+                    <div className="text-sm font-medium text-primary mb-1">{t("agent.layout.center.labels.conditionalBranchNode")}</div>
                     <div className="text-xs text-muted-foreground">
                       {t("agent.layout.center.labels.optionalBranches")}{": "}{Object.keys(selectedNode.data.conditional_branches).join(", ")}
                     </div>
@@ -674,12 +674,12 @@ function CenterPanelInner({
 
               {/* Required Branch Indicator */}
               {selectedNode.data.required_branch && (
-                <div className="flex items-start gap-2 p-2 bg-blue-500/10 border border-blue-500/20 rounded">
-                  <GitBranch className="h-4 w-4 text-blue-400 mt-0.5 flex-shrink-0" />
+                <div className="flex items-start gap-2 p-2 bg-primary/10 border border-primary/20 rounded">
+                  <GitBranch className="h-4 w-4 text-primary mt-0.5 flex-shrink-0" />
                   <div className="flex-1">
-                    <div className="text-sm font-medium text-blue-400 mb-1">{t("agent.layout.center.labels.branchCondition")}</div>
+                    <div className="text-sm font-medium text-primary mb-1">{t("agent.layout.center.labels.branchCondition")}</div>
                     <div className="text-xs text-muted-foreground">
-                      {t("agent.layout.center.labels.requiredBranch")} <code className="bg-blue-500/20 px-1 py-0.5 rounded">{selectedNode.data.required_branch}</code>
+                      {t("agent.layout.center.labels.requiredBranch")} <code className="bg-primary/15 px-1 py-0.5 rounded">{selectedNode.data.required_branch}</code>
                     </div>
                   </div>
                 </div>

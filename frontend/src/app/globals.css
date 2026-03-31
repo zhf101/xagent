@@ -3,29 +3,87 @@
 @tailwind components;
 @tailwind utilities;
 
-/* XAgent Theme System - Supports dynamic theme switching */
+/* 
+ * XAgent Theme System - 红白简洁风格
+ * 主色：#d33b32 (红色)
+ * 背景：纯白
+ * 设计理念：简洁、专业、现代 - 灰色慎用
+ */
 :root {
-  /* Default dark theme colors - Maintains backward compatibility */
-  --background: 222.2 84% 4.9%;
-  --foreground: 210 40% 98%;
-  --card: 222.2 84% 4.9%;
-  --card-foreground: 210 40% 98%;
-  --popover: 222.2 84% 4.9%;
-  --popover-foreground: 210 40% 98%;
-  --primary: 217.2 91.2% 59.8%;
-  --primary-foreground: 222.2 84% 4.9%;
-  --secondary: 217.2 32.6% 17.5%;
-  --secondary-foreground: 210 40% 98%;
-  --muted: 217.2 32.6% 17.5%;
-  --muted-foreground: 215 20.2% 65.1%;
-  --accent: 217.2 32.6% 17.5%;
-  --accent-foreground: 210 40% 98%;
-  --destructive: 0 84.2% 60.2%;
-  --destructive-foreground: 210 40% 98%;
-  --border: 217.2 32.6% 17.5%;
-  --input: 217.2 32.6% 17.5%;
-  --ring: 224.3 76.3% 94.1%;
-  --radius: 0.5rem;
+  /* ======== 基于深红主色（#d33b32）核心体系 ======== */
+  /* 主品牌红 */
+  --primary: 3.4 64.7% 51.2%;           /* #d33b32 */
+  --primary-hover: 3.8 76% 59.2%;       /* #e65248 */
+  --primary-foreground: 0 0% 100%;      /* 纯白文字 */
+  
+  /* 链接颜色 */
+  --link: 3.4 64.7% 51.2%;              /* #d33b32 */
+  --link-hover: 3.8 76% 59.2%;          /* #e65248 */
+  --link-active: 3.4 64.7% 40%;         /* 加深点击态 */
+  
+  /* 护眼大背景与中性灰阶 */
+  --background: 0 33.3% 98.8%;          /* #fdfbfb 主背景-暖白 */
+  --foreground: 0 2.0% 19.6%;           /* #333131 深灰-正文内容 */
+  --card: 0 9.1% 95.7%;                 /* #f5f3f3 次背景-浅灰 (卡片底色) */
+  --card-foreground: 0 2.0% 19.6%;      /* #333131 */
+  --popover: 0 33.3% 98.8%;             /* #fdfbfb 弹框用主白 */
+  --popover-foreground: 0 2.0% 19.6%;
+  
+  --secondary: 0 9.1% 95.7%;            /* #f5f3f3 次要操作/浅色块 */
+  --secondary-foreground: 0 1.4% 59.4%; /* #999696 中灰-次要说明 */
+  
+  --muted: 0 9.1% 95.7%;                /* 禁用底层 / 静默背景 */
+  --muted-foreground: 0 1.4% 59.4%;     /* #999696 */
+  
+  --accent: 0 9.1% 95.7%;               /* Hover底色 */
+  --accent-foreground: 0 2.0% 19.6%;    /* Hover文字 */
+  
+  /* 灾难性防错与警示 - 真警示红 */
+  --destructive: 6 81.3% 58%;           /* #eb4e3d */
+  --destructive-foreground: 0 0% 100%;
+  
+  /* 边框与输入框环 */
+  --border: 0 4.3% 91%;                 /* #e9e7e7 浅灰-分隔线 */
+  --input: 0 4.3% 91%;                  /* 统一边框颜色 */
+  --ring: 206 17% 57%;                  /* #8294a2 冷灰蓝-焦点环原始色 */
+  
+  /* 增补状态与辅助色 (DataViz & States) */
+  --color-info: 206 17% 57%;            /* #8294a2 冷灰蓝 */
+  --color-warning: 37 54% 53%;          /* #c99746 琥珀 */
+  --color-success: 164 20% 52%;         /* #6a9e90 青绿 */
+  
+  --radius: 0.375rem;             /* 6px */
+  
+  /* 空间与层级发光阴影 (采用带色彩倾向的阴影) */
+  --shadow-sm: 0 4px 12px rgba(211, 59, 50, 0.04);
+  --shadow-md: 0 8px 16px rgba(51, 49, 49, 0.06);
+  --shadow-lg: 0 8px 24px rgba(51, 49, 49, 0.08); /* 弹窗级阴影 */
+}
+
+/* 暗色主题 - 保持主色不变，调整背景和文字 */
+.dark {
+  --primary: 3 70% 52%;
+  --primary-foreground: 0 0% 100%;
+  --link: 3 70% 52%;
+  --link-hover: 3 75% 61%;
+  --link-active: 3 62% 39%;
+  --background: 220 15% 10%;      /* 深灰背景 */
+  --foreground: 220 10% 92%;      /* 浅色文字 */
+  --card: 220 15% 14%;            /* 略浅的卡片背景 */
+  --card-foreground: 220 10% 92%;
+  --popover: 220 15% 14%;
+  --popover-foreground: 220 10% 92%;
+  --secondary: 220 15% 25%;
+  --secondary-foreground: 220 10% 92%;
+  --muted: 220 15% 18%;
+  --muted-foreground: 220 10% 60%;
+  --accent: 220 15% 18%;
+  --accent-foreground: 220 10% 92%;
+  --destructive: 0 84% 60%;
+  --destructive-foreground: 0 0% 98%;
+  --border: 220 15% 20%;
+  --input: 220 15% 20%;
+  --ring: 3 70% 52%;
 }
 
 @layer base {
@@ -35,6 +93,31 @@
 
   body {
     @apply bg-background text-foreground;
+  }
+
+  /* 自定义滚动条样式 - 豆包风格 */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  
+  ::-webkit-scrollbar-thumb {
+    background: hsl(var(--muted-foreground) / 0.2);
+    border-radius: 3px;
+  }
+  
+  ::-webkit-scrollbar-thumb:hover {
+    background: hsl(var(--muted-foreground) / 0.4);
+  }
+  
+  /* Firefox 滚动条 */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--muted-foreground) / 0.2) transparent;
   }
 }
 
@@ -636,18 +719,78 @@ button[data-radix-collection-item] {
 
 /* File link styles for markdown renderer */
 .prose .file-link {
-  color: #3b82f6;
+  color: hsl(var(--primary));
   text-decoration: none;
-  border-bottom: 1px dashed #3b82f6;
+  border-bottom: 1px dashed hsl(var(--primary));
   cursor: pointer;
   transition: all 0.2s ease;
 }
 
 .prose .file-link:hover {
-  color: #60a5fa;
+  color: hsl(var(--link-hover));
   border-bottom-style: solid;
 }
 
 .prose .file-link:active {
-  color: #2563eb;
+  color: hsl(var(--link-active));
+}
+
+/* Legacy accent migration: remap residual blue/purple utilities to the red theme */
+body .text-blue-400,
+body .text-blue-500,
+body .text-blue-600,
+body .text-blue-700,
+body .text-purple-400,
+body .text-purple-500,
+body .text-purple-600,
+body .text-indigo-500,
+body .text-cyan-500,
+body .text-sky-500 {
+  color: hsl(var(--primary)) !important;
+}
+
+body .bg-blue-50,
+body .bg-blue-100,
+body .bg-blue-400\/10,
+body .bg-blue-500\/5,
+body .bg-blue-500\/10,
+body .bg-blue-500\/20,
+body .bg-purple-50,
+body .bg-purple-100,
+body .bg-purple-400\/10,
+body .bg-purple-500\/10,
+body .bg-purple-500\/20,
+body .bg-indigo-500\/10,
+body .bg-cyan-500\/10,
+body .bg-sky-500\/10 {
+  background-color: hsl(var(--primary) / 0.1) !important;
+}
+
+body .border-blue-400,
+body .border-blue-500,
+body .border-blue-500\/10,
+body .border-blue-500\/20,
+body .border-blue-500\/30,
+body .border-blue-500\/50,
+body .border-purple-500\/10,
+body .border-purple-500\/20,
+body .border-purple-500\/30,
+body .border-indigo-500\/20 {
+  border-color: hsl(var(--primary) / 0.25) !important;
+}
+
+body .bg-blue-600,
+body .bg-blue-500,
+body .bg-purple-500,
+body .bg-indigo-500 {
+  background-color: hsl(var(--primary)) !important;
+}
+
+body .hover\:bg-blue-700:hover,
+body .hover\:bg-blue-600:hover,
+body .hover\:bg-blue-200:hover,
+body .hover\:bg-purple-500\/20:hover,
+body .hover\:border-blue-400:hover {
+  background-color: hsl(var(--link-active)) !important;
+  border-color: hsl(var(--link-active)) !important;
 }

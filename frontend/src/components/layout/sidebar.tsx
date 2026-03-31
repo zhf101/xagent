@@ -1013,7 +1013,7 @@ export function Sidebar({ className }: SidebarProps) {
                         ? "bg-green-500"
                         : versionInfo?.is_latest === false
                           ? "bg-yellow-400"
-                          : "bg-gray-400"
+                          : "bg-muted-foreground"
                     )}
                     title={
                       versionInfo?.is_latest === true

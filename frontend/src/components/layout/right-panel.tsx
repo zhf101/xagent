@@ -307,10 +307,10 @@ function StepSummary({ step }: { step: StepExecution }) {
 
       {/* Conditional Branch Indicator */}
       {step.is_conditional && step.conditional_branches && Object.keys(step.conditional_branches).length > 0 && (
-        <div className="flex items-start gap-2 p-2 bg-purple-500/10 border border-purple-500/20 rounded">
-          <GitBranch className="h-4 w-4 text-purple-400 mt-0.5 flex-shrink-0" />
+        <div className="flex items-start gap-2 p-2 bg-primary/10 border border-primary/20 rounded">
+          <GitBranch className="h-4 w-4 text-primary mt-0.5 flex-shrink-0" />
           <div className="flex-1">
-            <div className="text-sm font-medium text-purple-400 mb-1">{t("agent.layout.right.branch.conditionalNode")}</div>
+            <div className="text-sm font-medium text-primary mb-1">{t("agent.layout.right.branch.conditionalNode")}</div>
             <div className="text-xs text-muted-foreground">
               {t("agent.layout.right.branch.optionalBranches")}: {Object.keys(step.conditional_branches).join(", ")}
             </div>
@@ -320,12 +320,12 @@ function StepSummary({ step }: { step: StepExecution }) {
 
       {/* Required Branch Indicator */}
       {step.required_branch && (
-        <div className="flex items-start gap-2 p-2 bg-blue-500/10 border border-blue-500/20 rounded">
-          <GitBranch className="h-4 w-4 text-blue-400 mt-0.5 flex-shrink-0" />
+        <div className="flex items-start gap-2 p-2 bg-primary/10 border border-primary/20 rounded">
+          <GitBranch className="h-4 w-4 text-primary mt-0.5 flex-shrink-0" />
           <div className="flex-1">
-            <div className="text-sm font-medium text-blue-400 mb-1">{t("agent.layout.right.branch.branchCondition")}</div>
+            <div className="text-sm font-medium text-primary mb-1">{t("agent.layout.right.branch.branchCondition")}</div>
             <div className="text-xs text-muted-foreground">
-              {t("agent.layout.right.branch.requiredBranch")}: <code className="bg-blue-500/20 px-1 py-0.5 rounded">{step.required_branch}</code>
+              {t("agent.layout.right.branch.requiredBranch")}: <code className="bg-primary/15 px-1 py-0.5 rounded">{step.required_branch}</code>
             </div>
           </div>
         </div>
