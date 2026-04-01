@@ -21,6 +21,7 @@ from ..contracts.constants import (
     RUNTIME_STATUS_SUCCESS,
 )
 from ..contracts.runtime import CompiledExecutionContract
+from .http_resource_definition import parse_http_resource_metadata
 
 
 class NormalizedExecutionOutcome(BaseModel):
@@ -156,14 +157,20 @@ class StructuredHttpResultNormalizer:
         result_contract: dict[str, Any],
     ) -> NormalizedExecutionOutcome:
         payload = self._coerce_mapping(raw_result)
+
+        http_metadata = self._resolve_http_metadata(contract)
+        response_policy = dict(http_metadata.get("response_policy", {}))
+        extraction_rules = list(http_metadata.get("extraction_rules", []))
+        payload_body = self._resolve_body_payload(payload)
+
         http_status = self._extract_http_status(payload, result_contract)
-        protocol_status = self._resolve_protocol_status(http_status, result_contract)
-        business_status = self._resolve_business_status(payload, result_contract)
-        error = self._extract_error(payload, result_contract)
+        protocol_status = self._resolve_protocol_status(http_status, result_contract, response_policy)
+        error = self._extract_error(payload, payload_body, result_contract, response_policy)
+        business_status = self._resolve_business_status(payload_body, result_contract, response_policy)
         overall_status = self._resolve_overall_status(protocol_status, business_status)
 
         mode_label = "探测执行" if contract.mode == EXECUTION_MODE_PROBE else "正式执行"
-        summary = self._build_summary(
+        summary = self._extract_summary_from_payload(payload) or self._build_summary(
             mode_label=mode_label,
             overall_status=overall_status,
             protocol_status=protocol_status,
@@ -171,6 +178,8 @@ class StructuredHttpResultNormalizer:
             http_status=http_status,
             error=error,
         )
+
+        extracted_data = self._apply_extraction_rules(payload, payload_body, extraction_rules)
 
         return NormalizedExecutionOutcome(
             status=overall_status,
@@ -183,6 +192,7 @@ class StructuredHttpResultNormalizer:
                 "business_status": business_status,
                 "http_status": http_status,
                 "business_error": error,
+                "extracted_data": extracted_data,
                 "result_contract": dict(result_contract),
             },
         )
@@ -248,19 +258,70 @@ class StructuredHttpResultNormalizer:
                 return int(value)
         return None
 
+    def _resolve_http_metadata(self, contract: CompiledExecutionContract) -> dict[str, Any]:
+        """
+        统一提取 HTTP 协议元数据。
+        """
+
+        top_level_strategy = contract.metadata.get("http_response_success_policy")
+        top_level_rules = contract.metadata.get("http_response_extraction_rules")
+        if isinstance(top_level_strategy, dict) or isinstance(top_level_rules, list):
+            return {
+                "response_policy": dict(top_level_strategy) if isinstance(top_level_strategy, dict) else {},
+                "extraction_rules": list(top_level_rules) if isinstance(top_level_rules, list) else [],
+            }
+
+        resource_metadata = contract.metadata.get("resource_metadata")
+        if isinstance(resource_metadata, dict):
+            parsed = parse_http_resource_metadata(resource_metadata)
+            return {
+                "response_policy": parsed.response_success_policy.to_metadata_dict(),
+                "extraction_rules": [
+                    rule.to_metadata_dict()
+                    for rule in parsed.response_extraction_rules
+                ],
+            }
+        return {"response_policy": {}, "extraction_rules": []}
+
+    def _resolve_body_payload(self, payload: dict[str, Any] | None) -> dict[str, Any] | None:
+        """把工具包装层和业务响应体分开，业务判断只针对响应体本身。"""
+
+        if payload is None:
+            return None
+        body = payload.get("body")
+        if isinstance(body, dict):
+            return body
+        if isinstance(payload, dict):
+            return payload
+        return None
+
+    def _extract_summary_from_payload(self, payload: dict[str, Any] | None) -> str | None:
+        """若 Adapter 已经按模板渲染好摘要，则直接复用。"""
+
+        if not isinstance(payload, dict):
+            return None
+        summary = payload.get("_http_summary")
+        if isinstance(summary, str) and summary.strip():
+            return summary.strip()
+        return None
+
     def _resolve_protocol_status(
         self,
         http_status: int | None,
         result_contract: dict[str, Any],
+        response_policy: dict[str, Any] = None,
     ) -> str:
         """
         判断 HTTP 协议层是否成功。
-        """
 
+        优先使用新协议中的 `success_status_codes`；
+        若资源动作显式在 `result_contract` 里覆写，则以覆写值为准。
+        """
         if http_status is None:
             return "unknown"
 
-        configured_statuses = result_contract.get("success_http_statuses")
+        response_policy = response_policy or {}
+        configured_statuses = response_policy.get("success_status_codes") or result_contract.get("success_http_statuses")
         if isinstance(configured_statuses, list) and configured_statuses:
             return "success" if http_status in configured_statuses else "failed"
 
@@ -270,16 +331,29 @@ class StructuredHttpResultNormalizer:
         self,
         payload: dict[str, Any] | None,
         result_contract: dict[str, Any],
+        response_policy: dict[str, Any] = None,
     ) -> str:
         """
         判断业务层是否成功。
 
-        若资源动作没有声明业务成功字段，则保留为 unknown，
-        由上游知道这里只能确认“协议层成功”，不能确认业务目标已达成。
+        优先使用新协议里的业务成功路径；
+        若协议没有声明，再退回 `result_contract` 的轻量字段约定。
         """
-
         if payload is None:
             return "unknown"
+
+        response_policy = response_policy or {}
+        json_path = response_policy.get("business_success_path")
+        expectation = response_policy.get("business_success_expectation")
+        if json_path:
+            val = self._simple_json_path_get(payload, json_path)
+            if expectation is not None:
+                if val == expectation:
+                    return "success"
+                return "failed"
+            if val is True or val == "success" or val == 0 or val == "0" or str(val).lower() == "true":
+                return "success"
+            return "failed"
 
         field_name = str(result_contract.get("business_success_field", "success")).strip()
         if not field_name or field_name not in payload:
@@ -295,19 +369,71 @@ class StructuredHttpResultNormalizer:
     def _extract_error(
         self,
         payload: dict[str, Any] | None,
+        payload_body: dict[str, Any] | None,
         result_contract: dict[str, Any],
+        response_policy: dict[str, Any] = None,
     ) -> str | None:
         """
         尝试从原始返回里提取业务错误字段。
         """
-
         if payload is None:
             return None
 
+        response_policy = response_policy or {}
+        top_level_error_summary = payload.get("_http_error_summary") if isinstance(payload, dict) else None
+        if isinstance(top_level_error_summary, str) and top_level_error_summary.strip():
+            return top_level_error_summary.strip()
+
+        json_path = response_policy.get("business_error_message_path")
+        if json_path:
+            val = self._simple_json_path_get(payload_body, json_path) if payload_body is not None else None
+            if val is not None:
+                return str(val)
+
         field_name = str(result_contract.get("business_error_field", "error")).strip()
-        if field_name and field_name in payload and payload.get(field_name) not in (None, ""):
-            return str(payload.get(field_name))
+        if payload_body is not None and field_name and field_name in payload_body and payload_body.get(field_name) not in (None, ""):
+            return str(payload_body.get(field_name))
         return None
+
+    def _apply_extraction_rules(
+        self,
+        payload: dict[str, Any] | None,
+        payload_body: dict[str, Any] | None,
+        extraction_rules: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """按 extraction_rules 从报文提取关键资产"""
+        if payload is None:
+            return {}
+        pre_extracted = payload.get("_http_extracted") if isinstance(payload, dict) else None
+        if isinstance(pre_extracted, dict):
+            return dict(pre_extracted)
+        if not extraction_rules:
+            return {}
+
+        extracted = {}
+        for rule in extraction_rules:
+            key = rule.get("key")
+            path = rule.get("path")
+            if key and path:
+                val = self._simple_json_path_get(payload_body, path) if payload_body is not None else None
+                if val is not None:
+                    extracted[key] = val
+        return extracted
+
+    def _simple_json_path_get(self, payload: dict[str, Any] | None, path: str) -> Any:
+        """简易的 JsonPath，解析 $.a.b 或 a.b 形式。"""
+        if payload is None:
+            return None
+        parts = path.lstrip("$.").split(".")
+        current = payload
+        for p in parts:
+            if not p:
+                continue
+            if isinstance(current, dict) and p in current:
+                current = current[p]
+            else:
+                return None
+        return current
 
     def _resolve_overall_status(
         self,

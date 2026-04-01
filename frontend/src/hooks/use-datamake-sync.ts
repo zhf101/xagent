@@ -31,7 +31,34 @@ function normalizeDataMakeStatus(status: unknown): DataMakeStatus {
   ) {
     return status
   }
-  return "completed"
+  return "error"
+}
+
+async function parseDataMakeResponse(res: Response) {
+  let data: any = null
+
+  try {
+    data = await res.json()
+  } catch {
+    data = null
+  }
+
+  if (!res.ok) {
+    const detail =
+      typeof data?.detail === "string"
+        ? data.detail
+        : `HTTP ${res.status}`
+    throw new Error(detail)
+  }
+
+  return data
+}
+
+function extractErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message) {
+    return error.message
+  }
+  return "造数任务执行失败，请稍后重试。"
 }
 
 export function useDataMakeSync(initialTaskId?: number) {
@@ -56,7 +83,7 @@ export function useDataMakeSync(initialTaskId?: number) {
           input 
         })
       })
-      const data = await res.json()
+      const data = await parseDataMakeResponse(res)
       
       const status = normalizeDataMakeStatus(data.result?.status)
       setState(s => ({
@@ -76,7 +103,11 @@ export function useDataMakeSync(initialTaskId?: number) {
 
     } catch (error) {
       console.error(error)
-      setState(s => ({ ...s, status: "failed" }))
+      setState(s => ({
+        ...s,
+        status: "failed",
+        question: extractErrorMessage(error),
+      }))
     }
   }, [state.taskId])
 
@@ -98,7 +129,7 @@ export function useDataMakeSync(initialTaskId?: number) {
           reply
         })
       })
-      const data = await res.json()
+      const data = await parseDataMakeResponse(res)
       
       const status = normalizeDataMakeStatus(data.result?.status)
       setState(s => ({
@@ -117,7 +148,11 @@ export function useDataMakeSync(initialTaskId?: number) {
 
     } catch (error) {
       console.error(error)
-      setState(s => ({ ...s, status: "failed" }))
+      setState(s => ({
+        ...s,
+        status: "failed",
+        question: extractErrorMessage(error),
+      }))
     }
   }, [state])
 

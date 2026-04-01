@@ -10,3 +10,9 @@
 - `Projection`（投影）是为了查询方便而生成的派生视图。
 - `Replay`（回放）和 `Snapshot`（快照）是为恢复与调试服务。
 """
+
+from .http_trace_builder import HttpExecutionTraceBuilder
+
+__all__ = [
+    "HttpExecutionTraceBuilder",
+]

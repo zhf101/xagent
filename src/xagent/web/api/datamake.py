@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from ..auth_dependencies import get_current_user
 from ..models.database import get_db, get_session_local
 from ..models.task import Task, TaskStatus, TraceEvent
+from ..models.text2sql import Text2SQLDatabase
 from ..models.user import User
 from ..dynamic_memory_store import get_memory_store
 from ..services.llm_utils import resolve_llms_from_names
@@ -18,6 +19,10 @@ from ...core.agent.trace import Tracer
 from ...core.datamake.ledger.sql_models import DataMakeFlowDraft
 from ...core.datamake.ledger.persistent_repository import PersistentLedgerRepository
 from ...core.datamake.resources.catalog import ResourceCatalog
+from ...core.datamake.resources.sql_resource_definition import (
+    SqlResourceMetadata,
+    build_sql_resource_action_payload,
+)
 from .trace_handlers import DatabaseTraceHandler
 from .ws_trace_handlers import WebSocketTraceHandler
 
@@ -160,6 +165,184 @@ def _build_recent_error_item(event: TraceEvent) -> dict[str, Any]:
         "transient": transient,
     }
 
+
+def _resolve_datamake_task_prompt(task: Task, user_input: str) -> str:
+    """
+    统一解析本轮 datamake 运行真正要沿用的任务描述。
+
+    这里刻意把“当前输入”和“原始任务描述”分开处理：
+    - 新建任务 / 显式继续提新需求时，优先使用本次 `user_input`
+    - `/interact` 恢复执行时，HTTP 层通常只携带补充字段，不会再带原始需求；
+      这时必须回退到 `task.description`，否则 recall / 决策会丢失主任务目标
+    """
+
+    normalized_input = str(user_input or "").strip()
+    if normalized_input:
+        return normalized_input
+
+    original_description = str(task.description or "").strip()
+    if original_description:
+        return original_description
+
+    raise HTTPException(status_code=400, detail="造数任务缺少原始任务描述，无法恢复执行")
+
+
+def _serialize_task_status(status: Any) -> str:
+    """
+    把 SQLAlchemy 任务状态统一收敛成前端约定的字面值。
+
+    FastAPI 直接对 `Enum` 做 `str()` 会得到 `TaskStatus.RUNNING` 这类调试串，
+    但 datamake 前端轮询与展示都依赖 `"running" / "completed"` 这类稳定字面值。
+    """
+
+    if isinstance(status, TaskStatus):
+        return status.value
+    if isinstance(status, str):
+        return status
+    return "unknown"
+
+
+def _coerce_optional_int(value: Any) -> int | None:
+    """
+    把可能来自 JSON 的数字输入安全收敛成 `int | None`。
+    """
+
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    return None
+
+
+def _build_task_config_resource_action(
+    task: Task,
+) -> dict[str, Any] | None:
+    """
+    从任务自身的 `agent_config` 提取一条显式绑定的数据源动作。
+
+    这条路径优先服务“任务创建时已经明确绑定单一数据库”的场景，
+    让 datamake 不必完全依赖用户当前数据库列表推断资源边界。
+    """
+
+    config = task.agent_config if isinstance(task.agent_config, dict) else {}
+    if not config:
+        return None
+
+    datasource_id = config.get("datasource_id") or config.get("database_id")
+    text2sql_database_id = config.get("text2sql_database_id") or datasource_id
+    database_url = config.get("database_url") or config.get("db_url")
+    connection_name = config.get("connection_name")
+
+    if not any([datasource_id, text2sql_database_id, database_url, connection_name]):
+        return None
+
+    database_name = str(config.get("database_name") or "任务绑定数据源").strip() or "任务绑定数据源"
+    database_type = str(config.get("database_type") or config.get("db_type") or "").strip() or None
+    read_only = bool(config.get("read_only", True))
+
+    return build_sql_resource_action_payload(
+        resource_key=f"task_{task.id}_bound_database",
+        operation_key="execute_sql",
+        description=(
+            f"面向任务绑定数据源“{database_name}”执行受控 SQL。"
+            "主脑必须先确认筛选范围、时间口径与目标表，再决定是否执行。"
+        ),
+        sql_metadata=SqlResourceMetadata(
+            db_type=database_type,
+            connection_name=str(connection_name).strip() if isinstance(connection_name, str) and connection_name.strip() else None,
+            datasource_id=_coerce_optional_int(datasource_id),
+            text2sql_database_id=_coerce_optional_int(text2sql_database_id),
+            db_url=str(database_url).strip() if isinstance(database_url, str) and database_url.strip() else None,
+            read_only=read_only,
+        ),
+        supports_probe=True,
+        requires_approval=not read_only,
+    )
+
+
+def _build_user_text2sql_resource_actions(
+    db: Session,
+    user: User,
+) -> list[dict[str, Any]]:
+    """
+    为当前用户已配置的数据源注入 datamake 可执行资源动作。
+
+    设计取舍：
+    - 这里不直接把完整数据库 URL 暴露给主脑，只注入 datasource 标识与只读约束
+    - Runtime 需要真实连接信息时，再通过 `SqlDatasourceResolver` 回查宿主表
+    - 这样既能让 `available_resources` 非空，又不会把敏感连接串塞进 LLM 上下文
+    """
+
+    databases = (
+        db.query(Text2SQLDatabase)
+        .filter(Text2SQLDatabase.user_id == user.id)
+        .order_by(Text2SQLDatabase.id.asc())
+        .all()
+    )
+
+    resource_actions: list[dict[str, Any]] = []
+    for database in databases:
+        database_name = str(database.name or f"数据库{database.id}").strip() or f"数据库{database.id}"
+        database_type = getattr(database.type, "value", None) or str(database.type)
+        resource_actions.append(
+            build_sql_resource_action_payload(
+                resource_key=f"text2sql_database_{database.id}",
+                operation_key="execute_sql",
+                description=(
+                    f"面向数据源“{database_name}”执行受控 SQL。"
+                    "优先用于探测、校验、查询与造数前置分析。"
+                ),
+                sql_metadata=SqlResourceMetadata(
+                    db_type=str(database_type).strip() if database_type else None,
+                    datasource_id=int(database.id),
+                    text2sql_database_id=int(database.id),
+                    read_only=bool(database.read_only),
+                ),
+                supports_probe=True,
+                requires_approval=not bool(database.read_only),
+            )
+        )
+
+    return resource_actions
+
+
+def _build_datamake_resource_actions(
+    task: Task,
+    db: Session,
+    user: User,
+) -> list[dict[str, Any]]:
+    """
+    汇总本次 datamake 运行可见的受控资源动作。
+
+    顺序约束：
+    1. 任务显式绑定的数据源优先，避免用户期望单库执行时被其他数据库噪音稀释
+    2. 再补充当前用户名下可见的数据源，保证 datamake 至少拿到真实可执行 catalog
+    """
+
+    resource_actions: list[dict[str, Any]] = []
+    seen_pairs: set[tuple[str, str]] = set()
+
+    explicit_action = _build_task_config_resource_action(task)
+    if explicit_action is not None:
+        pair = (
+            str(explicit_action.get("resource_key") or ""),
+            str(explicit_action.get("operation_key") or ""),
+        )
+        seen_pairs.add(pair)
+        resource_actions.append(explicit_action)
+
+    for action in _build_user_text2sql_resource_actions(db, user):
+        pair = (
+            str(action.get("resource_key") or ""),
+            str(action.get("operation_key") or ""),
+        )
+        if pair in seen_pairs:
+            continue
+        seen_pairs.add(pair)
+        resource_actions.append(action)
+
+    return resource_actions
+
 async def _run_datamake_pattern(
     task_id: int, 
     user_input: str, 
@@ -173,8 +356,16 @@ async def _run_datamake_pattern(
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
 
+    task_prompt = _resolve_datamake_task_prompt(task, user_input)
+
     # 构建基础上下文
     context = AgentContext(task_id=str(task_id), session_id=f"session_{user.id}")
+    context.user_id = str(user.id)
+    context.state["datamake_resource_actions"] = _build_datamake_resource_actions(
+        task=task,
+        db=db,
+        user=user,
+    )
     
     # 恢复挂起回复（如果是 interact 重入）
     if interaction_reply:
@@ -203,7 +394,7 @@ async def _run_datamake_pattern(
         db.commit()
 
         result = await pattern.run(
-            task=user_input,
+            task=task_prompt,
             memory=get_memory_store(),
             tools=[],  # 暂不从外部接通用工具，而是基于 resource_catalog
             context=context
@@ -283,7 +474,7 @@ async def datamake_interact(
 
     result = await _run_datamake_pattern(
         task_id=request.task_id,
-        user_input="", # 任务输入在挂钩里已包含在上下文中，这里可以传空或原标题
+        user_input="",
         db=db,
         user=user,
         interaction_reply=interaction_reply
@@ -344,7 +535,7 @@ async def get_datamake_task_context(
 
     return DataMakeContextResponse(
         task_id=task_id,
-        task_status=str(task.status),
+        task_status=_serialize_task_status(task.status),
         flow_draft=flow_draft,
         execution_trace=execution_trace,
         recent_errors=recent_errors,
