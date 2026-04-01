@@ -53,6 +53,15 @@ class HttpFoldedResponse(BaseModel):
     error_summary: str | None = Field(default=None, description="错误摘要。")
 
 
+class HttpResponseFoldError(ValueError):
+    """
+    `HttpResponseFoldError`（HTTP 响应折叠失败）。
+
+    它表示真实 HTTP 已经返回，但返回内容不满足当前资源契约，
+    例如缺少被声明为必填的关键提取字段。
+    """
+
+
 class HttpResponseFolder:
     """
     `HttpResponseFolder`（HTTP 响应折叠器）。
@@ -139,15 +148,29 @@ class HttpResponseFolder:
         resp_json: Any,
         extraction_rules: list[HttpResponseExtractionRule],
     ) -> dict[str, Any]:
-        """从结构化响应里抽取关键字段。"""
+        """
+        从结构化响应里抽取关键字段。
+
+        若规则被声明为 `required=True`，这里必须严格命中。
+        否则后续链路会误以为执行成功，但真正关键资产已经丢失。
+        """
 
         if not isinstance(resp_json, dict):
+            required_keys = [rule.key for rule in extraction_rules if rule.required]
+            if required_keys:
+                raise HttpResponseFoldError(
+                    f"响应不是对象结构，无法提取必填字段: {', '.join(required_keys)}"
+                )
             return {}
 
         extracted: dict[str, Any] = {}
         for rule in extraction_rules:
             value = self._simple_path_get(resp_json, rule.path)
             if value is None:
+                if rule.required:
+                    raise HttpResponseFoldError(
+                        f"缺少必填响应提取字段: {rule.key} ({rule.path})"
+                    )
                 continue
             extracted[rule.key] = value
         return extracted

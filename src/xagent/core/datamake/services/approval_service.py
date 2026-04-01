@@ -88,8 +88,16 @@ class ApprovalService:
             if state is None:
                 raise ValueError(f"审批记录不存在：approval_id={approval_id}")
 
+            # 审批结果除了保留“通过/拒绝”本身，还要把发布相关上下文一并冻结：
+            # - 这样模板发布链路后续审计时可以直接看到“放行的是哪个草稿/哪个动作”
+            # - 但这些上下文字段只是审计证据，不能被下游状态机拿来自动发布
+            approval_context = self._build_approval_context(state.ticket_json)
+            resolved_payload = resolution.model_dump(mode="json")
+            if approval_context:
+                resolved_payload["approval_context"] = approval_context
+
             state.status = "approved" if resolution.approved else "rejected"
-            state.resolved_result_json = resolution.model_dump(mode="json")
+            state.resolved_result_json = resolved_payload
             state.resolved_at = resolved_at
             session.commit()
             session.refresh(state)
@@ -138,6 +146,50 @@ class ApprovalService:
                 approval_key=state.approval_key,
                 resolved_at=state.resolved_at,
             )
+
+    def _build_approval_context(
+        self,
+        ticket_payload: Any,
+    ) -> dict[str, Any]:
+        """
+        从审批票据中提取最小审计上下文。
+
+        设计原则：
+        - 只提取“审批通过时放行的是哪个执行动作/哪个模板工件”这类稳定事实。
+        - 不把整份 continuation 决策原样复制到 resolved_result_json，避免状态表不断膨胀。
+        - 这些上下文只用于审计、排障和发布追溯，不能作为自动推进 publish 的触发条件。
+        """
+
+        if not isinstance(ticket_payload, dict):
+            return {}
+
+        context: dict[str, Any] = {}
+        approval_key = ticket_payload.get("approval_key")
+        if isinstance(approval_key, str) and approval_key.strip():
+            context["approval_key"] = approval_key.strip()
+
+        original_decision = ticket_payload.get("original_execution_decision")
+        if not isinstance(original_decision, dict):
+            return context
+
+        action = original_decision.get("action")
+        if isinstance(action, str) and action.strip():
+            context["action"] = action.strip()
+
+        params = original_decision.get("params")
+        if not isinstance(params, dict):
+            return context
+
+        for key in ("template_draft_id", "template_version_id"):
+            value = params.get(key)
+            if value is not None:
+                context[key] = value
+
+        compiled_dag_digest = params.get("compiled_dag_digest")
+        if isinstance(compiled_dag_digest, dict):
+            context["compiled_dag_digest"] = dict(compiled_dag_digest)
+
+        return context
 
     @contextmanager
     def _new_session(self) -> Generator[Session, None, None]:

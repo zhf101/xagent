@@ -321,7 +321,11 @@ class StructuredHttpResultNormalizer:
             return "unknown"
 
         response_policy = response_policy or {}
-        configured_statuses = response_policy.get("success_status_codes") or result_contract.get("success_http_statuses")
+        override_statuses = result_contract.get("success_http_statuses")
+        if isinstance(override_statuses, list) and override_statuses:
+            return "success" if http_status in override_statuses else "failed"
+
+        configured_statuses = response_policy.get("success_status_codes")
         if isinstance(configured_statuses, list) and configured_statuses:
             return "success" if http_status in configured_statuses else "failed"
 

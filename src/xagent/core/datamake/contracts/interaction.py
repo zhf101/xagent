@@ -179,6 +179,14 @@ class ApprovalResolution(BaseModel):
         default=None,
         description="审批端给出的处理完成时间。若未提供，则由系统回填当前时间。",
     )
+    template_publish_visibility: Optional[Literal["private", "shared", "global"]] = Field(
+        default=None,
+        description=(
+            "当审批对象是 `publish_template_version` 时，"
+            "允许审批人显式指定模板发布可见性。"
+            "这只是对原发布动作的治理参数补充，不是新的流程控制信号。"
+        ),
+    )
 
 
 class ApprovalDisplayPayload(BaseModel):

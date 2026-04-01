@@ -4,6 +4,8 @@ import { useDataMakeSync } from "../../../hooks/use-datamake-sync"
 export function DataMakeChatSidebar({ taskId }: { taskId?: number }) {
   const { state, messages, startChat, submitInteraction } = useDataMakeSync(taskId)
   const [inputVal, setInputVal] = useState("")
+  const [approvalComment, setApprovalComment] = useState("")
+  const [publishVisibility, setPublishVisibility] = useState("")
 
   const handleSend = () => {
     if (!inputVal.trim()) return
@@ -17,6 +19,29 @@ export function DataMakeChatSidebar({ taskId }: { taskId?: number }) {
     const fd = new FormData(e.target as HTMLFormElement)
     const reply = Object.fromEntries(fd.entries())
     submitInteraction(reply)
+  }
+
+  const approvalConfig =
+    state.status === "waiting_human" && state.chatResponseConfig
+      ? state.chatResponseConfig
+      : null
+  const isTemplatePublishApproval =
+    approvalConfig?.form_kind === "template_publish_approval"
+
+  const submitApproval = async (approved: boolean) => {
+    const reply: Record<string, unknown> = {
+      approved,
+      comment: approvalComment.trim(),
+    }
+    if (approved && isTemplatePublishApproval) {
+      if (!publishVisibility) {
+        return
+      }
+      reply.template_publish_visibility = publishVisibility
+    }
+    await submitInteraction(reply)
+    setApprovalComment("")
+    setPublishVisibility("")
   }
 
   return (
@@ -62,14 +87,77 @@ export function DataMakeChatSidebar({ taskId }: { taskId?: number }) {
           <div className="p-4 bg-red-50 border border-red-200 rounded-lg shrink-0 mt-4">
             <h4 className="font-bold text-red-800 text-sm mb-2">人工审批阻断</h4>
             <p className="text-sm text-red-700 mb-4">{state.question}</p>
-            <form onSubmit={(e) => {
-              e.preventDefault()
-              submitInteraction({ approved: true, comment: "" })
-            }} className="space-y-3">
-              <button type="submit" className="w-full bg-red-600 text-white p-2 rounded text-sm hover:bg-red-700">
+            <form
+              onSubmit={(e) => {
+                e.preventDefault()
+                void submitApproval(true)
+              }}
+              className="space-y-3"
+            >
+              {isTemplatePublishApproval && (
+                <div className="space-y-2">
+                  <label className="block text-xs font-semibold text-red-800">
+                    发布可见性
+                  </label>
+                  <select
+                    value={publishVisibility}
+                    onChange={(e) => setPublishVisibility(e.target.value)}
+                    className="w-full text-sm p-2 border rounded bg-white"
+                    required
+                  >
+                    <option value="">请选择模板可见性</option>
+                    {(approvalConfig?.visibility_options || []).map(
+                      (option: {
+                        value: string
+                        label: string
+                        description?: string
+                      }) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      )
+                    )}
+                  </select>
+                  {publishVisibility && (
+                    <p className="text-[11px] text-red-700">
+                      {
+                        (approvalConfig?.visibility_options || []).find(
+                          (option: {
+                            value: string
+                            label: string
+                            description?: string
+                          }) => option.value === publishVisibility
+                        )?.description
+                      }
+                    </p>
+                  )}
+                </div>
+              )}
+
+              <div className="space-y-2">
+                <label className="block text-xs font-semibold text-red-800">
+                  审批备注
+                </label>
+                <textarea
+                  value={approvalComment}
+                  onChange={(e) => setApprovalComment(e.target.value)}
+                  placeholder="可选：补充发布范围、风险边界或审批意见"
+                  className="w-full min-h-[88px] text-sm p-2 border rounded bg-white resize-y"
+                />
+              </div>
+
+              <button
+                type="submit"
+                className="w-full bg-red-600 text-white p-2 rounded text-sm hover:bg-red-700 disabled:opacity-50"
+                disabled={isTemplatePublishApproval && !publishVisibility}
+              >
                 我确认授权执行
               </button>
-              <button type="button" onClick={() => submitInteraction({ approved: false })} className="w-full bg-white border text-red-600 hover:bg-red-50 p-2 rounded text-sm">
+              <button
+                type="button"
+                onClick={() => void submitApproval(false)}
+                className="w-full bg-white border text-red-600 hover:bg-red-50 p-2 rounded text-sm"
+              >
                 驳回
               </button>
             </form>

@@ -101,6 +101,10 @@ class HttpContractValidator:
         value: Any,
         definition: HttpParameterDefinition,
     ) -> Any:
+        if value is None:
+            if definition.required:
+                raise HttpContractValidationError(f"必填参数不能为 null: {name}")
+            return None
         converted = self._convert_value(name, value, definition)
         self._validate_constraints(name, converted, definition)
         return converted

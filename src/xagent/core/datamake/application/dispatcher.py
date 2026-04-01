@@ -144,6 +144,9 @@ class ActionDispatcher:
                     "pause_observation": pause_observation,
                     "question": self.supervision_bridge.build_waiting_question(ticket),
                     "field": ticket.response_field,
+                    "chat_payload": self.ui_response_mapper.to_approval_chat_payload(
+                        ticket
+                    ),
                 },
             )
 
@@ -167,6 +170,9 @@ class ActionDispatcher:
                 approval_decision.params["approval_key"] = guard_result.payload[
                     "approval_key"
                 ]
+                approval_decision.params["original_execution_decision"] = (
+                    decision.model_dump(mode="json")
+                )
                 approval_decision.user_visible.summary = str(
                     guard_result.payload["summary"]
                 )
@@ -198,6 +204,9 @@ class ActionDispatcher:
                         "pause_observation": pause_observation,
                         "question": self.supervision_bridge.build_waiting_question(ticket),
                         "field": ticket.response_field,
+                        "chat_payload": self.ui_response_mapper.to_approval_chat_payload(
+                            ticket
+                        ),
                     },
                 )
 

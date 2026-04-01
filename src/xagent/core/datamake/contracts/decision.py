@@ -57,7 +57,8 @@ class NextActionDecision(BaseModel):
       人工监督、系统执行三类路径。
     - `action`（动作名）：
       对当前轮行为的领域级命名，例如 `ask_clarification`、
-      `execute_registered_action`。
+      `execute_registered_action`、`compile_flow_draft`、
+      `publish_template_version`。
     - `params`（动作参数）：
       主脑为当前动作准备的结构化输入。Guard / Runtime / Bridge
       都只读这里，不再从自由文本里反推。
@@ -81,7 +82,10 @@ class NextActionDecision(BaseModel):
     )
     action: Optional[str] = Field(
         default=None,
-        description="当前轮的领域动作名，例如 ask_clarification / probe_registered_action。",
+        description=(
+            "当前轮的领域动作名，例如 ask_clarification / "
+            "probe_registered_action / compile_flow_draft。"
+        ),
     )
     reasoning: str = Field(
         default="",

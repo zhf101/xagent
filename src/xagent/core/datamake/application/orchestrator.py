@@ -12,8 +12,16 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from ..ledger.snapshots import SnapshotBuilder
 from ..resources.sql_resource_definition import parse_sql_resource_metadata
+from ..services.compiled_dag_service import CompiledDagService
 from ..services.draft_service import DraftService
+from ..services.flow_draft_aggregate_service import FlowDraftAggregateService
 from ..services.recall_service import RecallService
+from ..services.template_draft_service import TemplateDraftService
+from ..services.template_embedding_resolver import (
+    resolve_template_embedding_from_env,
+)
+from ..services.template_publish_service import TemplatePublishService
+from ..services.template_retrieval_service import TemplateRetrievalService
 
 if TYPE_CHECKING:
     from ...agent.context import AgentContext
@@ -40,11 +48,47 @@ class DecisionBuilder:
         recall_service: Optional[RecallService] = None,
         draft_service: Optional[DraftService] = None,
         resource_catalog: Optional[ResourceCatalog] = None,
+        flow_draft_aggregate_service: Optional[FlowDraftAggregateService] = None,
+        compiled_dag_service: Optional[CompiledDagService] = None,
+        template_draft_service: Optional[TemplateDraftService] = None,
+        template_publish_service: Optional[TemplatePublishService] = None,
+        template_retrieval_service: Optional[TemplateRetrievalService] = None,
     ) -> None:
         self.snapshot_builder = snapshot_builder
         self.recall_service = recall_service
         self.draft_service = draft_service
         self.resource_catalog = resource_catalog
+        self.flow_draft_aggregate_service = flow_draft_aggregate_service
+        self.compiled_dag_service = compiled_dag_service
+        self.template_draft_service = template_draft_service
+        self.template_publish_service = template_publish_service
+        self.template_retrieval_service = template_retrieval_service
+
+        # 这里允许基于 DraftService 共享同一 session_factory 自动补齐查询服务，
+        # 目的只是复用已持久化证据，不是让 orchestrator 变成新的业务编排器。
+        if self.flow_draft_aggregate_service is None and draft_service is not None:
+            session_factory = getattr(draft_service, "session_factory", None)
+            if session_factory is not None:
+                self.flow_draft_aggregate_service = FlowDraftAggregateService(session_factory)
+        if self.compiled_dag_service is None and draft_service is not None:
+            session_factory = getattr(draft_service, "session_factory", None)
+            if session_factory is not None:
+                self.compiled_dag_service = CompiledDagService(session_factory)
+        if self.template_draft_service is None and draft_service is not None:
+            session_factory = getattr(draft_service, "session_factory", None)
+            if session_factory is not None:
+                self.template_draft_service = TemplateDraftService(session_factory)
+        if self.template_publish_service is None and draft_service is not None:
+            session_factory = getattr(draft_service, "session_factory", None)
+            if session_factory is not None:
+                self.template_publish_service = TemplatePublishService(session_factory)
+        if self.template_retrieval_service is None and draft_service is not None:
+            session_factory = getattr(draft_service, "session_factory", None)
+            if session_factory is not None:
+                self.template_retrieval_service = TemplateRetrievalService(
+                    session_factory,
+                    embedding_model=resolve_template_embedding_from_env(),
+                )
 
     async def build_round_context(
         self,
@@ -63,20 +107,54 @@ class DecisionBuilder:
 
         ledger_snapshot = await self.snapshot_builder.build(context.task_id)
         recall_results: list[dict[str, Any]] = []
+        persisted_aggregate = None
         persisted_draft: dict[str, Any] = {}
+        compiled_dag_digest: dict[str, Any] | None = None
+        template_draft_digest: dict[str, Any] | None = None
+        template_version_digest: dict[str, Any] | None = None
+        template_version_candidates: list[dict[str, Any]] = []
 
         if self.recall_service is not None:
             recall_results = await self.recall_service.search(task)
-        if self.draft_service is not None:
+        if self.flow_draft_aggregate_service is not None:
+            persisted_aggregate = await self.flow_draft_aggregate_service.load(context.task_id)
+            if persisted_aggregate is not None:
+                persisted_draft = self.flow_draft_aggregate_service.projection_service.to_state(
+                    persisted_aggregate
+                ).model_dump(mode="json")
+        elif self.draft_service is not None:
             loaded_draft = await self.draft_service.load(context.task_id)
             if loaded_draft is not None:
                 persisted_draft = loaded_draft.model_dump(mode="json")
+        if self.compiled_dag_service is not None:
+            compiled_dag_digest = await self.compiled_dag_service.load_digest(context.task_id)
+        if self.template_draft_service is not None:
+            digest = await self.template_draft_service.load_latest_digest(context.task_id)
+            template_draft_digest = digest.model_dump(mode="json") if digest is not None else None
+        if self.template_publish_service is not None:
+            digest = await self.template_publish_service.load_latest_digest(context.task_id)
+            template_version_digest = (
+                digest.model_dump(mode="json") if digest is not None else None
+            )
 
-        # flow_draft 以持久化版本为基础，context.state 里的临时覆盖优先级更高。
+        # 结构化 aggregate 的 projection 应是主链真相源。
+        # 只有在当前运行没有持久化 draft 宿主时，才退回使用 context.state 中的临时 draft。
         flow_draft = dict(persisted_draft)
         state_draft = context.state.get("flow_draft")
-        if isinstance(state_draft, dict):
+        if not flow_draft and isinstance(state_draft, dict):
             flow_draft.update(state_draft)
+
+        if self.template_retrieval_service is not None:
+            retrieval_flow_draft: Any = persisted_aggregate if persisted_aggregate is not None else flow_draft
+            candidate_items = await self.template_retrieval_service.search_candidates(
+                task=task,
+                flow_draft=retrieval_flow_draft,
+                current_user_id=context.user_id,
+                limit=3,
+            )
+            template_version_candidates = [
+                item.model_dump(mode="json") for item in candidate_items
+            ]
 
         # 把当前已注册的受控资源动作摘要注入上下文，
         # 让主脑知道本轮可以调用哪些 execution_action，不需要猜测。
@@ -119,6 +197,10 @@ class DecisionBuilder:
             "context_state": context.state,
             "history": list(context.history),
             "recall_results": recall_results,
+            "compiled_dag_digest": compiled_dag_digest,
+            "template_draft_digest": template_draft_digest,
+            "template_version_digest": template_version_digest,
+            "template_version_candidates": template_version_candidates,
             "ledger_snapshot": ledger_snapshot,
             "file_info": context.state.get("file_info"),
             "uploaded_files": context.state.get("uploaded_files"),

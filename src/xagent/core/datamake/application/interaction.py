@@ -13,7 +13,12 @@ from datetime import datetime, timezone
 from typing import Any
 
 from ..contracts.decision import NextActionDecision
-from ..contracts.interaction import InteractionDisplayPayload, InteractionTicket
+from ..contracts.constants import EXECUTION_ACTION_PUBLISH_TEMPLATE_VERSION
+from ..contracts.interaction import (
+    ApprovalTicket,
+    InteractionDisplayPayload,
+    InteractionTicket,
+)
 from ..contracts.observation import ObservationActor, ObservationEnvelope
 
 
@@ -119,3 +124,61 @@ class UiResponseMapper:
             "response_field": ticket.response_field,
             "ticket_id": ticket.ticket_id,
         }
+
+    def to_approval_chat_payload(
+        self,
+        ticket: ApprovalTicket,
+    ) -> dict[str, Any]:
+        """
+        把审批工单映射成前端可直接渲染的结构化配置。
+
+        设计原则：
+        - 这里只暴露“审批 UI 需要的稳定事实”，不把整份决策对象原样透传给前端。
+        - 若审批对象是模板发布，则显式暴露 `visibility` 选择器，避免前端一直吃后端默认值。
+        """
+
+        original_action = None
+        if isinstance(ticket.original_execution_decision, dict):
+            raw_action = ticket.original_execution_decision.get("action")
+            if isinstance(raw_action, str) and raw_action.strip():
+                original_action = raw_action.strip()
+
+        payload = {
+            "kind": "approval",
+            "title": ticket.display.title,
+            "summary": ticket.display.summary,
+            "details": list(ticket.display.details),
+            "response_field": ticket.response_field,
+            "approval_id": ticket.approval_id,
+            "action": ticket.action,
+            "original_action": original_action,
+            "response_schema_name": ticket.response_schema_name,
+            "response_schema_version": ticket.response_schema_version,
+            "form_kind": "generic_approval",
+        }
+
+        if original_action == EXECUTION_ACTION_PUBLISH_TEMPLATE_VERSION:
+            payload.update(
+                {
+                    "form_kind": "template_publish_approval",
+                    "visibility_options": [
+                        {
+                            "value": "private",
+                            "label": "仅自己可见",
+                            "description": "适合个人试验模板或尚未准备共享的草稿。",
+                        },
+                        {
+                            "value": "shared",
+                            "label": "团队共享",
+                            "description": "适合业务域内复用的成熟模板。",
+                        },
+                        {
+                            "value": "global",
+                            "label": "全局共享",
+                            "description": "适合作为平台级公共模板长期复用。",
+                        },
+                    ],
+                    "required_fields": ["approved", "template_publish_visibility"],
+                }
+            )
+        return payload

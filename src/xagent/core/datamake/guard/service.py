@@ -23,6 +23,10 @@ from pydantic import BaseModel, Field
 from ..contracts.constants import (
     ADAPTER_KIND_SQL,
     ACTION_KIND_EXECUTION,
+    EXECUTION_ACTION_COMPILE_FLOW_DRAFT,
+    EXECUTION_ACTION_EXECUTE_COMPILED_DAG,
+    EXECUTION_ACTION_EXECUTE_TEMPLATE_VERSION,
+    EXECUTION_ACTION_PUBLISH_TEMPLATE_VERSION,
     EXECUTION_MODE_PROBE,
     GUARD_RESULT_KIND_APPROVAL_REQUIRED,
     GUARD_RESULT_KIND_OBSERVATION,
@@ -32,7 +36,7 @@ from ..contracts.constants import (
     ROUTE_RUNTIME_PROBE,
 )
 from ..contracts.decision import NextActionDecision
-from ..contracts.guard import GuardVerdict
+from ..contracts.guard import GuardVerdict, ReadinessSnapshot
 from ..contracts.observation import ObservationActor, ObservationEnvelope
 from ..resources.catalog import ResourceCatalog
 from ..resources.registry import ResourceActionDefinition
@@ -115,6 +119,13 @@ class GuardService:
                 },
             )
 
+        special_result = await self._evaluate_template_pipeline_action(
+            action=action,
+            readiness=readiness,
+        )
+        if special_result is not None:
+            return special_result
+
         resource_action = self.resource_catalog.get_action(
             str(action.params["resource_key"]),
             str(action.params["operation_key"]),
@@ -196,6 +207,80 @@ class GuardService:
         return GuardEvaluationResult(
             kind=GUARD_RESULT_KIND_OBSERVATION,
             payload={"observation": observation},
+        )
+
+    async def _evaluate_template_pipeline_action(
+        self,
+        *,
+        action: NextActionDecision,
+        readiness: ReadinessSnapshot,
+    ) -> GuardEvaluationResult | None:
+        """
+        处理模板沉淀链路的特殊 execution_action。
+
+        这类动作不依赖 `resource_key/operation_key`，因此不能套用单资源 guard 规则。
+        但它们仍然必须通过：
+        - 最小参数前置条件
+        - 风险 / 审批裁决
+        - Runtime 执行回流
+        """
+
+        if action.action not in {
+            EXECUTION_ACTION_COMPILE_FLOW_DRAFT,
+            EXECUTION_ACTION_EXECUTE_COMPILED_DAG,
+            EXECUTION_ACTION_PUBLISH_TEMPLATE_VERSION,
+            EXECUTION_ACTION_EXECUTE_TEMPLATE_VERSION,
+        }:
+            return None
+
+        risk_level = str(action.risk_level or "low").strip().lower() or "low"
+        approval_required = bool(action.requires_approval)
+        # 模板链路动作虽然不依赖具体 resource_action，
+        # 但审批放行语义必须与普通 execution_action 保持一致：
+        # 同一个 approval_key 一旦已经进入 `_system_approval_grants`，
+        # 本轮 continuation 恢复时就应直接放行，而不是再次开新审批单。
+        if self._has_approval_grant(action):
+            approval_required = False
+        verdict = GuardVerdict(
+            allowed=True,
+            normalized_action=action.action or "",
+            route=ROUTE_RUNTIME_EXECUTE,
+            blockers=[],
+            approval_required=approval_required,
+            risk_level=risk_level,
+            readiness_snapshot=readiness,
+        )
+        if approval_required:
+            approval_key = self.build_approval_key(action)
+            return GuardEvaluationResult(
+                kind=GUARD_RESULT_KIND_APPROVAL_REQUIRED,
+                payload={
+                    "verdict": verdict,
+                    "approval_key": approval_key,
+                    "summary": "当前模板链路动作需要人工审批，已转入等待人工确认通道",
+                },
+            )
+
+        observation = await self.runtime_executor.execute(action, verdict)
+        return GuardEvaluationResult(
+            kind=GUARD_RESULT_KIND_OBSERVATION,
+            payload={"observation": observation},
+        )
+
+    def _has_approval_grant(self, action: NextActionDecision) -> bool:
+        """
+        判断当前执行动作是否已经携带有效审批放行凭据。
+
+        这个判断只表达“同一动作在同一审批键下已被人工明确放行”，
+        不能推导新的业务动作，也不能替代风险评估本身。
+        """
+
+        approval_key = action.params.get("approval_key")
+        approved_grants = action.params.get("_system_approval_grants", [])
+        return (
+            isinstance(approval_key, str)
+            and isinstance(approved_grants, list)
+            and approval_key in approved_grants
         )
 
     def _should_use_sql_brain(
@@ -526,8 +611,11 @@ class GuardService:
             return obj
 
         approval_payload = {
+            "action": action.action,
             "resource_key": action.params.get("resource_key"),
             "operation_key": action.params.get("operation_key"),
+            "template_draft_id": action.params.get("template_draft_id"),
+            "template_version_id": action.params.get("template_version_id"),
             "tool_args": _stable(action.params.get("tool_args", {})),
         }
         return "v1:" + json.dumps(approval_payload, ensure_ascii=False, sort_keys=True)

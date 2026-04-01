@@ -61,6 +61,10 @@ class RuntimeResult(BaseModel):
     - 例如资源调用异常、协议层失败，这里可以记为 `failed`。
     - 业务层“命中失败 / 返回失败 / 数据不足”这类事实，不应直接越权改写成
       Runtime 整体失败，而应进入 `facts` 让上游 Agent 决定下一步业务动作。
+
+    模板沉淀链路补充约束：
+    - `artifact_type/artifact_ref` 用来标记当前执行的是单动作、compiled DAG 还是模板版本。
+    - `step_results` 用来沉淀多步骤执行事实，但它本身不是下一步流程控制器。
     """
 
     run_id: str = Field(description="对应的运行标识。")
@@ -94,6 +98,18 @@ class RuntimeResult(BaseModel):
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
         description="结果生成时间。",
+    )
+    artifact_type: str = Field(
+        default="single_action",
+        description="当前结果对应的执行工件类型，如 single_action / compiled_dag / template_version。",
+    )
+    artifact_ref: dict[str, Any] = Field(
+        default_factory=dict,
+        description="执行工件引用，例如草稿版本、模板版本、任务标识等。",
+    )
+    step_results: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="多步骤执行时的步骤结果摘要。单动作执行保持为空即可。",
     )
 
 

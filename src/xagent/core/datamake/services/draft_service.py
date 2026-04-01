@@ -12,6 +12,8 @@ from typing import Any, Generator
 from sqlalchemy.orm import Session, sessionmaker
 
 from ..ledger.sql_models import DataMakeFlowDraft
+from .flow_draft_aggregate_service import FlowDraftAggregateService
+from .flow_draft_projection_service import FlowDraftProjectionService
 from .models import FlowDraftState
 
 
@@ -31,6 +33,8 @@ class DraftService:
 
     def __init__(self, session_factory: sessionmaker[Session] | Any) -> None:
         self.session_factory = session_factory
+        self.aggregate_service = FlowDraftAggregateService(session_factory)
+        self.projection_service = FlowDraftProjectionService()
 
     async def load(self, task_id: str) -> FlowDraftState | None:
         """
@@ -42,6 +46,11 @@ class DraftService:
             row = session.get(DataMakeFlowDraft, task_id)
             if row is None:
                 return None
+
+            structured_payload = row.structured_draft_json or {}
+            if isinstance(structured_payload, dict) and structured_payload:
+                aggregate = self.aggregate_service._build_aggregate_from_row(row=row)
+                return self.projection_service.to_state(aggregate)
 
             raw_payload = row.draft_json or {}
             if not isinstance(raw_payload, dict):
@@ -64,11 +73,21 @@ class DraftService:
 
         with self._new_session() as session:
             row = session.get(DataMakeFlowDraft, draft_state.task_id)
+            existing_aggregate = None
+            if row is not None and isinstance(row.structured_draft_json, dict):
+                existing_aggregate = self.aggregate_service._build_aggregate_from_row(row=row)
+
+            aggregate = self.aggregate_service.build_from_state(
+                draft_state=draft_state,
+                existing_aggregate=existing_aggregate,
+            )
             if row is None:
                 row = DataMakeFlowDraft(task_id=draft_state.task_id)
                 session.add(row)
 
             row.draft_json = draft_state.model_dump(mode="json")
+            row.structured_draft_json = aggregate.model_dump(mode="json")
+            row.compiled_dag_json = aggregate.compiled_dag
             row.version = draft_state.version
             row.summary = draft_state.goal_summary
             session.commit()

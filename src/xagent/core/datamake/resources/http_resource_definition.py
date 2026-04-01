@@ -191,13 +191,13 @@ class HttpSuccessPolicy(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True)
 
-    success_status_codes: list[int] = Field(
-        default_factory=lambda: [200, 201],
-        description="协议层成功状态码列表。",
+    success_status_codes: list[int] | None = Field(
+        default=None,
+        description="协议层成功状态码列表；为空表示回退到标准 2xx 成功语义。",
     )
     business_success_path: str | None = Field(default=None, description="业务成功字段路径。")
     business_success_expectation: Any = Field(
-        default=True,
+        default=None,
         description="业务成功字段的期望值；为空时退化成宽松 truthy 判断。",
     )
     business_error_message_path: str | None = Field(
@@ -207,9 +207,22 @@ class HttpSuccessPolicy(BaseModel):
 
     @model_validator(mode="after")
     def _validate_success_status_codes(self) -> "HttpSuccessPolicy":
-        if not self.success_status_codes:
+        if self.success_status_codes is not None and not self.success_status_codes:
             raise ValueError("success_status_codes 不能为空")
         return self
+
+    def is_success_status(self, status_code: int) -> bool:
+        """
+        判断状态码是否命中协议层成功语义。
+
+        关键约束：
+        - 若资源显式声明 `success_status_codes`，则以显式列表为准。
+        - 若资源未声明，则保持 HTTP 常识语义，统一回退到 `2xx`。
+        """
+
+        if self.success_status_codes is not None:
+            return status_code in self.success_status_codes
+        return 200 <= status_code < 300
 
     def to_metadata_dict(self) -> dict[str, Any]:
         """转成 `metadata['http_response_success_policy']` 使用的稳定字典。"""

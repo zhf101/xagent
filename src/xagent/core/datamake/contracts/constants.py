@@ -26,7 +26,7 @@ ACTION_KIND_SUPERVISION: Literal["supervision_action"] = "supervision_action"
 """监督动作 - 需要人工监督或审批，如 request_human_confirm（请求人工确认）"""
 
 ACTION_KIND_EXECUTION: Literal["execution_action"] = "execution_action"
-"""执行动作 - 需要执行具体操作，如 execute_registered_action（执行注册动作）"""
+"""执行动作 - 需要执行具体操作，如 execute_registered_action / compile_flow_draft"""
 
 # =============================================================================
 # 分发结果类别常量（DispatchOutcome.kind）
@@ -96,6 +96,66 @@ ADAPTER_KIND_SQL: Literal["sql"] = "sql"
 
 ADAPTER_KIND_HTTP: Literal["http"] = "http"
 """HTTP 适配器 - 用于执行 HTTP API 调用"""
+
+ADAPTER_KIND_LEGACY_SCENARIO: Literal["legacy_scenario"] = "legacy_scenario"
+"""历史场景适配器 - 用于执行受控历史造数场景复用"""
+
+ADAPTER_KIND_TEMPLATE_VERSION: Literal["template_version"] = "template_version"
+"""模板版本适配器 - 用于执行已发布模板版本快照"""
+
+# =============================================================================
+# datamake 执行动作常量（execution_action.action）
+# =============================================================================
+
+EXECUTION_ACTION_EXECUTE_REGISTERED_ACTION: Literal["execute_registered_action"] = (
+    "execute_registered_action"
+)
+"""执行已注册资源动作 - 当前单动作执行主路径"""
+
+EXECUTION_ACTION_PROBE_REGISTERED_ACTION: Literal["probe_registered_action"] = (
+    "probe_registered_action"
+)
+"""探测已注册资源动作 - 当前单动作无副作用预检路径"""
+
+EXECUTION_ACTION_COMPILE_FLOW_DRAFT: Literal["compile_flow_draft"] = "compile_flow_draft"
+"""编译 FlowDraft - 把结构化草稿冻结成 compiled DAG 契约"""
+
+EXECUTION_ACTION_EXECUTE_COMPILED_DAG: Literal["execute_compiled_dag"] = (
+    "execute_compiled_dag"
+)
+"""执行 compiled DAG - 按步骤依赖调度多资源执行"""
+
+EXECUTION_ACTION_PUBLISH_TEMPLATE_VERSION: Literal["publish_template_version"] = (
+    "publish_template_version"
+)
+"""发布模板版本 - 把模板草稿冻结成可复跑版本快照"""
+
+EXECUTION_ACTION_EXECUTE_TEMPLATE_VERSION: Literal["execute_template_version"] = (
+    "execute_template_version"
+)
+"""执行模板版本 - 按已发布模板版本快照复跑造数场景"""
+
+# =============================================================================
+# 模板沉淀链路步骤类型常量（CompiledDagStep.kind）
+# =============================================================================
+
+STEP_KIND_SQL: Literal["sql"] = "sql"
+"""SQL 步骤 - 通过 SQL adapter 执行数据库操作"""
+
+STEP_KIND_HTTP: Literal["http"] = "http"
+"""HTTP 步骤 - 通过 HTTP adapter 调用接口"""
+
+STEP_KIND_LEGACY_SCENARIO: Literal["legacy_scenario"] = "legacy_scenario"
+"""历史场景步骤 - 复用受控旧场景模板/流程"""
+
+STEP_KIND_TEMPLATE_VERSION: Literal["template_version"] = "template_version"
+"""模板版本步骤 - 允许 DAG 复用已发布模板版本"""
+
+STEP_KIND_DUBBO: Literal["dubbo"] = "dubbo"
+"""Dubbo 步骤 - 当前阶段只预留契约，不落真实执行器"""
+
+STEP_KIND_MCP: Literal["mcp"] = "mcp"
+"""MCP Tool 步骤 - 当前阶段只预留契约，不落真实执行器"""
 
 # =============================================================================
 # 观察结果类型常量（ObservationEnvelope.observation_type）

@@ -68,15 +68,38 @@ class HttpResourceAdapter:
                 evidence=[f"tool:{contract.tool_name}"],
             )
 
-        normalized_input, folded_response = self._build_normalizer_payload(
-            tool_result=tool_result,
-            parsed_metadata=parsed_metadata,
-        )
-        normalized = normalizer.normalize_result(
-            normalized_input,
-            contract=contract,
-            result_contract=result_contract,
-        )
+        try:
+            normalized_input, folded_response = self._build_normalizer_payload(
+                tool_result=tool_result,
+                parsed_metadata=parsed_metadata,
+            )
+            normalized = normalizer.normalize_result(
+                normalized_input,
+                contract=contract,
+                result_contract=result_contract,
+            )
+        except Exception as exc:
+            normalized = normalizer.normalize_exception(
+                exc,
+                contract=contract,
+                result_contract=result_contract,
+            )
+            return RuntimeResult(
+                run_id=contract.run_id,
+                status=normalized.status,
+                summary=normalized.summary,
+                facts=normalized.facts,
+                data=self._build_runtime_data(
+                    contract=contract,
+                    raw_key="raw_result",
+                    payload=tool_result,
+                    extra={
+                        "postprocess_error": self._serialize_raw_payload(exc),
+                    },
+                ),
+                error=normalized.error,
+                evidence=[f"tool:{contract.tool_name}"],
+            )
         return RuntimeResult(
             run_id=contract.run_id,
             status=normalized.status,
@@ -231,7 +254,9 @@ class HttpResourceAdapter:
             body=tool_result.get("body"),
             extraction_rules=parsed_metadata.response_extraction_rules,
         )
-        protocol_success = status_code in parsed_metadata.response_success_policy.success_status_codes
+        protocol_success = parsed_metadata.response_success_policy.is_success_status(
+            status_code
+        )
         default_summary = (
             f"HTTP 请求完成，状态码 {status_code}"
             if protocol_success
@@ -257,14 +282,26 @@ class HttpResourceAdapter:
                 resp_text=folded.resp_text,
             )
         )
-        return (
+        # normalizer 需要同时看见：
+        # 1. 编译/折叠后的稳定 HTTP 字段
+        # 2. 底层工具原始返回里可能存在的顶层业务字段
+        # 否则遇到 `success/error` 不在 body 中的工具实现时，会把业务失败误判成 unknown。
+        normalized_payload = dict(tool_result)
+        normalized_payload.update(
             {
                 "http_status": folded.status_code,
                 "headers": headers,
-                "body": folded.resp_json if folded.resp_json is not None else folded.resp_text,
+                "body": (
+                    folded.resp_json
+                    if folded.resp_json is not None
+                    else folded.resp_text
+                ),
                 "_http_summary": summary,
                 "_http_error_summary": folded.error_summary or tool_result.get("error"),
                 "_http_extracted": dict(folded.extracted),
-            },
+            }
+        )
+        return (
+            normalized_payload,
             folded,
         )

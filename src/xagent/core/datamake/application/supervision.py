@@ -16,6 +16,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from ..contracts.decision import NextActionDecision
+from ..contracts.constants import EXECUTION_ACTION_PUBLISH_TEMPLATE_VERSION
 from ..contracts.interaction import (
     ApprovalDisplayPayload,
     ApprovalResolution,
@@ -72,19 +73,11 @@ class SupervisionBridge:
             approval_key=decision.params.get("approval_key"),
             original_execution_decision=self._extract_continuation_decision(decision),
             response_examples=[
-                ApprovalResolution(
-                    approved=True,
-                    comment="批准执行，请控制影响范围",
-                    approver_user_name="reviewer",
-                ),
-                ApprovalResolution(
-                    approved=False,
-                    comment="暂不执行，请先补充风险说明",
-                    approver_user_name="reviewer",
-                ),
+                *self._build_response_examples(decision),
             ],
             metadata={
                 "response_contract": "ApprovalResolution",
+                "ui_contract": self._build_ui_contract(decision),
             },
         )
         return ticket
@@ -195,6 +188,79 @@ class SupervisionBridge:
         if hasattr(approval_result, "model_dump"):
             return approval_result.model_dump(mode="json")
         return str(approval_result)
+
+    def _build_response_examples(
+        self,
+        decision: NextActionDecision,
+    ) -> list[ApprovalResolution]:
+        """
+        按审批对象生成更贴近业务语义的审批输入示例。
+        """
+
+        if self._resolve_original_action(decision) == EXECUTION_ACTION_PUBLISH_TEMPLATE_VERSION:
+            return [
+                ApprovalResolution(
+                    approved=True,
+                    comment="批准发布，沉淀为团队共享模板",
+                    approver_user_name="reviewer",
+                    template_publish_visibility="shared",
+                ),
+                ApprovalResolution(
+                    approved=False,
+                    comment="暂不发布，请先补齐模板边界与风险说明",
+                    approver_user_name="reviewer",
+                ),
+            ]
+
+        return [
+            ApprovalResolution(
+                approved=True,
+                comment="批准执行，请控制影响范围",
+                approver_user_name="reviewer",
+            ),
+            ApprovalResolution(
+                approved=False,
+                comment="暂不执行，请先补充风险说明",
+                approver_user_name="reviewer",
+            ),
+        ]
+
+    def _build_ui_contract(
+        self,
+        decision: NextActionDecision,
+    ) -> dict[str, Any]:
+        """
+        为前端提供最小审批 UI 提示。
+        """
+
+        original_action = self._resolve_original_action(decision)
+        if original_action == EXECUTION_ACTION_PUBLISH_TEMPLATE_VERSION:
+            return {
+                "form_kind": "template_publish_approval",
+                "requires_visibility": True,
+            }
+        return {"form_kind": "generic_approval"}
+
+    def _resolve_original_action(
+        self,
+        decision: NextActionDecision,
+    ) -> str | None:
+        """
+        解析审批票据实际对应的原始执行动作。
+        """
+
+        original_execution_decision = decision.params.get("original_execution_decision")
+        if isinstance(original_execution_decision, dict):
+            action = original_execution_decision.get("action")
+            if isinstance(action, str) and action.strip():
+                return action.strip()
+
+        continuation = decision.params.get("continuation_decision")
+        if isinstance(continuation, dict):
+            action = continuation.get("action")
+            if isinstance(action, str) and action.strip():
+                return action.strip()
+        return None
 
     def _extract_continuation_decision(
         self,

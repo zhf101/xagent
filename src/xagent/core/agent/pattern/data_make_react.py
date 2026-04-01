@@ -52,7 +52,15 @@ from ...datamake.application.supervision import (
     InvalidApprovalPayloadError,
     SupervisionBridge,
 )
-from ...datamake.contracts.constants import ACTION_KIND_EXECUTION
+from ...datamake.contracts.constants import (
+    ACTION_KIND_EXECUTION,
+    EXECUTION_ACTION_COMPILE_FLOW_DRAFT,
+    EXECUTION_ACTION_EXECUTE_COMPILED_DAG,
+    EXECUTION_ACTION_EXECUTE_REGISTERED_ACTION,
+    EXECUTION_ACTION_EXECUTE_TEMPLATE_VERSION,
+    EXECUTION_ACTION_PROBE_REGISTERED_ACTION,
+    EXECUTION_ACTION_PUBLISH_TEMPLATE_VERSION,
+)
 from ...datamake.contracts.decision import NextActionDecision
 from ...datamake.contracts.interaction import ApprovalTicket, InteractionTicket
 from ...datamake.contracts.observation import ObservationEnvelope
@@ -69,14 +77,25 @@ from ...datamake.resources.sql_brain_gateway import SqlBrainGateway
 from ...datamake.resources.sql_adapter import SqlResourceAdapter
 from ...datamake.resources.sql_schema_provider import SqlSchemaProvider
 from ...datamake.runtime.compiler import ExecutionCompiler
+from ...datamake.runtime.compiled_dag_executor import CompiledDagExecutor
 from ...datamake.runtime.execution import ActionExecutor
 from ...datamake.runtime.executor import RuntimeExecutor
+from ...datamake.runtime.legacy_scenario_executor import LegacyScenarioExecutor
 from ...datamake.runtime.probe import ProbeExecutor
 from ...datamake.runtime.recovery import RecoveryCoordinator
 from ...datamake.runtime.resume_token import build_resume_token
+from ...datamake.runtime.template_version_executor import TemplateVersionExecutor
+from ...datamake.services.compiled_dag_service import CompiledDagService
+from ...datamake.services.flow_draft_aggregate_service import FlowDraftAggregateService
 from ...datamake.services.recall_service import RecallService
 from ...datamake.services.approval_service import ApprovalService
 from ...datamake.services.draft_service import DraftService
+from ...datamake.services.template_draft_service import TemplateDraftService
+from ...datamake.services.template_embedding_resolver import (
+    resolve_template_embedding_from_env,
+)
+from ...datamake.services.template_publish_service import TemplatePublishService
+from ...datamake.services.template_retrieval_service import TemplateRetrievalService
 from ...datamake.services.models import FlowDraftState
 from .base import AgentPattern
 
@@ -139,11 +158,33 @@ class DataMakeReActPattern(AgentPattern):
         self.termination_resolver = TerminationResolver()
         self.approval_service = None
         self.draft_service = None
+        self.flow_draft_aggregate_service = None
+        self.compiled_dag_service = None
+        self.template_draft_service = None
+        self.template_publish_service = None
+        self.template_retrieval_service = None
         if hasattr(self.ledger_repository, "session_factory"):
+            template_embedding_model = resolve_template_embedding_from_env()
             self.approval_service = ApprovalService(
                 self.ledger_repository.session_factory
             )
             self.draft_service = DraftService(self.ledger_repository.session_factory)
+            self.flow_draft_aggregate_service = FlowDraftAggregateService(
+                self.ledger_repository.session_factory
+            )
+            self.compiled_dag_service = CompiledDagService(
+                self.ledger_repository.session_factory
+            )
+            self.template_draft_service = TemplateDraftService(
+                self.ledger_repository.session_factory
+            )
+            self.template_publish_service = TemplatePublishService(
+                self.ledger_repository.session_factory
+            )
+            self.template_retrieval_service = TemplateRetrievalService(
+                self.ledger_repository.session_factory,
+                embedding_model=template_embedding_model,
+            )
         self.interaction_bridge = InteractionBridge()
         self.supervision_bridge = SupervisionBridge(self.approval_service)
         self.ui_response_mapper = UiResponseMapper()
@@ -168,10 +209,29 @@ class DataMakeReActPattern(AgentPattern):
             self.sql_adapter,
             self.http_adapter,
         )
+        self.compiled_dag_executor = CompiledDagExecutor(
+            self.action_executor,
+            execution_compiler=self.execution_compiler,
+        )
+        self.template_version_executor = TemplateVersionExecutor(
+            compiled_dag_executor=self.compiled_dag_executor,
+            session_factory=getattr(self.ledger_repository, "session_factory", None),
+        )
+        self.legacy_scenario_executor = LegacyScenarioExecutor(
+            template_version_executor=self.template_version_executor,
+        )
+        self.compiled_dag_executor.template_version_executor = self.template_version_executor
+        self.compiled_dag_executor.legacy_scenario_executor = self.legacy_scenario_executor
         self.runtime_executor = RuntimeExecutor(
             self.execution_compiler,
             self.probe_executor,
             self.action_executor,
+            flow_draft_aggregate_service=self.flow_draft_aggregate_service,
+            compiled_dag_service=self.compiled_dag_service,
+            template_draft_service=self.template_draft_service,
+            template_publish_service=self.template_publish_service,
+            compiled_dag_executor=self.compiled_dag_executor,
+            template_version_executor=self.template_version_executor,
         )
         self.recovery_coordinator = RecoveryCoordinator(self.ledger_repository)
         self.readiness_checker = ReadinessChecker(self.resource_catalog)
@@ -256,6 +316,7 @@ class DataMakeReActPattern(AgentPattern):
                 recall_service,
                 self.draft_service,
                 self.resource_catalog,
+                template_retrieval_service=self.template_retrieval_service,
             )
 
             # 连续失败计数器：同一类错误连续失败超过上限时，提前终止并返回友好提示，
@@ -527,6 +588,7 @@ class DataMakeReActPattern(AgentPattern):
                         "need_user_input": True,
                         "question": dispatch_outcome.payload["question"],
                         "field": dispatch_outcome.payload["field"],
+                        "chat_response": dispatch_outcome.payload["chat_payload"],
                         "approval_id": ticket.approval_id,
                     }
                     await self._trace_run_result(task_id, result)
@@ -600,12 +662,11 @@ class DataMakeReActPattern(AgentPattern):
                 observation = await self.interaction_bridge.consume_reply(
                     interaction_ticket, reply
                 )
-                await self.ledger_repository.resolve_interaction_ticket(
-                    context.task_id, interaction_ticket
-                )
-                await self.ledger_repository.append_observation(
+                # 交互回复的“工单结束 + observation 回流”属于同一次业务跃迁，
+                # 优先走仓储提供的原子消费入口，避免持久化实现里出现半写入状态。
+                await self.ledger_repository.consume_interaction_reply(
                     task_id=context.task_id,
-                    round_id=interaction_ticket.round_id,
+                    ticket=interaction_ticket,
                     observation=observation,
                 )
                 context.state.pop(interaction_ticket.response_field, None)
@@ -632,15 +693,20 @@ class DataMakeReActPattern(AgentPattern):
                                 f"{self.supervision_bridge.build_waiting_question(approval_ticket)}"
                             ),
                             "field": approval_ticket.response_field,
+                            "chat_response": self.ui_response_mapper.to_approval_chat_payload(
+                                approval_ticket
+                            ),
                             "approval_id": approval_ticket.approval_id,
                         },
                     )
-                await self.ledger_repository.resolve_approval_ticket(
-                    context.task_id, approval_ticket
-                )
-                await self.ledger_repository.append_observation(
+                # 审批消费比普通 observation 更敏感：
+                # - 需要把 pending approval 清掉
+                # - 需要把 resolved 结果写入审批状态表
+                # - 还要把 supervision observation 一并入账
+                # 因此必须优先走仓储原子入口，避免状态表与事实流脱节。
+                await self.ledger_repository.consume_approval_reply(
                     task_id=context.task_id,
-                    round_id=approval_ticket.round_id,
+                    ticket=approval_ticket,
                     observation=observation,
                 )
                 context.state.pop(approval_ticket.response_field, None)
@@ -668,6 +734,11 @@ class DataMakeReActPattern(AgentPattern):
                         injected_params = dict(injected_decision.get("params", {}))
                         if approval_key:
                             injected_params["approval_key"] = approval_key
+                        self._merge_approval_reply_into_continuation(
+                            injected_decision=injected_decision,
+                            injected_params=injected_params,
+                            approval_reply=reply,
+                        )
                         injected_decision["params"] = injected_params
                         context.state["datamake_next_decision"] = injected_decision
                 return True, None
@@ -788,6 +859,7 @@ class DataMakeReActPattern(AgentPattern):
                 "need_user_input": True,
                 "question": self.supervision_bridge.build_waiting_question(ticket),
                 "field": ticket.response_field,
+                "chat_response": self.ui_response_mapper.to_approval_chat_payload(ticket),
                 "approval_id": ticket.approval_id,
                 "resume_token": build_resume_token(
                     task_id=context.task_id,
@@ -797,6 +869,34 @@ class DataMakeReActPattern(AgentPattern):
             }
 
         return None
+
+    def _merge_approval_reply_into_continuation(
+        self,
+        *,
+        injected_decision: dict[str, Any],
+        injected_params: dict[str, Any],
+        approval_reply: Any,
+    ) -> None:
+        """
+        把审批端补充的治理参数合并回原始 continuation 决策。
+
+        设计边界：
+        - 这里只允许把“审批人显式补充的发布治理参数”写回原动作。
+        - 不允许审批结果借机篡改动作类型、资源绑定或执行路径。
+        """
+
+        if not isinstance(approval_reply, dict):
+            return
+        if injected_decision.get("action") != EXECUTION_ACTION_PUBLISH_TEMPLATE_VERSION:
+            return
+
+        visibility = approval_reply.get("template_publish_visibility")
+        if isinstance(visibility, str) and visibility.strip() in {
+            "private",
+            "shared",
+            "global",
+        }:
+            injected_params["visibility"] = visibility.strip()
 
     def _build_llm_messages(
         self,
@@ -818,7 +918,8 @@ class DataMakeReActPattern(AgentPattern):
             "\n"
             "## 决策优先级\n"
             "1. 若 flow_draft.open_questions 非空，或召回命中不确定，优先 interaction_action 补全信息。\n"
-            "2. 若 flow_draft 已有 confirmed_params 且 available_resources 已知，可直接 execution_action。\n"
+            "2. 若 flow_draft 已有 confirmed_params，或已有 compiled_dag_digest / template_draft_digest 可供参考，"
+            "可选择合适的 execution_action。\n"
             "3. 若动作 risk_level=high/critical 或 requires_approval=true，必须 supervision_action。\n"
             "4. 若任务目标已完成或无法继续，输出 terminate。\n"
             "5. 若当前没有 available_resources，且 recall_results 也为空，默认输出 interaction_action，"
@@ -829,9 +930,30 @@ class DataMakeReActPattern(AgentPattern):
             "- 若选择 interaction_action，params.questions 至少提供一个明确问题。\n"
             "- 若选择 terminate，final_status 和 final_message 必须填写。\n"
             "\n"
+            "## 模板沉淀链路动作约束\n"
+            f"- `{EXECUTION_ACTION_COMPILE_FLOW_DRAFT}`、`{EXECUTION_ACTION_EXECUTE_COMPILED_DAG}`、"
+            f"`{EXECUTION_ACTION_PUBLISH_TEMPLATE_VERSION}`、`{EXECUTION_ACTION_EXECUTE_TEMPLATE_VERSION}` "
+            "都仍属于 execution_action，不是新的主流程控制器。\n"
+            "- `compiled_dag_digest`、`template_draft_digest` 只是证据摘要，不会自动触发下一步。\n"
+            "- 不能因为已经有 compiled/template 状态字段就自动推进到 publish 或 execute。\n"
+            "- Human in Loop 的结果回流后，必须重新基于当前上下文显式决策，不能假设系统会自动续跑。\n"
+            "\n"
             "## execution_action 使用约束\n"
-            "- params.resource_key 和 params.operation_key 必须来自 available_resources，不得凭空编造。\n"
-            "- params.tool_args 只能包含该资源动作 result_contract 中声明的字段。\n"
+            f"- 若 action 是 `{EXECUTION_ACTION_EXECUTE_REGISTERED_ACTION}` 或 "
+            f"`{EXECUTION_ACTION_PROBE_REGISTERED_ACTION}`，"
+            "params.resource_key 和 params.operation_key 必须来自 available_resources，不得凭空编造。\n"
+            f"- 若 action 是 `{EXECUTION_ACTION_EXECUTE_REGISTERED_ACTION}` 或 "
+            f"`{EXECUTION_ACTION_PROBE_REGISTERED_ACTION}`，"
+            "params.tool_args 只能包含该资源动作 result_contract 中声明的字段。\n"
+            f"- 若 action 是 `{EXECUTION_ACTION_COMPILE_FLOW_DRAFT}`，优先基于当前 flow_draft 做编译，"
+            "不要伪造 resource_key / operation_key。\n"
+            f"- 若 action 是 `{EXECUTION_ACTION_PUBLISH_TEMPLATE_VERSION}`，优先引用 template_draft_digest "
+            "里的模板草稿，而不是猜测一个新的发布对象。\n"
+            f"- 若 action 是 `{EXECUTION_ACTION_PUBLISH_TEMPLATE_VERSION}`，可按需要显式补充 "
+            "`visibility`、`effect_tags`、`env_tags` 这类治理参数；"
+            "若没有明确证据，宁可省略让系统走默认冻结逻辑。\n"
+            f"- 若 action 是 `{EXECUTION_ACTION_EXECUTE_TEMPLATE_VERSION}`，优先引用已存在的模板版本或模板摘要，"
+            "不能因为命中候选模板就直接视为必须执行。\n"
             "- 若你决定采用某个资源的 sql_context_hints，必须显式写入 params.sql_context。\n"
             "- 若你采用了哪些 sql_context source，也必须显式写入 params.sql_context_sources。\n"
             "- params.sql_context 只是提供给 SQL Brain 的补充材料，不等于系统确认事实。\n"
@@ -839,6 +961,11 @@ class DataMakeReActPattern(AgentPattern):
             "## recall_results 使用约束\n"
             "- recall_results 是辅助参考，不是业务事实。命中相似历史不代表当前场景完全一致。\n"
             "- 若 recall_results 与当前 flow_draft 有冲突，以 flow_draft.confirmed_params 为准。\n"
+            "\n"
+            "## template_version_candidates 使用约束\n"
+            "- template_version_candidates 是模板检索层给出的候选证据，不是系统已经替你选好的最终模板。\n"
+            "- 你不能因为存在候选模板就自动输出 execute_template_version，仍需判断当前任务是否真的匹配。\n"
+            "- 若候选模板只部分匹配，优先继续补齐 flow_draft 或重新 compile/publish，而不是强行复用旧模板。\n"
             "\n"
             "## FILE REFERENCES\n"
             "- 你可能会看到形如 [filename](file://fileId) 的文件引用。\n"
@@ -855,6 +982,10 @@ class DataMakeReActPattern(AgentPattern):
         flow_draft = round_context.get("flow_draft") or {}
         available_resources = round_context.get("available_resources") or []
         recall_results = round_context.get("recall_results") or []
+        compiled_dag_digest = round_context.get("compiled_dag_digest")
+        template_draft_digest = round_context.get("template_draft_digest")
+        template_version_digest = round_context.get("template_version_digest")
+        template_version_candidates = round_context.get("template_version_candidates") or []
         ledger_snapshot = round_context.get("ledger_snapshot") or {}
 
         user_prompt = {
@@ -862,6 +993,10 @@ class DataMakeReActPattern(AgentPattern):
             "flow_draft": flow_draft,
             "available_resources": available_resources,
             "recall_results": recall_results,
+            "compiled_dag_digest": compiled_dag_digest,
+            "template_draft_digest": template_draft_digest,
+            "template_version_digest": template_version_digest,
+            "template_version_candidates": template_version_candidates,
             "ledger_summary": {
                 "next_round_id": ledger_snapshot.get("next_round_id"),
                 "latest_decision": ledger_snapshot.get("latest_decision"),
@@ -878,9 +1013,14 @@ class DataMakeReActPattern(AgentPattern):
                 "reasoning": "string（解释为什么现在选这个动作）",
                 "goal_delta": "string（本轮推进了目标的哪一步）",
                 "params": {
-                    "（execution_action 时）resource_key": "来自 available_resources",
-                    "（execution_action 时）operation_key": "来自 available_resources",
-                    "（execution_action 时）tool_args": "{}",
+                    f"（action={EXECUTION_ACTION_EXECUTE_REGISTERED_ACTION}|{EXECUTION_ACTION_PROBE_REGISTERED_ACTION} 时）resource_key": "来自 available_resources",
+                    f"（action={EXECUTION_ACTION_EXECUTE_REGISTERED_ACTION}|{EXECUTION_ACTION_PROBE_REGISTERED_ACTION} 时）operation_key": "来自 available_resources",
+                    f"（action={EXECUTION_ACTION_EXECUTE_REGISTERED_ACTION}|{EXECUTION_ACTION_PROBE_REGISTERED_ACTION} 时）tool_args": "{}",
+                    f"（action={EXECUTION_ACTION_PUBLISH_TEMPLATE_VERSION} 时可选）template_draft_id": "来自 template_draft_digest",
+                    f"（action={EXECUTION_ACTION_PUBLISH_TEMPLATE_VERSION} 时可选）visibility": "private|shared|global",
+                    f"（action={EXECUTION_ACTION_PUBLISH_TEMPLATE_VERSION} 时可选）effect_tags": ["描述模板影响范围/动作语义的标签"],
+                    f"（action={EXECUTION_ACTION_PUBLISH_TEMPLATE_VERSION} 时可选）env_tags": ["描述模板适用环境的标签"],
+                    f"（action={EXECUTION_ACTION_EXECUTE_TEMPLATE_VERSION} 时可选）template_version_id": "优先来自 template_version_candidates，也可来自 template_version_digest",
                     "（interaction_action 时）questions": ["至少一个明确问题"],
                     "（execution_action 可选）sql_context": {
                         "schema_ddl": [],
@@ -967,6 +1107,9 @@ class DataMakeReActPattern(AgentPattern):
         if not isinstance(granted_keys, list):
             granted_keys = []
         decision.params["_system_approval_grants"] = list(granted_keys)
+        decision.params["_system_task_id"] = context.task_id
+        if context.user_id:
+            decision.params["_system_user_id"] = context.user_id
 
     def _register_resource_actions_from_context(self, context: AgentContext) -> None:
         """
@@ -1023,12 +1166,16 @@ class DataMakeReActPattern(AgentPattern):
 
     async def _persist_flow_draft_if_present(self, context: AgentContext) -> None:
         """
-        若当前上下文已携带 flow_draft，则把它持久化为工作记忆视图。
+        若当前上下文已携带 flow_draft，则优先把它吸收到结构化 aggregate 宿主。
 
-        这里只做“把已有草稿写入 Memory/Ledger”，不推导、不补齐新的业务状态。
+        设计意图：
+        - `context.state["flow_draft"]` 仍然允许作为当前轮工作记忆输入；
+        - 但真正的持久化真相源应是 `FlowDraftAggregate`；
+        - 持久化完成后，再把 aggregate 的 projection 回写到 context.state，
+          避免下一阶段 round context 继续消费一份未规范化的临时 JSON。
         """
 
-        if self.draft_service is None:
+        if self.draft_service is None or self.flow_draft_aggregate_service is None:
             return
 
         state_draft = context.state.get("flow_draft")
@@ -1047,7 +1194,13 @@ class DataMakeReActPattern(AgentPattern):
             "version",
             persisted_draft.version if persisted_draft is not None else 1,
         )
-        await self.draft_service.save(FlowDraftState.model_validate(draft_payload))
+        normalized_state = FlowDraftState.model_validate(draft_payload)
+        aggregate = await self.flow_draft_aggregate_service.upsert_from_state(
+            draft_state=normalized_state
+        )
+        context.state["flow_draft"] = self.draft_service.projection_service.to_state(
+            aggregate
+        ).model_dump(mode="json")
 
     def _estimate_message_tokens(self, messages: list[dict[str, str]]) -> int:
         """
