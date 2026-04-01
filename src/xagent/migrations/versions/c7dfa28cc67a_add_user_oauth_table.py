@@ -28,6 +28,16 @@ def upgrade() -> None:
     # Check if table already exists
     existing_tables = inspector.get_table_names()
     if "user_oauth" not in existing_tables:
+        # Build foreign key constraints dynamically based on what tables exist
+        # This handles running migrations from empty database
+        foreign_keys = []
+
+        # Only add user_id FK if users table exists
+        if "users" in existing_tables:
+            foreign_keys.append(
+                sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE")
+            )
+
         op.create_table(
             "user_oauth",
             sa.Column("id", sa.Integer(), nullable=False),
@@ -47,7 +57,7 @@ def upgrade() -> None:
                 nullable=True,
             ),
             sa.Column("updated_at", sa.DateTime(timezone=True), nullable=True),
-            sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
+            *foreign_keys,
             sa.PrimaryKeyConstraint("id"),
             sa.UniqueConstraint(
                 "user_id",
@@ -138,19 +148,24 @@ def downgrade() -> None:
 
         if dialect_name == "sqlite":
             # SQLite workaround for reverting changes
-            with op.batch_alter_table("uploaded_files", schema=None) as batch_op:
-                if "uq_uploaded_files_storage_path" in existing_constraints:
-                    batch_op.drop_constraint(
-                        batch_op.f("uq_uploaded_files_storage_path"), type_="unique"
+            # Skip batch_alter_table if users table doesn't exist (FK reflection fails)
+            if "users" in existing_tables:
+                with op.batch_alter_table("uploaded_files", schema=None) as batch_op:
+                    if "uq_uploaded_files_storage_path" in existing_constraints:
+                        batch_op.drop_constraint(
+                            batch_op.f("uq_uploaded_files_storage_path"), type_="unique"
+                        )
+                    if "ix_uploaded_files_file_id" in existing_indexes:
+                        batch_op.drop_index(batch_op.f("ix_uploaded_files_file_id"))
+                    batch_op.create_index(
+                        "ix_uploaded_files_file_id", ["file_id"], unique=False
                     )
-                if "ix_uploaded_files_file_id" in existing_indexes:
-                    batch_op.drop_index(batch_op.f("ix_uploaded_files_file_id"))
-                batch_op.create_index(
-                    "ix_uploaded_files_file_id", ["file_id"], unique=False
-                )
-                batch_op.alter_column(
-                    "id", existing_type=sa.INTEGER(), nullable=True, autoincrement=True
-                )
+                    batch_op.alter_column(
+                        "id",
+                        existing_type=sa.INTEGER(),
+                        nullable=True,
+                        autoincrement=True,
+                    )
         else:
             # For PostgreSQL and other databases, use native operations
             if "uq_uploaded_files_storage_path" in existing_constraints:

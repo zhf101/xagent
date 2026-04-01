@@ -37,19 +37,18 @@ def upgrade() -> None:
     # Drop model_id column if it exists
     if "model_id" in columns:
         if dialect_name == "sqlite":
+            # SQLite batch mode handles FK constraints automatically when
+            # dropping columns — named FK constraints may not be tracked
             with op.batch_alter_table("agents", recreate="auto") as batch_op:
-                batch_op.drop_constraint(
-                    "fk_agents_model_id_models", type_="foreignkey"
-                )
                 batch_op.drop_column("model_id")
         else:
-            # PostgreSQL: drop constraint first, then column
-            try:
+            # PostgreSQL: check if FK constraint exists before dropping
+            fks = inspector.get_foreign_keys("agents")
+            fk_exists = any(fk["name"] == "fk_agents_model_id_models" for fk in fks)
+            if fk_exists:
                 op.drop_constraint(
                     "fk_agents_model_id_models", "agents", type_="foreignkey"
                 )
-            except Exception:
-                pass  # Constraint might not exist
             op.drop_column("agents", "model_id")
 
     # Add model_config column if it doesn't exist
@@ -93,6 +92,12 @@ def downgrade() -> None:
         else:
             # PostgreSQL
             op.add_column("agents", sa.Column("model_id", sa.Integer(), nullable=True))
-            op.create_foreign_key(
-                "fk_agents_model_id_models", "agents", ["model_id"], "models", ["id"]
-            )
+            # Only create FK if models table exists
+            if "models" in tables:
+                op.create_foreign_key(
+                    "fk_agents_model_id_models",
+                    "agents",
+                    ["model_id"],
+                    "models",
+                    ["id"],
+                )

@@ -82,6 +82,26 @@ def downgrade() -> None:
                 op.drop_index(op.f("ix_mcp_servers_id"), table_name="mcp_servers")
             except Exception:
                 pass  # Index might not exist
+
+    # Recreate mcp_servers_legacy table, conditionally with FK to users
+    dialect_name = bind.dialect.name
+    foreign_keys = []
+    if "users" in tables:
+        foreign_keys.append(
+            sa.ForeignKeyConstraint(
+                ["user_id"], ["users.id"], name=op.f("mcp_servers_user_id_fkey")
+            )
+        )
+
+    # Build columns with dialect-appropriate types
+    is_pg = dialect_name == "postgresql"
+    json_type = postgresql.JSON(astext_type=sa.Text()) if is_pg else sa.JSON()
+    timestamp_type = (
+        postgresql.TIMESTAMP(timezone=True) if is_pg else sa.DateTime(timezone=True)
+    )
+    timestamp_default = sa.text("now()") if is_pg else sa.text("CURRENT_TIMESTAMP")
+    pk_name = "mcp_servers_legacy_pkey" if is_pg else None
+
     op.create_table(
         "mcp_servers_legacy",
         sa.Column("id", sa.INTEGER(), autoincrement=True, nullable=False),
@@ -93,7 +113,7 @@ def downgrade() -> None:
         ),
         sa.Column(
             "config",
-            postgresql.JSON(astext_type=sa.Text()),
+            json_type,
             autoincrement=False,
             nullable=False,
         ),
@@ -101,22 +121,22 @@ def downgrade() -> None:
         sa.Column("is_default", sa.BOOLEAN(), autoincrement=False, nullable=True),
         sa.Column(
             "created_at",
-            postgresql.TIMESTAMP(timezone=True),
-            server_default=sa.text("now()"),
+            timestamp_type,
+            server_default=timestamp_default,
             autoincrement=False,
             nullable=True,
         ),
         sa.Column(
             "updated_at",
-            postgresql.TIMESTAMP(timezone=True),
-            server_default=sa.text("now()"),
+            timestamp_type,
+            server_default=timestamp_default,
             autoincrement=False,
             nullable=True,
         ),
-        sa.ForeignKeyConstraint(
-            ["user_id"], ["users.id"], name=op.f("mcp_servers_user_id_fkey")
-        ),
-        sa.PrimaryKeyConstraint("id", name=op.f("mcp_servers_pkey")),
+        *foreign_keys,
+        sa.PrimaryKeyConstraint("id", name=pk_name)
+        if pk_name
+        else sa.PrimaryKeyConstraint("id"),
     )
     op.create_index(
         op.f("ix_mcp_servers_id"), "mcp_servers_legacy", ["id"], unique=False

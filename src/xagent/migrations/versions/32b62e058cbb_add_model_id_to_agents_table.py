@@ -38,18 +38,29 @@ def upgrade() -> None:
 
     dialect_name = bind.dialect.name
     if dialect_name == "sqlite":
-        # Use batch mode for SQLite to add column with foreign key
-        with op.batch_alter_table("agents", recreate="auto") as batch_op:
-            batch_op.add_column(sa.Column("model_id", sa.Integer(), nullable=True))
-            batch_op.create_foreign_key(
-                "fk_agents_model_id_models", "models", ["model_id"], ["id"]
-            )
+        # SQLite: Try batch_alter_table with auto recreate first
+        # If reflection fails (users table doesn't exist), fall back to simple add_column
+        try:
+            with op.batch_alter_table("agents", recreate="auto") as batch_op:
+                batch_op.add_column(sa.Column("model_id", sa.Integer(), nullable=True))
+                # Only create foreign key if models table exists
+                if "models" in tables:
+                    batch_op.create_foreign_key(
+                        "fk_agents_model_id_models", "models", ["model_id"], ["id"]
+                    )
+        except sa.exc.NoSuchTableError:
+            # Reflection failed due to missing referenced table (users)
+            # Fall back to simple column addition without batch mode
+            op.add_column("agents", sa.Column("model_id", sa.Integer(), nullable=True))
+            # Note: Foreign key not created in this case
+            # SQLAlchemy will handle FK creation when it creates the full schema
     else:
         # For PostgreSQL and other databases, use native operations
         op.add_column("agents", sa.Column("model_id", sa.Integer(), nullable=True))
-        op.create_foreign_key(
-            "fk_agents_model_id_models", "agents", "models", ["model_id"], ["id"]
-        )
+        if "models" in tables:
+            op.create_foreign_key(
+                "fk_agents_model_id_models", "agents", "models", ["model_id"], ["id"]
+            )
 
 
 def downgrade() -> None:
@@ -77,10 +88,11 @@ def downgrade() -> None:
             batch_op.drop_column("model_id")
     else:
         # For PostgreSQL and other databases, use native operations
-        try:
+        # Check if FK constraint exists before dropping to avoid transaction error
+        fks = inspector.get_foreign_keys("agents")
+        fk_exists = any(fk["name"] == "fk_agents_model_id_models" for fk in fks)
+        if fk_exists:
             op.drop_constraint(
                 "fk_agents_model_id_models", "agents", type_="foreignkey"
             )
-        except Exception:
-            pass  # Constraint doesn't exist, skip
         op.drop_column("agents", "model_id")

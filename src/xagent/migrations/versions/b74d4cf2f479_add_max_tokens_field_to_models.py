@@ -14,7 +14,7 @@ from sqlalchemy.engine.reflection import Inspector
 
 # revision identifiers, used by Alembic.
 revision: str = "b74d4cf2f479"
-down_revision: Union[str, None] = "441d4f5d399c"
+down_revision: Union[str, None] = "0260431_extend_alembic_version"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
@@ -42,6 +42,12 @@ def downgrade() -> None:
 
     bind = context.get_bind()
     inspector = Inspector.from_engine(bind)
+
+    # Check if models table exists
+    tables = inspector.get_table_names()
+    if "models" not in tables:
+        # Table doesn't exist, nothing to drop
+        return
 
     # Check if column exists before dropping
     existing_columns = [col["name"] for col in inspector.get_columns("models")]
