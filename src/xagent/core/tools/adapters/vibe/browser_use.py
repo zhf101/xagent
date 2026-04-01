@@ -136,6 +136,16 @@ class BrowserExtractTextResult(BaseModel):
     selector: str = Field(description="Extracted selector")
     text: str = Field(default="", description="Extracted text")
     length: int = Field(default=0, description="Text length")
+    current_url: str = Field(default="", description="Current page URL")
+    content_trust: str = Field(
+        default="", description="Content trust label for the extracted text"
+    )
+    content_source: str = Field(
+        default="", description="Source identifier for trust governance"
+    )
+    trust_notice: str = Field(
+        default="", description="How the caller should treat this extracted content"
+    )
     message: str = Field(description="Result message")
     error: str = Field(default="", description="Error message if failed")
 

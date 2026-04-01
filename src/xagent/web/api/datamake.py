@@ -16,6 +16,9 @@ from ..services.llm_utils import resolve_llms_from_names
 from ...core.agent.context import AgentContext
 from ...core.agent.pattern.data_make_react import DataMakeReActPattern
 from ...core.agent.trace import Tracer
+from ...core.datamake.application.interaction import UiResponseMapper
+from ...core.datamake.application.supervision import SupervisionBridge
+from ...core.datamake.contracts.interaction import ApprovalTicket, InteractionTicket
 from ...core.datamake.ledger.sql_models import DataMakeFlowDraft
 from ...core.datamake.ledger.persistent_repository import PersistentLedgerRepository
 from ...core.datamake.resources.catalog import ResourceCatalog
@@ -58,6 +61,26 @@ class DataMakeContextResponse(BaseModel):
     flow_draft: dict[str, Any] | None = None
     execution_trace: list[dict[str, Any]]
     recent_errors: list[dict[str, Any]]
+    pending_resume: "DataMakePendingResumeResponse | None" = None
+
+
+class DataMakePendingResumeResponse(BaseModel):
+    """
+    datamake 详情页恢复等待态所需的最小协议。
+
+    它的职责不是重新驱动主脑，而是把账本里已经存在的 pending ticket
+    转成前端可直接恢复渲染的字段集合，避免详情页刷新后丢失 Human in Loop 上下文。
+    """
+
+    status: str
+    question: str
+    field: str
+    ticket_id: str | None = None
+    approval_id: str | None = None
+    chat_response: dict[str, Any] | None = None
+
+
+DataMakeContextResponse.model_rebuild()
 
 
 def _safe_timestamp(value: datetime | None) -> str | None:
@@ -164,6 +187,47 @@ def _build_recent_error_item(event: TraceEvent) -> dict[str, Any]:
         "hint": hint,
         "transient": transient,
     }
+
+
+def _build_pending_resume_response(
+    *,
+    interaction_ticket: InteractionTicket | None,
+    approval_ticket: ApprovalTicket | None,
+) -> DataMakePendingResumeResponse | None:
+    """
+    从持久化 pending ticket 复原详情页需要的等待态视图。
+
+    这里刻意保持和 `pattern.run()` 的等待态返回同构：
+    - `status/question/field`
+    - `ticket_id/approval_id`
+    - `chat_response`
+
+    这样前端 hook 只需要维护一套等待态渲染逻辑，不会因为“实时返回”和“刷新恢复”
+    变成两套协议。
+    """
+
+    ui_mapper = UiResponseMapper()
+    supervision_bridge = SupervisionBridge()
+
+    if interaction_ticket is not None:
+        return DataMakePendingResumeResponse(
+            status="waiting_user",
+            question="\n".join(interaction_ticket.questions),
+            field=interaction_ticket.response_field,
+            ticket_id=interaction_ticket.ticket_id,
+            chat_response=ui_mapper.to_chat_payload(interaction_ticket),
+        )
+
+    if approval_ticket is not None:
+        return DataMakePendingResumeResponse(
+            status="waiting_human",
+            question=supervision_bridge.build_waiting_question(approval_ticket),
+            field=approval_ticket.response_field,
+            approval_id=approval_ticket.approval_id,
+            chat_response=ui_mapper.to_approval_chat_payload(approval_ticket),
+        )
+
+    return None
 
 
 def _resolve_datamake_task_prompt(task: Task, user_input: str) -> str:
@@ -509,6 +573,8 @@ async def get_datamake_task_context(
 
     ledger_repository = PersistentLedgerRepository(session_factory=get_session_local())
     records = await ledger_repository.list_records(str(task_id))
+    pending_interaction = await ledger_repository.load_pending_interaction(str(task_id))
+    pending_approval = await ledger_repository.load_pending_approval(str(task_id))
     execution_trace = [
         item
         for item in (
@@ -539,4 +605,8 @@ async def get_datamake_task_context(
         flow_draft=flow_draft,
         execution_trace=execution_trace,
         recent_errors=recent_errors,
+        pending_resume=_build_pending_resume_response(
+            interaction_ticket=pending_interaction,
+            approval_ticket=pending_approval,
+        ),
     )

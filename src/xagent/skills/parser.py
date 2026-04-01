@@ -1,37 +1,41 @@
 """
-Skill Parser - Parse SKILL.md and related files
+技能文档解析器。
+
+这里的目标不是只把 `SKILL.md` 当成一段纯文本读取出来，
+而是尽量把技能目录解析成“平台可消费”的稳定结构：
+
+- 兼容历史技能：仍然支持通过 markdown section 提取 `Description / When to Use / Execution Flow`
+- 支持产品化元数据：优先解析 frontmatter，形成结构化 `metadata`
+- 对上保持兼容：仍然返回旧调用方依赖的扁平字段，避免一次性打碎现有 API / manager / selector
 """
+
+from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Dict, List
+from typing import Any, Dict, List
+
+from .metadata import parse_skill_metadata
 
 
 class SkillParser:
-    """Parse SKILL.md files"""
+    """解析技能目录下的 `SKILL.md` 与相关文件。"""
 
     @staticmethod
-    def parse(skill_dir: Path) -> Dict:
+    def parse(skill_dir: Path) -> Dict[str, Any]:
         """
-        Parse skill directory
+        解析单个技能目录。
 
         Args:
-            skill_dir: Skill directory path
+            skill_dir: 技能目录路径
 
         Returns:
-            {
-                "name": "code_reviewer",
-                "path": "/path/to/skill",
-                "description": "Skill description",
-                "when_to_use": "Usage scenario",
-                "template": "Template content or empty",
-                "execution_flow": "Execution flow",
-                "tags": ["code", "review"],
-                "files": ["SKILL.md", "template.md"]
-            }
+            同时包含：
+            - 旧接口依赖的扁平字段
+            - 新目录服务依赖的结构化 `metadata`
 
         Raises:
-            ValueError: If SKILL.md does not exist
+            ValueError: `SKILL.md` 不存在
         """
         skill_md = skill_dir / "SKILL.md"
         if not skill_md.exists():
@@ -45,16 +49,26 @@ class SkillParser:
             SkillParser._read_text_file(template_md) if template_md.exists() else ""
         )
 
+        metadata = parse_skill_metadata(content=content, skill_name=skill_dir.name)
+
         return {
-            "name": skill_dir.name,
+            "name": metadata.name,
             "path": str(skill_dir),
             "content": content,  # Complete SKILL.md content
             "template": template_content,  # template.md content (if exists)
-            "description": SkillParser._extract_section(content, "Description"),
-            "when_to_use": SkillParser._extract_section(content, "When to Use"),
-            "execution_flow": SkillParser._extract_section(content, "Execution Flow"),
-            "tags": SkillParser._extract_tags(content),
+            "description": metadata.description,
+            "when_to_use": metadata.when_to_use,
+            "execution_flow": metadata.execution_flow,
+            "tags": metadata.tags,
+            "domains": metadata.domains,
+            "requires_tools": metadata.requires_tools,
+            "requires_env": metadata.requires_env,
+            "always_include": metadata.always_include,
+            "safety_level": metadata.safety_level,
+            "allowed_patterns": metadata.allowed_patterns,
+            "supports_progressive_loading": metadata.supports_progressive_loading,
             "files": SkillParser._list_files(skill_dir),
+            "metadata": metadata.model_dump(mode="python"),
         }
 
     @staticmethod

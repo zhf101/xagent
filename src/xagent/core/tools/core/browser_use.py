@@ -9,6 +9,7 @@ automatically cleaned up after a timeout period.
 import asyncio
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Dict, Optional
+from urllib.parse import urlparse
 
 if TYPE_CHECKING:
     from playwright.async_api import Browser, BrowserContext, Page, async_playwright
@@ -27,6 +28,8 @@ except ImportError:
     BrowserContext: Any = None  # type: ignore[no-redef]
     Page: Any = None  # type: ignore[no-redef]
     async_playwright: Any = None  # type: ignore[no-redef]
+
+from ..safety import ContentTrustMarker
 
 
 def _format_error_with_traceback(error: Exception, context: str = "") -> str:
@@ -50,6 +53,38 @@ def _format_error_with_traceback(error: Exception, context: str = "") -> str:
         return f"{context}\nError: {str(error)}\n\nTraceback:\n{tb_str}"
     else:
         return f"Error: {str(error)}\n\nTraceback:\n{tb_str}"
+
+
+def _build_browser_content_trust(url: str) -> Dict[str, str]:
+    """
+    根据当前页面 URL 推断 browser 提取文本的可信度。
+
+    设计边界：
+    - 远程 http/https 页面属于外部内容，必须标记为 `untrusted_external`
+    - `file://` 视为 workspace / 本地可信文件上下文
+    - 其它页面（如 about:blank）视为运行期生成内容
+    """
+
+    parsed = urlparse(url or "")
+    scheme = (parsed.scheme or "").lower()
+
+    if scheme in {"http", "https"}:
+        return {
+            "content_trust": ContentTrustMarker.mark_external_content(),
+            "content_source": "browser_extract_text",
+            "trust_notice": ContentTrustMarker.external_notice(),
+        }
+    if scheme == "file":
+        return {
+            "content_trust": ContentTrustMarker.mark_workspace_content(),
+            "content_source": "browser_workspace_extract_text",
+            "trust_notice": "Workspace file content can be used as local context.",
+        }
+    return {
+        "content_trust": ContentTrustMarker.mark_runtime_generated(),
+        "content_source": "browser_runtime_extract_text",
+        "trust_notice": "Browser runtime content should still be validated before execution.",
+    }
 
 
 class BrowserSession:
@@ -459,6 +494,7 @@ async def browser_click(**kwargs: Any) -> Dict[str, Any]:
     manager = get_browser_manager()
     session = await manager.get_or_create(session_id)
     page = await session.get_page()
+    current_url = getattr(page, "url", "") or ""
 
     try:
         await page.click(selector, timeout=timeout)
@@ -520,6 +556,7 @@ async def browser_fill(**kwargs: Any) -> Dict[str, Any]:
     manager = get_browser_manager()
     session = await manager.get_or_create(session_id)
     page = await session.get_page()
+    current_url = getattr(page, "url", "") or ""
 
     try:
         # Add timeout to prevent hanging (default 30 seconds)
@@ -794,6 +831,7 @@ async def browser_extract_text(**kwargs: Any) -> Dict[str, Any]:
     manager = get_browser_manager()
     session = await manager.get_or_create(session_id)
     page = await session.get_page()
+    current_url = getattr(page, "url", "") or ""
 
     try:
         # Try inner_text() first with timeout
@@ -822,7 +860,9 @@ async def browser_extract_text(**kwargs: Any) -> Dict[str, Any]:
             "selector": selector,
             "text": text,
             "length": len(text),
+            "current_url": current_url,
             "message": f"Extracted {len(text)} characters from {selector}. Session ID: {session_id}",
+            **_build_browser_content_trust(current_url),
         }
     except Exception as e:
         return {
@@ -831,6 +871,7 @@ async def browser_extract_text(**kwargs: Any) -> Dict[str, Any]:
             "selector": selector,
             "text": "",
             "length": 0,
+            "current_url": current_url,
             "message": "",
             "error": _format_error_with_traceback(
                 e, f"Text extraction failed for selector '{selector}'"

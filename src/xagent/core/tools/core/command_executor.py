@@ -12,6 +12,8 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from ..safety import ShellSafetyGuard
+
 logger = logging.getLogger(__name__)
 
 # Constants
@@ -129,7 +131,11 @@ def _sanitize_interpreter_suffix(interpreter: str) -> str:
 class CommandExecutorCore:
     """Shell command executor with execution controls"""
 
-    def __init__(self, working_directory: Optional[str] = None):
+    def __init__(
+        self,
+        working_directory: Optional[str] = None,
+        shell_guard: Optional[ShellSafetyGuard] = None,
+    ):
         """
         Initialize the command executor.
 
@@ -138,6 +144,24 @@ class CommandExecutorCore:
         """
         self.working_directory = working_directory
         self.timeout = 300  # 5 minutes default
+        self.shell_guard = shell_guard or ShellSafetyGuard()
+
+    def _infer_workspace_root(self) -> Optional[str]:
+        """
+        推断当前命令执行的 workspace 根目录。
+
+        设计原因：
+        - 现有工具通常把 working directory 设到 `workspace/output`
+        - 但安全边界应覆盖整个 workspace，而不是只覆盖 output 子目录
+        """
+
+        if not self.working_directory:
+            return None
+
+        working_path = Path(self.working_directory).resolve()
+        if working_path.name.lower() in {"input", "output", "temp"}:
+            return str(working_path.parent)
+        return str(working_path)
 
     def execute_command(
         self,
@@ -170,6 +194,20 @@ class CommandExecutorCore:
         # Sanitize command for logging
         safe_command = _sanitize_command_for_logging(command)
         logger.info(f"CommandExecutor: Executing: {safe_command}")
+
+        safety_decision = self.shell_guard.evaluate_command(
+            str(command),
+            workspace_root=self._infer_workspace_root(),
+        )
+        if not safety_decision.allowed:
+            message = safety_decision.evidences[0].message
+            logger.warning(f"CommandExecutor: Blocked by agent safety policy: {message}")
+            return {
+                "success": False,
+                "output": "",
+                "error": f"Blocked by agent safety policy: {message}",
+                "return_code": TIMEOUT_EXIT_CODE,
+            }
 
         if self.working_directory:
             logger.info(
@@ -248,6 +286,22 @@ class CommandExecutorCore:
             logger.info(
                 f"CommandExecutor: Executing script with interpreter: {interpreter}"
             )
+
+            safety_decision = self.shell_guard.evaluate_command(
+                script_content,
+                workspace_root=self._infer_workspace_root(),
+            )
+            if not safety_decision.allowed:
+                message = safety_decision.evidences[0].message
+                logger.warning(
+                    f"CommandExecutor: Script blocked by agent safety policy: {message}"
+                )
+                return {
+                    "success": False,
+                    "output": "",
+                    "error": f"Blocked by agent safety policy: {message}",
+                    "return_code": TIMEOUT_EXIT_CODE,
+                }
 
             # Sanitize interpreter for temp file suffix
             safe_suffix = _sanitize_interpreter_suffix(interpreter)

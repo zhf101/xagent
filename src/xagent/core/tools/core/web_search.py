@@ -12,6 +12,8 @@ import html2text
 import httpx
 from bs4 import BeautifulSoup
 
+from ..safety import ContentTrustMarker
+
 logger = logging.getLogger(__name__)
 
 
@@ -134,7 +136,14 @@ class WebSearchCore:
                     content_preview = result["content"][:200].replace("\n", " ")
                     logger.info(f"   Content preview: {content_preview}...")
 
-            results.append(result)
+            results.append(
+                ContentTrustMarker.attach_metadata(
+                    result,
+                    label=ContentTrustMarker.mark_external_content(),
+                    source="web_search",
+                    notice=ContentTrustMarker.external_notice(),
+                )
+            )
 
         logger.info(f"🎯 Search completed successfully with {len(results)} results")
         return results

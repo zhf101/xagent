@@ -123,6 +123,7 @@ class UiResponseMapper:
             "questions": list(ticket.questions),
             "response_field": ticket.response_field,
             "ticket_id": ticket.ticket_id,
+            "response_contract": ticket.metadata.get("response_contract"),
         }
 
     def to_approval_chat_payload(

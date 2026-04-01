@@ -9,6 +9,8 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
+from ..safety import ContentTrustMarker
+
 logger = logging.getLogger(__name__)
 
 
@@ -113,7 +115,14 @@ class TavilyWebSearchCore:
             if include_content:
                 raw = item.get("raw_content") or item.get("content", "")
                 result["content"] = raw[:8192] if raw else ""
-            results.append(result)
+            results.append(
+                ContentTrustMarker.attach_metadata(
+                    result,
+                    label=ContentTrustMarker.mark_external_content(),
+                    source="tavily_web_search",
+                    notice=ContentTrustMarker.external_notice(),
+                )
+            )
 
         logger.info("🎯 Tavily search returned %d results", len(results))
         return results

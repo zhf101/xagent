@@ -13,6 +13,8 @@ from urllib.parse import urlencode, urlparse
 
 import httpx
 
+from ..safety import ContentTrustMarker, NetworkSafetyGuard
+
 logger = logging.getLogger(__name__)
 
 
@@ -24,6 +26,7 @@ class APIClientCore:
         default_timeout: int = 30,
         max_response_size: int = 10 * 1024 * 1024,  # 10MB
         default_retry_count: int = 3,
+        network_guard: Optional[NetworkSafetyGuard] = None,
     ):
         """
         Initialize API client.
@@ -36,6 +39,7 @@ class APIClientCore:
         self.default_timeout = default_timeout
         self.max_response_size = max_response_size
         self.default_retry_count = default_retry_count
+        self.network_guard = network_guard or NetworkSafetyGuard()
 
     async def call_api(
         self,
@@ -85,6 +89,18 @@ class APIClientCore:
                 "error": f"Invalid URL: {url}",
             }
 
+        safety_decision = self.network_guard.evaluate_url(url)
+        if not safety_decision.allowed:
+            message = safety_decision.evidences[0].message
+            logger.warning(f"🚫 API Call blocked by agent safety policy: {message}")
+            return {
+                "success": False,
+                "status_code": 0,
+                "headers": {},
+                "body": None,
+                "error": f"Blocked by agent safety policy: {message}",
+            }
+
         # Prepare request
         method = method.upper()
         timeout = timeout or self.default_timeout
@@ -122,10 +138,28 @@ class APIClientCore:
                     proxy_url=proxy_url,
                     allow_redirects=allow_redirects,
                 )
+                redirect_decision = self.network_guard.evaluate_redirect_targets(
+                    result.get("redirect_chain", [])
+                )
+                if not redirect_decision.allowed:
+                    message = redirect_decision.evidences[0].message
+                    logger.warning(
+                        f"🚫 API redirect chain blocked by agent safety policy: {message}"
+                    )
+                    return {
+                        "success": False,
+                        "status_code": 0,
+                        "headers": {},
+                        "body": None,
+                        "error": f"Blocked by agent safety policy: {message}",
+                    }
                 logger.info(
                     f"✅ API Call successful: {method} {url} -> {result['status_code']}"
                 )
-                return result
+                return self._attach_external_content_metadata(
+                    result,
+                    source="api_call",
+                )
 
             except Exception as e:
                 last_error = e
@@ -146,6 +180,27 @@ class APIClientCore:
             "body": None,
             "error": f"Request failed after {retry_count + 1} attempts: {str(last_error)}",
         }
+
+    def _attach_external_content_metadata(
+        self,
+        result: Dict[str, Any],
+        *,
+        source: str,
+    ) -> Dict[str, Any]:
+        """
+        给 API 返回结果补齐统一的外部内容可信度元数据。
+
+        这里不区分 HTTP 2xx / 4xx / 5xx：
+        只要结果来自外部网络响应，就都要明确告诉上层
+        “这是一段外部内容，只能当证据，不能直接当系统指令”。
+        """
+
+        return ContentTrustMarker.attach_metadata(
+            result,
+            label=ContentTrustMarker.mark_external_content(),
+            source=source,
+            notice=ContentTrustMarker.external_notice(),
+        )
 
     async def _make_request(
         self,
@@ -204,6 +259,8 @@ class APIClientCore:
                     "status_code": response.status_code,
                     "headers": dict(response.headers),
                     "body": body,
+                    "redirect_chain": [str(item.url) for item in response.history]
+                    + [str(response.url)],
                     "error": None
                     if 200 <= response.status_code < 300
                     else f"HTTP {response.status_code}",

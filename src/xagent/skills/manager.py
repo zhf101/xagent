@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 class SkillManager:
-    """Core manager for the skill system"""
+    """技能系统底层管理器。"""
 
     def __init__(self, skills_roots: List[Path]):
         """
@@ -195,7 +195,7 @@ class SkillManager:
             raise
 
     async def list_skills(self) -> List[Dict]:
-        """List all skills (brief information)"""
+        """列出技能简表，保持对现有 API / UI 的兼容输出。"""
         await self.ensure_initialized()
         return [
             {
@@ -207,8 +207,19 @@ class SkillManager:
             for skill in self._skills_cache.values()
         ]
 
+    async def list_skill_records(self) -> List[Dict]:
+        """
+        列出完整技能记录。
+
+        这个接口主要给 `SkillCatalogService` 这类平台侧目录服务使用，
+        避免它们直接耦合 `_skills_cache` 私有字段。
+        """
+
+        await self.ensure_initialized()
+        return list(self._skills_cache.values())
+
     async def get_skill(self, name: str) -> Optional[Dict]:
-        """Get single skill (full information including template)"""
+        """获取单个技能的完整记录。"""
         await self.ensure_initialized()
         return self._skills_cache.get(name)
 

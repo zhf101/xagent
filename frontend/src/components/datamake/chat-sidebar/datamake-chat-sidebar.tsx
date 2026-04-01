@@ -17,7 +17,11 @@ export function DataMakeChatSidebar({ taskId }: { taskId?: number }) {
   const handleInteractionSubmit = (e: React.FormEvent) => {
     e.preventDefault()
     const fd = new FormData(e.target as HTMLFormElement)
-    const reply = Object.fromEntries(fd.entries())
+    const responseContract = state.chatResponseConfig?.response_contract
+    const reply =
+      responseContract === "free_text"
+        ? String(fd.get("answer") || "").trim()
+        : Object.fromEntries(fd.entries())
     submitInteraction(reply)
   }
 

@@ -60,6 +60,18 @@ class APICallResult(BaseModel):
     headers: Dict[str, str] = Field(description="Response headers")
     body: Any = Field(description="Response body (parsed JSON or text)")
     error: Optional[str] = Field(default=None, description="Error message if failed")
+    redirect_chain: Optional[list[str]] = Field(
+        default=None, description="Resolved redirect chain for the HTTP call"
+    )
+    content_trust: Optional[str] = Field(
+        default=None, description="Trust label for the returned content"
+    )
+    content_source: Optional[str] = Field(
+        default=None, description="Normalized content source identifier"
+    )
+    trust_notice: Optional[str] = Field(
+        default=None, description="Governance notice for consuming the response"
+    )
 
 
 class APITool(AbstractBaseTool):

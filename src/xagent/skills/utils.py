@@ -1,5 +1,9 @@
 """
-Skill utilities - Utility functions for creating skill_manager
+技能工厂辅助函数。
+
+当前保留两类工厂：
+- `create_skill_manager()`：兼容旧调用点
+- `create_skill_catalog_service()`：面向新产品化目录能力
 """
 
 import logging
@@ -7,6 +11,7 @@ import os
 from pathlib import Path
 from typing import List, Optional
 
+from .catalog import SkillCatalogService
 from .manager import SkillManager
 
 logger = logging.getLogger(__name__)
@@ -43,6 +48,23 @@ def create_skill_manager(skills_roots: Optional[List[Path]] = None) -> SkillMana
     skill_manager = SkillManager(skills_roots=skills_roots)
 
     return skill_manager
+
+
+def create_skill_catalog_service(
+    skills_roots: Optional[List[Path]] = None,
+) -> SkillCatalogService:
+    """
+    创建技能目录服务。
+
+    设计意图：
+    - 旧代码继续使用 `SkillManager`
+    - 新代码逐步切到 `SkillCatalogService`
+    - 避免在首版产品化改造里一次性替换所有调用点
+    """
+
+    return SkillCatalogService(
+        skill_manager=create_skill_manager(skills_roots=skills_roots)
+    )
 
 
 def _parse_skill_dirs(env_value: str) -> List[Path]:

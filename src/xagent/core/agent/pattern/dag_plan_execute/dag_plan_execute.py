@@ -100,6 +100,7 @@ class DAGPlanExecutePattern(AgentPattern):
         compact_llm: Optional[BaseLLM] = None,
         memory_store: Optional[MemoryStore] = None,
         skill_manager: Optional[Any] = None,
+        skill_catalog_service: Optional[Any] = None,
         allowed_skills: Optional[List[str]] = None,
     ):
         """Initialize the enhanced DAG Plan-Execute pattern.
@@ -139,11 +140,23 @@ class DAGPlanExecutePattern(AgentPattern):
 
         # skill_manager 是必需的，如果没有传入则创建默认的
         if skill_manager is None:
-            from .....skills.utils import create_skill_manager
+            from .....skills.utils import create_skill_catalog_service, create_skill_manager
 
             skill_manager = create_skill_manager()
+            if skill_catalog_service is None:
+                skill_catalog_service = create_skill_catalog_service(
+                    skills_roots=getattr(skill_manager, "skills_roots", None)
+                )
+
+        if skill_catalog_service is None:
+            from .....skills.utils import create_skill_catalog_service
+
+            skill_catalog_service = create_skill_catalog_service(
+                skills_roots=getattr(skill_manager, "skills_roots", None)
+            )
 
         self.skill_manager = skill_manager
+        self.skill_catalog_service = skill_catalog_service
 
         # Execution state
         self.current_plan: Optional[ExecutionPlan] = None
@@ -555,6 +568,7 @@ class DAGPlanExecutePattern(AgentPattern):
                     # Create parallel tasks
                     memory_task = None
                     skill_task = None
+                    skill_catalog_task = None
 
                     if self.memory_store:
                         # Trace memory retrieval start
@@ -597,10 +611,15 @@ class DAGPlanExecutePattern(AgentPattern):
                             task_id=skill_task_id,
                             allowed_skills=self.allowed_skills,
                         )
+                    if self.skill_catalog_service:
+                        skill_catalog_task = self.skill_catalog_service.list_context_summaries(
+                            pattern="dag_plan_execute",
+                            include_unavailable=False,
+                        )
 
                     # Execute memory and skill queries in parallel
                     results = await asyncio.gather(
-                        *filter(None, [memory_task, skill_task]),
+                        *filter(None, [memory_task, skill_task, skill_catalog_task]),
                         return_exceptions=True,
                     )
 
@@ -634,11 +653,19 @@ class DAGPlanExecutePattern(AgentPattern):
                             )
 
                     # Process skill result
-                    skill_result = (
-                        results[1]
-                        if memory_task and skill_task and len(results) > 1
-                        else results[0]
-                        if skill_task and len(results) > 0
+                    result_index = 0
+                    if memory_task:
+                        result_index += 1
+                    skill_result = results[result_index] if skill_task else None
+                    if skill_task:
+                        result_index += 1
+                    skill_catalog_result = (
+                        results[result_index] if skill_catalog_task else None
+                    )
+                    skill_summaries = (
+                        skill_catalog_result
+                        if skill_catalog_result
+                        and not isinstance(skill_catalog_result, Exception)
                         else None
                     )
                     if skill_result and not isinstance(skill_result, Exception):
@@ -646,7 +673,10 @@ class DAGPlanExecutePattern(AgentPattern):
                         skill: Dict[str, Any] = skill_result  # type: ignore[assignment]
                         if skill:
                             skill_context = self.plan_generator._build_skill_context(
-                                skill
+                                skill,
+                                skill_summaries=cast(
+                                    Optional[List[Dict[str, Any]]], skill_summaries
+                                ),
                             )
                             self._skill_context = (
                                 skill_context  # Store for execution phase
@@ -657,6 +687,15 @@ class DAGPlanExecutePattern(AgentPattern):
                             logger.info("No relevant skill found")
                     elif skill_result and isinstance(skill_result, Exception):
                         logger.warning(f"Skill selection failed: {skill_result}")
+
+                    if (
+                        not skill_context
+                        and isinstance(skill_summaries, list)
+                        and skill_summaries
+                    ):
+                        skill_context = self.plan_generator._build_skill_catalog_context(
+                            cast(List[Dict[str, Any]], skill_summaries)
+                        )
 
                     if skill_context and not self._skill_context:
                         self._skill_context = skill_context

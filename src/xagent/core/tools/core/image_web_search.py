@@ -12,6 +12,8 @@ from urllib.parse import urlparse
 
 import httpx
 
+from ..safety import ContentTrustMarker
+
 logger = logging.getLogger(__name__)
 
 
@@ -116,7 +118,7 @@ class ImageWebSearchCore:
     async def _process_search_results(
         self, data: Dict[str, Any], save_images: bool
     ) -> List[Dict[str, Any]]:
-        """Process search results and optionally download images"""
+        """处理图片搜索结果，并统一附加外部内容可信度标记。"""
         results: List[Dict[str, Any]] = []
 
         if "items" not in data:
@@ -152,7 +154,14 @@ class ImageWebSearchCore:
                     logger.warning(f"   Failed to download: {e}")
                     result["local_path"] = None
 
-            results.append(result)
+            results.append(
+                ContentTrustMarker.attach_metadata(
+                    result,
+                    label=ContentTrustMarker.mark_external_content(),
+                    source="image_web_search",
+                    notice=ContentTrustMarker.external_notice(),
+                )
+            )
 
         logger.info(f"🎯 Search completed with {len(results)} results")
         return results

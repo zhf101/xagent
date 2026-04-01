@@ -8,5 +8,25 @@ Skills are directory-based modules that provide knowledge and templates for task
 from .manager import SkillManager
 from .parser import SkillParser
 from .selector import SkillSelector
+from .availability import SkillAvailabilityService
+from .catalog import SkillCatalogService
+from .catalog_models import (
+    SkillAvailability,
+    SkillContextSummary,
+    SkillDescriptor,
+    SkillMetadata,
+)
+from .context import SkillContextAssembler
 
-__all__ = ["SkillManager", "SkillParser", "SkillSelector"]
+__all__ = [
+    "SkillAvailability",
+    "SkillAvailabilityService",
+    "SkillCatalogService",
+    "SkillContextAssembler",
+    "SkillContextSummary",
+    "SkillDescriptor",
+    "SkillManager",
+    "SkillMetadata",
+    "SkillParser",
+    "SkillSelector",
+]

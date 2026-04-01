@@ -9,6 +9,8 @@ from typing import Any, Dict, List, Optional, cast
 
 import httpx
 
+from ..safety import ContentTrustMarker
+
 logger = logging.getLogger(__name__)
 
 
@@ -126,16 +128,21 @@ class ZhipuWebSearchCore:
         for item in response.get("search_result", []) or []:
             content = item.get("content", "")
             results.append(
-                {
-                    "title": item.get("title", ""),
-                    "link": item.get("link", ""),
-                    "snippet": content,
-                    "content": content,
-                    "media": item.get("media", ""),
-                    "icon": item.get("icon", ""),
-                    "publish_date": item.get("publish_date", ""),
-                    "refer": item.get("refer", ""),
-                }
+                ContentTrustMarker.attach_metadata(
+                    {
+                        "title": item.get("title", ""),
+                        "link": item.get("link", ""),
+                        "snippet": content,
+                        "content": content,
+                        "media": item.get("media", ""),
+                        "icon": item.get("icon", ""),
+                        "publish_date": item.get("publish_date", ""),
+                        "refer": item.get("refer", ""),
+                    },
+                    label=ContentTrustMarker.mark_external_content(),
+                    source="zhipu_web_search",
+                    notice=ContentTrustMarker.external_notice(),
+                )
             )
         return results
 
