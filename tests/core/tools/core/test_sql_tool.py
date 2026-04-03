@@ -10,6 +10,7 @@ import pytest
 from xagent.core.tools.core.sql_tool import (
     _get_connection_url,
     _row_to_dict,
+    SQLPolicyDecision,
     execute_sql_query,
     get_database_type,
 )
@@ -222,3 +223,96 @@ class TestExecuteSqlQuery:
                     output_file="test.parquet",
                     workspace=mock_workspace,
                 )
+
+    @patch("xagent.core.tools.core.sql_tool.create_engine")
+    def test_execute_sql_query_does_not_execute_when_waiting_approval(
+        self, mock_create_engine, monkeypatch
+    ):
+        monkeypatch.setenv("XAGENT_EXTERNAL_DB_TEST", "sqlite:///:memory:")
+
+        mock_gateway = Mock()
+        mock_gateway.evaluate.return_value = SQLPolicyDecision(
+            decision="wait_approval",
+            sql_fingerprint="fp_1",
+            risk_level="high",
+            risk_reasons=["write_statement"],
+            approval_request_id=9,
+            ledger_match_id=None,
+            message="Approval required",
+        )
+
+        result = execute_sql_query(
+            "test",
+            "UPDATE users SET status = 'inactive' WHERE id = 1",
+            policy_gateway=mock_gateway,
+            policy_context={
+                "task_id": 1,
+                "plan_id": "plan_1",
+                "step_id": "step_2",
+                "environment": "prod",
+                "tool_name": "execute_sql_query",
+                "tool_payload": {
+                    "query": "UPDATE users SET status = 'inactive' WHERE id = 1"
+                },
+                "requested_by": 1,
+                "attempt_no": 1,
+                "dag_snapshot_version": 1,
+                "resume_token": "resume_1",
+            },
+        )
+
+        assert result["success"] is False
+        assert result["blocked"] is True
+        assert result["decision"] == "wait_approval"
+        mock_create_engine.assert_not_called()
+
+    @patch("xagent.core.tools.core.sql_tool.create_engine")
+    def test_execute_sql_query_uses_policy_gateway_before_execution(
+        self, mock_create_engine, monkeypatch
+    ):
+        monkeypatch.setenv("XAGENT_EXTERNAL_DB_TEST", "sqlite:///:memory:")
+
+        mock_gateway = Mock()
+        mock_gateway.evaluate.return_value = SQLPolicyDecision(
+            decision="allow_direct",
+            sql_fingerprint="fp_1",
+            risk_level="low",
+            risk_reasons=[],
+            approval_request_id=None,
+            ledger_match_id=3,
+            message="Approved by ledger",
+        )
+
+        mock_engine = MagicMock()
+        mock_conn = MagicMock()
+        mock_engine.connect.return_value.__enter__.return_value = mock_conn
+        mock_create_engine.return_value = mock_engine
+
+        mock_result = MagicMock()
+        mock_result.returns_rows = False
+        mock_result.rowcount = 1
+        mock_conn.execute.return_value = mock_result
+
+        result = execute_sql_query(
+            "test",
+            "UPDATE users SET status = 'inactive' WHERE id = 1",
+            policy_gateway=mock_gateway,
+            policy_context={
+                "task_id": 1,
+                "plan_id": "plan_1",
+                "step_id": "step_2",
+                "environment": "prod",
+                "tool_name": "execute_sql_query",
+                "tool_payload": {
+                    "query": "UPDATE users SET status = 'inactive' WHERE id = 1"
+                },
+                "requested_by": 1,
+                "attempt_no": 1,
+                "dag_snapshot_version": 1,
+                "resume_token": "resume_1",
+            },
+        )
+
+        assert result["success"] is True
+        mock_gateway.evaluate.assert_called_once()
+        mock_create_engine.assert_called_once()

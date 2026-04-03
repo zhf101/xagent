@@ -31,8 +31,43 @@ from ..models.user import User
 from ..tools.config import WebToolConfig
 from ..user_isolated_memory import UserContext
 from ..utils.db_timezone import safe_timestamp_to_unix
+from ..services.dag_recovery_service import DAGRecoveryService
 
 logger = logging.getLogger(__name__)
+
+
+def _build_task_info_payload(task: Any, db: Session, *, is_dag: Optional[bool]) -> Dict[str, Any]:
+    (
+        model_id,
+        small_fast_model_id,
+        visual_model_id,
+        compact_model_id,
+    ) = _resolve_task_llm_ids(task, db)
+
+    return {
+        "id": task.id,
+        "title": task.title,
+        "description": task.description,
+        "status": task.status.value,
+        "model_id": model_id,
+        "small_fast_model_id": small_fast_model_id,
+        "visual_model_id": visual_model_id,
+        "compact_model_id": compact_model_id,
+        "model_name": task.model_name,
+        "small_fast_model_name": task.small_fast_model_name,
+        "visual_model_name": task.visual_model_name,
+        "compact_model_name": task.compact_model_name,
+        "vibe_mode": task.vibe_mode,
+        "agent_id": task.agent_id,
+        "is_dag": is_dag,
+        "approval": DAGRecoveryService(db).build_approval_summary(int(task.id)),
+        "created_at": safe_timestamp_to_unix(task.created_at)
+        if task.created_at
+        else None,
+        "updated_at": safe_timestamp_to_unix(task.updated_at)
+        if task.updated_at
+        else None,
+    }
 
 
 def _resolve_task_llm_ids(
@@ -554,12 +589,15 @@ async def execute_task_background(
 
         db_gen = get_db()
         db_new = next(db_gen)
+        task_info_event = None
         try:
             task_updated = db_new.query(Task).filter(Task.id == task_id).first()
             if task_updated:
                 # If task current status is PAUSED, don't overwrite
                 if task_updated.status != TaskStatus.PAUSED:
-                    if result.get("success", False):
+                    if result.get("status") == "waiting_approval":
+                        task_updated.status = TaskStatus.WAITING_APPROVAL
+                    elif result.get("success", False):
                         task_updated.status = TaskStatus.COMPLETED
                     else:
                         task_updated.status = TaskStatus.FAILED
@@ -572,24 +610,86 @@ async def execute_task_background(
                         f"Task {task_id} is paused, not updating status to {result.get('success')}"
                     )
 
-                persist_assistant_message(
-                    db_new,
-                    task_id=task_id,
-                    user_id=int(task.user_id),
-                    content=str(
-                        chat_response.get("message", ai_response)
+                if result.get("status") == "waiting_approval":
+                    # websocket 是运行态结果第一次落到宿主 Task 的入口。
+                    # 这里除了改 task 状态，还要把审批请求、聊天消息和 trace 广播一并补齐，
+                    # 这样审批页和聊天页才能在同一时刻看到一致的阻断现场。
+                    recovery_service = DAGRecoveryService(db_new)
+                    approval_request_id = result.get("approval_request_id") or (
+                        result.get("dag_status", {}) or {}
+                    ).get("approval_request_id")
+                    if approval_request_id is not None:
+                        task_updated.blocked_by_approval_request_id = int(
+                            approval_request_id
+                        )
+                        db_new.commit()
+                        recovery_service.record_approval_request_message(
+                            int(task_id), int(approval_request_id)
+                        )
+                        approval_summary = recovery_service.build_approval_summary(
+                            int(task_id)
+                        )
+                        recovery_service.record_trace_event(
+                            task_id=int(task_id),
+                            event_type="approval_request_created",
+                            data={
+                                "approval_request_id": approval_request_id,
+                                "blocked_step_id": approval_summary.get(
+                                    "blocked_step_id"
+                                ),
+                                "risk_level": (
+                                    approval_summary.get("pending_request") or {}
+                                ).get("risk_level"),
+                            },
+                            step_id=approval_summary.get("blocked_step_id"),
+                        )
+                        await manager.broadcast_to_task(
+                            {
+                                **create_stream_event(
+                                    "approval_request_created",
+                                    int(task_id),
+                                    {
+                                        "approval_request_id": approval_request_id,
+                                        "blocked_step_id": approval_summary.get(
+                                            "blocked_step_id"
+                                        ),
+                                        "risk_level": (
+                                            approval_summary.get("pending_request") or {}
+                                        ).get("risk_level"),
+                                    },
+                                ),
+                                "step_id": approval_summary.get("blocked_step_id"),
+                            },
+                            int(task_id),
+                        )
+                else:
+                    persist_assistant_message(
+                        db_new,
+                        task_id=task_id,
+                        user_id=int(task.user_id),
+                        content=str(
+                            chat_response.get("message", ai_response)
+                            if isinstance(chat_response, dict)
+                            else ai_response
+                        ),
+                        message_type="chat_response"
                         if isinstance(chat_response, dict)
-                        else ai_response
-                    ),
-                    message_type="chat_response"
-                    if isinstance(chat_response, dict)
-                    else "final_answer",
-                    interactions=chat_response.get("interactions")
-                    if isinstance(chat_response, dict)
-                    else None,
+                        else "final_answer",
+                        interactions=chat_response.get("interactions")
+                        if isinstance(chat_response, dict)
+                        else None,
+                    )
+                task_info_event = create_stream_event(
+                    "task_info",
+                    int(task_id),
+                    _build_task_info_payload(task_updated, db_new, is_dag=None),
+                    task_updated.updated_at if task_updated.updated_at else None,
                 )
         finally:
             db_new.close()
+
+        if task_info_event is not None:
+            await manager.broadcast_to_task(task_info_event, int(task_id))
 
         # Note: trace_task_completion is handled by the agent execution logic (e.g., dag_plan_execute.py)
 
@@ -699,12 +799,15 @@ async def execute_continuation_background(
 
         db_gen = get_db()
         db_new = next(db_gen)
+        task_info_event = None
         try:
             task_updated = db_new.query(Task).filter(Task.id == task_id).first()
             if task_updated:
                 # If task current status is PAUSED, don't overwrite
                 if task_updated.status != TaskStatus.PAUSED:
-                    if result.get("success", False):
+                    if result.get("status") == "waiting_approval":
+                        task_updated.status = TaskStatus.WAITING_APPROVAL
+                    elif result.get("success", False):
                         task_updated.status = TaskStatus.COMPLETED
                     else:
                         task_updated.status = TaskStatus.FAILED
@@ -715,24 +818,85 @@ async def execute_continuation_background(
                 else:
                     logger.info(f"Task {task_id} is paused, not updating status")
 
-                persist_assistant_message(
-                    db_new,
-                    task_id=task_id,
-                    user_id=int(task.user_id),
-                    content=str(
-                        chat_response.get("message", ai_response)
+                if result.get("status") == "waiting_approval":
+                    # 和上面的主执行路径保持同样的宿主投影语义：
+                    # waiting_approval 不只是一个状态值，还伴随审批摘要、trace 与前端广播。
+                    recovery_service = DAGRecoveryService(db_new)
+                    approval_request_id = result.get("approval_request_id") or (
+                        result.get("dag_status", {}) or {}
+                    ).get("approval_request_id")
+                    if approval_request_id is not None:
+                        task_updated.blocked_by_approval_request_id = int(
+                            approval_request_id
+                        )
+                        db_new.commit()
+                        recovery_service.record_approval_request_message(
+                            int(task_id), int(approval_request_id)
+                        )
+                        approval_summary = recovery_service.build_approval_summary(
+                            int(task_id)
+                        )
+                        recovery_service.record_trace_event(
+                            task_id=int(task_id),
+                            event_type="approval_request_created",
+                            data={
+                                "approval_request_id": approval_request_id,
+                                "blocked_step_id": approval_summary.get(
+                                    "blocked_step_id"
+                                ),
+                                "risk_level": (
+                                    approval_summary.get("pending_request") or {}
+                                ).get("risk_level"),
+                            },
+                            step_id=approval_summary.get("blocked_step_id"),
+                        )
+                        await manager.broadcast_to_task(
+                            {
+                                **create_stream_event(
+                                    "approval_request_created",
+                                    int(task_id),
+                                    {
+                                        "approval_request_id": approval_request_id,
+                                        "blocked_step_id": approval_summary.get(
+                                            "blocked_step_id"
+                                        ),
+                                        "risk_level": (
+                                            approval_summary.get("pending_request") or {}
+                                        ).get("risk_level"),
+                                    },
+                                ),
+                                "step_id": approval_summary.get("blocked_step_id"),
+                            },
+                            int(task_id),
+                        )
+                else:
+                    persist_assistant_message(
+                        db_new,
+                        task_id=task_id,
+                        user_id=int(task.user_id),
+                        content=str(
+                            chat_response.get("message", ai_response)
+                            if isinstance(chat_response, dict)
+                            else ai_response
+                        ),
+                        message_type="chat_response"
                         if isinstance(chat_response, dict)
-                        else ai_response
-                    ),
-                    message_type="chat_response"
-                    if isinstance(chat_response, dict)
-                    else "final_answer",
-                    interactions=chat_response.get("interactions")
-                    if isinstance(chat_response, dict)
-                    else None,
+                        else "final_answer",
+                        interactions=chat_response.get("interactions")
+                        if isinstance(chat_response, dict)
+                        else None,
+                    )
+                task_info_event = create_stream_event(
+                    "task_info",
+                    int(task_id),
+                    _build_task_info_payload(task_updated, db_new, is_dag=None),
+                    task_updated.updated_at if task_updated.updated_at else None,
                 )
         finally:
             db_new.close()
+
+        if task_info_event is not None:
+            await manager.broadcast_to_task(task_info_event, int(task_id))
 
         # Send task completion event
         await manager.broadcast_to_task(
@@ -1234,39 +1398,10 @@ async def handle_chat_message(
                             if agent:
                                 is_dag = agent.execution_mode == "graph"
 
-                        (
-                            model_id,
-                            small_fast_model_id,
-                            visual_model_id,
-                            compact_model_id,
-                        ) = _resolve_task_llm_ids(task, db)
-
                         task_event = create_stream_event(
                             "task_info",
                             task_id,
-                            {
-                                "id": task.id,
-                                "title": task.title,
-                                "description": task.description,
-                                "status": task.status.value,
-                                "model_id": model_id,
-                                "small_fast_model_id": small_fast_model_id,
-                                "visual_model_id": visual_model_id,
-                                "compact_model_id": compact_model_id,
-                                "model_name": task.model_name,
-                                "small_fast_model_name": task.small_fast_model_name,
-                                "visual_model_name": task.visual_model_name,
-                                "compact_model_name": task.compact_model_name,
-                                "vibe_mode": task.vibe_mode,
-                                "agent_id": task.agent_id,
-                                "is_dag": is_dag,
-                                "created_at": safe_timestamp_to_unix(task.created_at)
-                                if task.created_at
-                                else None,
-                                "updated_at": safe_timestamp_to_unix(task.updated_at)
-                                if task.updated_at
-                                else None,
-                            },
+                            _build_task_info_payload(task, db, is_dag=is_dag),
                             task.created_at if task.created_at else None,
                         )
                         await manager.broadcast_to_task(task_event, task_id)
@@ -1362,38 +1497,11 @@ async def handle_chat_message(
                         task.status = TaskStatus.RUNNING
                         db.commit()
 
-                        (
-                            model_id,
-                            small_fast_model_id,
-                            visual_model_id,
-                            compact_model_id,
-                        ) = _resolve_task_llm_ids(task, db)
-
                         # Send task status update event
                         task_event = create_stream_event(
                             "task_info",
                             task_id,
-                            {
-                                "id": task.id,
-                                "title": task.title,
-                                "description": task.description,
-                                "status": task.status.value,
-                                "model_id": model_id,
-                                "small_fast_model_id": small_fast_model_id,
-                                "visual_model_id": visual_model_id,
-                                "compact_model_id": compact_model_id,
-                                "model_name": task.model_name,
-                                "small_fast_model_name": task.small_fast_model_name,
-                                "visual_model_name": task.visual_model_name,
-                                "compact_model_name": task.compact_model_name,
-                                "vibe_mode": task.vibe_mode,
-                                "created_at": safe_timestamp_to_unix(task.created_at)
-                                if task.created_at
-                                else None,
-                                "updated_at": safe_timestamp_to_unix(task.updated_at)
-                                if task.updated_at
-                                else None,
-                            },
+                            _build_task_info_payload(task, db, is_dag=None),
                             task.created_at if task.created_at else None,
                         )
                         await manager.broadcast_to_task(task_event, task_id)
@@ -1470,39 +1578,10 @@ async def handle_chat_message(
                             if agent:
                                 is_dag = agent.execution_mode == "graph"
 
-                        (
-                            model_id,
-                            small_fast_model_id,
-                            visual_model_id,
-                            compact_model_id,
-                        ) = _resolve_task_llm_ids(task, db)
-
                         task_event = create_stream_event(
                             "task_info",
                             task_id,
-                            {
-                                "id": task.id,
-                                "title": task.title,
-                                "description": task.description,
-                                "status": task.status.value,
-                                "model_id": model_id,
-                                "small_fast_model_id": small_fast_model_id,
-                                "visual_model_id": visual_model_id,
-                                "compact_model_id": compact_model_id,
-                                "model_name": task.model_name,
-                                "small_fast_model_name": task.small_fast_model_name,
-                                "visual_model_name": task.visual_model_name,
-                                "compact_model_name": task.compact_model_name,
-                                "vibe_mode": task.vibe_mode,
-                                "agent_id": task.agent_id,
-                                "is_dag": is_dag,
-                                "created_at": safe_timestamp_to_unix(task.created_at)
-                                if task.created_at
-                                else None,
-                                "updated_at": safe_timestamp_to_unix(task.updated_at)
-                                if task.updated_at
-                                else None,
-                            },
+                            _build_task_info_payload(task, db, is_dag=is_dag),
                             task.created_at if task.created_at else None,
                         )
                         await manager.broadcast_to_task(task_event, task_id)
@@ -1639,38 +1718,11 @@ async def handle_execute_task(
             task.status = TaskStatus.RUNNING
             db.commit()
 
-            (
-                model_id,
-                small_fast_model_id,
-                visual_model_id,
-                compact_model_id,
-            ) = _resolve_task_llm_ids(task, db)
-
             # Send task info event to update frontend state
             task_event = create_stream_event(
                 "task_info",
                 task_id,
-                {
-                    "id": task.id,
-                    "title": task.title,
-                    "description": task.description,
-                    "status": task.status.value,
-                    "model_id": model_id,
-                    "small_fast_model_id": small_fast_model_id,
-                    "visual_model_id": visual_model_id,
-                    "compact_model_id": compact_model_id,
-                    "model_name": task.model_name,
-                    "small_fast_model_name": task.small_fast_model_name,
-                    "visual_model_name": task.visual_model_name,
-                    "compact_model_name": task.compact_model_name,
-                    "vibe_mode": task.vibe_mode,
-                    "created_at": safe_timestamp_to_unix(task.created_at)
-                    if task.created_at
-                    else None,
-                    "updated_at": safe_timestamp_to_unix(task.updated_at)
-                    if task.updated_at
-                    else None,
-                },
+                _build_task_info_payload(task, db, is_dag=None),
                 task.created_at if task.created_at else None,
             )
             await manager.broadcast_to_task(task_event, task_id)
@@ -1715,7 +1767,9 @@ async def handle_execute_task(
                 )
 
                 # Update task status
-                if result.get("success", False):
+                if result.get("status") == "waiting_approval":
+                    task.status = TaskStatus.WAITING_APPROVAL
+                elif result.get("success", False):
                     task.status = TaskStatus.COMPLETED
                 else:
                     task.status = TaskStatus.FAILED
@@ -1831,40 +1885,11 @@ async def send_historical_data_as_stream(
                 if agent:
                     is_dag = agent.execution_mode == "graph"
 
-            (
-                model_id,
-                small_fast_model_id,
-                visual_model_id,
-                compact_model_id,
-            ) = _resolve_task_llm_ids(task, db)
-
             # Send task basic info
             task_event = create_stream_event(
                 "task_info",
                 task_id,
-                {
-                    "id": task.id,
-                    "title": task.title,
-                    "description": task.description,
-                    "status": task.status.value,
-                    "model_id": model_id,
-                    "small_fast_model_id": small_fast_model_id,
-                    "visual_model_id": visual_model_id,
-                    "compact_model_id": compact_model_id,
-                    "model_name": task.model_name,
-                    "small_fast_model_name": task.small_fast_model_name,
-                    "visual_model_name": task.visual_model_name,
-                    "compact_model_name": task.compact_model_name,
-                    "vibe_mode": task.vibe_mode,
-                    "agent_id": task.agent_id,
-                    "is_dag": is_dag,
-                    "created_at": safe_timestamp_to_unix(task.created_at)
-                    if task.created_at
-                    else None,
-                    "updated_at": safe_timestamp_to_unix(task.updated_at)
-                    if task.updated_at
-                    else None,
-                },
+                _build_task_info_payload(task, db, is_dag=is_dag),
                 task.created_at if task.created_at else None,
             )
             await manager.send_personal_message(task_event, websocket)
@@ -2179,6 +2204,7 @@ async def handle_pause_task(
     websocket: WebSocket, task_id: int, message_data: dict
 ) -> None:
     """Handle task pause request"""
+    db = None
     try:
         logger.info(f"🔘 handle_pause_task called for task {task_id}")
         user = message_data.get("user")
@@ -2233,7 +2259,7 @@ async def handle_pause_task(
                         f"Task {task_id} not found or access denied for user {user.id}"
                     )
             finally:
-                db.close()
+                db_update.close()
 
             # Send pause confirmation
             await manager.broadcast_to_task(
@@ -2275,12 +2301,16 @@ async def handle_pause_task(
         # Other errors, re-raise
         logger.error(f"Unexpected error pausing task {task_id}: {e}")
         raise
+    finally:
+        if db is not None:
+            db.close()
 
 
 async def handle_resume_task(
     websocket: WebSocket, task_id: int, message_data: dict
 ) -> None:
     """Handle task resume request"""
+    db = None
     try:
         user = message_data.get("user")
         if not user:
@@ -2291,6 +2321,33 @@ async def handle_resume_task(
 
         db_gen = get_db()
         db = next(db_gen)
+
+        # Update task status in database
+        from ..models.task import Task, TaskStatus
+
+        db_gen = get_db()
+        db_update = next(db_gen)
+        try:
+            # Admin can resume any task, regular users can only resume their own tasks
+            if user.is_admin:
+                task = db_update.query(Task).filter(Task.id == task_id).first()
+            else:
+                task = (
+                    db_update.query(Task)
+                    .filter(Task.id == task_id, Task.user_id == user.id)
+                    .first()
+                )
+            if task and task.status == TaskStatus.WAITING_APPROVAL:
+                await manager.send_personal_message(
+                    {
+                        "type": "error",
+                        "message": "Task is waiting for approval. Use the approval resume flow after approval is granted.",
+                    },
+                    websocket,
+                )
+                return
+        finally:
+            db_update.close()
 
         # Get agent service
         from .chat import get_agent_manager
@@ -2303,13 +2360,9 @@ async def handle_resume_task(
         if hasattr(agent_service, "resume_execution"):
             await agent_service.resume_execution()
 
-            # Update task status in database
-            from ..models.task import Task, TaskStatus
-
             db_gen = get_db()
             db_update = next(db_gen)
             try:
-                # Admin can resume any task, regular users can only resume their own tasks
                 if user.is_admin:
                     task = db_update.query(Task).filter(Task.id == task_id).first()
                 else:
@@ -2327,7 +2380,7 @@ async def handle_resume_task(
                         f"Task {task_id} not found or access denied for user {user.id}"
                     )
             finally:
-                db.close()
+                db_update.close()
 
             # Send resume confirmation
             await manager.broadcast_to_task(
@@ -2369,6 +2422,9 @@ async def handle_resume_task(
         # Other errors, re-raise
         logger.error(f"Unexpected error resuming task {task_id}: {e}")
         raise
+    finally:
+        if db is not None:
+            db.close()
 
 
 @ws_router.websocket("/ws/build/preview")

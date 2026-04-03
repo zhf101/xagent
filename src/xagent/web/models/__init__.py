@@ -1,8 +1,17 @@
 from .agent import Agent
 from .chat_message import TaskChatMessage
 from .database import Base, get_db, get_engine, get_session_local
+from .datamake_sql_asset import (
+    DataMakeSqlAsset,
+    DataMakeSqlAssetChunk,
+    DataMakeSqlAssetHarvestJob,
+    DataMakeSqlAssetRun,
+    DataMakeSqlAssetVersion,
+)
+from .datamake_http_resource import DataMakeHttpResource
 from .mcp import MCPServer, UserMCPServer
 from .model import Model
+from .sql_approval import ApprovalLedger, ApprovalRequest, DAGStepRun
 from .sandbox import SandboxInfo
 from .system_setting import SystemSetting
 from .task import DAGExecution, Task
@@ -29,8 +38,17 @@ __all__ = [
     "UserMCPServer",
     "Task",
     "DAGExecution",
+    "ApprovalLedger",
+    "ApprovalRequest",
+    "DAGStepRun",
     "TemplateStats",
     "Text2SQLDatabase",
+    "DataMakeHttpResource",
+    "DataMakeSqlAsset",
+    "DataMakeSqlAssetVersion",
+    "DataMakeSqlAssetRun",
+    "DataMakeSqlAssetChunk",
+    "DataMakeSqlAssetHarvestJob",
     "ToolConfig",
     "ToolUsage",
     "SystemSetting",

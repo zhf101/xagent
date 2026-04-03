@@ -1,17 +1,13 @@
-"""
-SQL Tool for xagent - SQL execution using SQLAlchemy
+"""SQL 执行工具。
 
-Database connections are configured via environment variables, not raw URLs.
-Connection format: XAGENT_EXTERNAL_DB_<NAME>=<connection_url>
+职责边界：
+- 负责真正连接外部数据库并执行 SQL；
+- 可选接入策略网关，在执行前把 SQL 交给审批策略判定；
+- 返回统一结构化结果给上层工具适配器或 ReAct/DAG 执行器。
 
-Example:
-    XAGENT_EXTERNAL_DB_ANALYTICS=postgresql://user:pass@localhost:5432/analytics
-    XAGENT_EXTERNAL_DB_PROD=mysql+pymysql://user:pass@localhost:3306/production
-    XAGENT_EXTERNAL_DB_LOCAL=sqlite:///path/to/database.db
-    XAGENT_EXTERNAL_DB_DUCKDB=duckdb:///path/to/database.duckdb
-
-Note: This tool uses SQLAlchemy's synchronous engine.
-Async drivers are not supported currently.
+注意：
+- 数据库连接来自环境变量，不接受任意原始 URL；
+- 这里不直接修改 Task/DAG 状态，只返回 allow / wait_approval / deny 的结果。
 """
 
 import csv
@@ -19,11 +15,14 @@ import json
 import logging
 import os
 from pathlib import Path
+from dataclasses import asdict
 from typing import TYPE_CHECKING, Any, Optional
 
 from pydantic import BaseModel, Field
 from sqlalchemy import URL, create_engine, text
 from sqlalchemy.engine import CursorResult, Row, make_url
+
+from ...policy.sql_policy_gateway import SQLPolicyDecision
 
 if TYPE_CHECKING:
     from ...workspace import TaskWorkspace
@@ -32,14 +31,17 @@ logger = logging.getLogger(__name__)
 
 
 class SQLQueryArgs(BaseModel):
-    """Arguments for SQL query execution."""
+    """SQL 查询工具输入契约。"""
 
     connection_name: str = Field(description="Database connection name to use")
     query: str = Field(description="SQL query to execute")
 
 
 class SQLQueryResult(BaseModel):
-    """Result from SQL query execution in LLM-friendly format"""
+    """SQL 工具输出契约。
+
+    目标不是暴露底层数据库细节，而是给上层 agent 一个稳定、可序列化的结果结构。
+    """
 
     success: bool = Field(description="Whether the query executed successfully")
     rows: list[dict[str, Any]] = Field(
@@ -100,27 +102,58 @@ def execute_sql_query(
     query: str,
     output_file: Optional[str] = None,
     workspace: Optional["TaskWorkspace"] = None,
+    policy_gateway: Optional[Any] = None,
+    policy_context: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
-    """Execute SQL queries on databases and return structured results.
+    """执行 SQL 并返回统一结果。
 
-    Args:
-        connection_name: Database connection name to use
-        query: SQL statement to execute
-        output_file: Optional file path to export query results.
-            Supported formats: .csv, .parquet, .json, .jsonl, .ndjson (relative to workspace output directory).
-            When provided, query results are exported to file instead of being returned.
-        workspace: Optional TaskWorkspace instance for file exports.
+    业务语义：
+    - 如果传入 policy_gateway，会先做审批策略判定；
+    - 如果策略要求等待审批或直接拒绝，这里不会碰数据库；
+    - 只有 allow_direct 才会真正执行 SQL。
 
-    Returns:
-        dict:
-            with keys:
-            - success: true if query worked
-            - rows: query results as list of dicts (SELECT only, empty when exported)
-            - row_count: number of rows returned or affected
-            - columns: column names in the result
-            - message: what happened
+    返回值始终是 dict，供 tool adapter / agent 统一消费。
     """
-    # Get connection URL from environment
+    if policy_gateway is not None:
+        if policy_context is None:
+            raise ValueError("policy_context is required when policy_gateway is provided")
+
+        # 核心约束：SQL 工具自己不理解业务审批，只把必要上下文交给策略网关。
+        decision = policy_gateway.evaluate(
+            task_id=policy_context["task_id"],
+            plan_id=policy_context["plan_id"],
+            step_id=policy_context["step_id"],
+            datasource_id=connection_name,
+            environment=policy_context["environment"],
+            sql=query,
+            tool_name=policy_context["tool_name"],
+            tool_payload=policy_context["tool_payload"],
+            requested_by=policy_context["requested_by"],
+            attempt_no=policy_context["attempt_no"],
+            dag_snapshot_version=policy_context["dag_snapshot_version"],
+            resume_token=policy_context["resume_token"],
+        )
+
+        if decision.decision != "allow_direct":
+            # 一旦被策略拦截，返回“阻断结果”而不是抛异常。
+            # 这样上层执行器可以把它投影成 waiting_approval，而不是把流程当成普通失败。
+            return {
+                "success": False,
+                "blocked": decision.decision == "wait_approval",
+                "decision": decision.decision,
+                "policy_decision": asdict(decision),
+                "message": decision.message or "SQL execution blocked by policy",
+                "task_id": policy_context["task_id"],
+                "plan_id": policy_context["plan_id"],
+                "step_id": policy_context["step_id"],
+                "dag_snapshot_version": policy_context["dag_snapshot_version"],
+                "resume_token": policy_context["resume_token"],
+                "rows": [],
+                "row_count": 0,
+                "columns": [],
+            }
+
+    # 只有明确放行后，才允许真正打开外部数据库连接。
     url = _get_connection_url(connection_name)
     stmt = text(query)
     engine = create_engine(url)

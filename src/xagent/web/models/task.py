@@ -19,20 +19,30 @@ from .database import Base
 
 
 class TaskStatus(enum.Enum):
-    """Task status enumeration"""
+    """任务总状态。
+
+    这里的 `waiting_approval` 是对“任务被审批请求阻断”的聚合表达，
+    用于页面和任务列表展示，不替代审批请求表本身。
+    """
 
     PENDING = "pending"
     RUNNING = "running"
     PAUSED = "paused"
+    WAITING_APPROVAL = "waiting_approval"
     COMPLETED = "completed"
     FAILED = "failed"
 
 
 class DAGExecutionPhase(enum.Enum):
-    """DAG execution phase enumeration"""
+    """DAG 运行阶段。
+
+    相比 TaskStatus，这里更偏执行器视角，强调当前 DAG 停在 planning / executing /
+    waiting_approval 等哪个运行阶段。
+    """
 
     PLANNING = "planning"
     EXECUTING = "executing"
+    WAITING_APPROVAL = "waiting_approval"
     CHECKING = "checking"
     COMPLETED = "completed"
     FAILED = "failed"
@@ -43,6 +53,7 @@ class StepStatus(enum.Enum):
 
     PENDING = "pending"
     RUNNING = "running"
+    WAITING_APPROVAL = "waiting_approval"
     COMPLETED = "completed"
     FAILED = "failed"
     ANALYZED = "analyzed"
@@ -66,7 +77,12 @@ class AgentType(enum.Enum):
 
 
 class Task(Base):  # type: ignore
-    """Task model"""
+    """任务主模型。
+
+    它是聊天页、DAG 执行、审批恢复三条链路共享的宿主实体。
+    在审批场景中，Task 只记录“当前是否被阻断、最近一次恢复是谁触发”，
+    真正的审批明细仍落在 `ApprovalRequest`。
+    """
 
     __tablename__ = "tasks"
 
@@ -75,6 +91,11 @@ class Task(Base):  # type: ignore
     title = Column(String(200), nullable=False)
     description = Column(Text)
     status: Any = Column(Enum(TaskStatus), default=TaskStatus.PENDING)
+    # 指向当前把任务阻断住的审批请求；为空表示任务未被审批显式卡住。
+    blocked_by_approval_request_id = Column(Integer, nullable=True)
+    # 最近一次恢复动作的审计字段，用于前端展示与问题回溯。
+    last_resume_at = Column(DateTime(timezone=True), nullable=True)
+    last_resume_by = Column(Integer, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -157,6 +178,18 @@ class Task(Base):  # type: ignore
     # Relationships
     user = relationship("User", back_populates="tasks")
     dag_executions = relationship("DAGExecution", back_populates="task")
+    approval_requests = relationship(
+        "ApprovalRequest",
+        back_populates="task",
+        cascade="all, delete-orphan",
+        order_by="ApprovalRequest.id",
+    )
+    dag_step_runs = relationship(
+        "DAGStepRun",
+        back_populates="task",
+        cascade="all, delete-orphan",
+        order_by="DAGStepRun.id",
+    )
     chat_messages = relationship(
         "TaskChatMessage",
         back_populates="task",
@@ -170,7 +203,11 @@ class Task(Base):  # type: ignore
 
 
 class DAGExecution(Base):  # type: ignore
-    """DAG execution status model"""
+    """DAG 执行快照。
+
+    这是跨页面恢复的核心宿主表，保存当前 plan、step 状态集合和审批阻断锚点。
+    只要这张表还在，前端就能重新拼出“停在第几步、因为什么审批停下”。
+    """
 
     __tablename__ = "dag_executions"
 
@@ -185,7 +222,24 @@ class DAGExecution(Base):  # type: ignore
     execution_time = Column(Float)  # Total execution time in seconds
     start_time = Column(DateTime(timezone=True))
     end_time = Column(DateTime(timezone=True))
+    # 这三项共同标识“当前恢复的是哪一版 DAG 快照”。
+    plan_id = Column(String(255), nullable=True)
+    global_iteration = Column(Integer, default=0)
+    snapshot_version = Column(Integer, default=0)
+    # blocked_step_id / blocked_action_type 用于前端直观展示当前卡点。
+    blocked_step_id = Column(String(255), nullable=True)
+    blocked_action_type = Column(String(100), nullable=True)
     current_plan = Column(JSON)  # Store the current plan data
+    # 这些 JSON 快照不是长期事实表，而是恢复 runtime 时的最小必要镜像。
+    step_states = Column(JSON, nullable=True)
+    completed_step_ids = Column(JSON, nullable=True)
+    failed_step_ids = Column(JSON, nullable=True)
+    running_step_ids = Column(JSON, nullable=True)
+    step_execution_results = Column(JSON, nullable=True)
+    dependency_graph = Column(JSON, nullable=True)
+    # 审批阻断时，execution 会持有当前审批请求与 resume token，供恢复入口直接定位。
+    approval_request_id = Column(Integer, nullable=True)
+    resume_token = Column(String(255), nullable=True)
     skipped_steps = Column(JSON)  # Store list of skipped step IDs
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(

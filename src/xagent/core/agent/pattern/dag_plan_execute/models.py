@@ -13,6 +13,7 @@ class StepStatus(Enum):
 
     PENDING = "pending"
     RUNNING = "running"
+    WAITING_APPROVAL = "waiting_approval"
     COMPLETED = "completed"
     FAILED = "failed"
     SKIPPED = "skipped"
@@ -23,6 +24,7 @@ class ExecutionPhase(Enum):
 
     PLANNING = "planning"
     EXECUTING = "executing"
+    WAITING_APPROVAL = "waiting_approval"
     CHECKING = "checking"
     COMPLETED = "completed"
     FAILED = "failed"

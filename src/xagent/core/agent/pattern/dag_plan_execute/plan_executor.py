@@ -1,5 +1,9 @@
-"""
-Plan execution logic for DAG plan-execute pattern.
+"""DAG PlanExecutor。
+
+这个执行器负责真正调度 DAG step，并把工具执行结果回写为步骤状态。
+在审批链路里，它额外承担两件关键职责：
+- 在调用 SQL 工具前注入审批 runtime 上下文
+- 在收到“等待审批”结果后中断 DAG，并保存最小阻断信息给上层 pattern
 """
 
 import asyncio
@@ -9,6 +13,7 @@ import traceback
 from collections import deque
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
+from uuid import uuid4
 
 if TYPE_CHECKING:
     from .dag_plan_execute import DAGPlanExecutePattern
@@ -17,6 +22,10 @@ from ....memory import MemoryStore
 from ....memory.in_memory import InMemoryMemoryStore
 from ....model.chat.basic.base import BaseLLM
 from ....tools.adapters.vibe import Tool
+from ....tools.adapters.vibe.sql_tool import (
+    reset_sql_policy_runtime_context,
+    set_sql_policy_runtime_context,
+)
 from ....workspace import TaskWorkspace
 from ...exceptions import DAGDeadlockError, DAGStepError
 from ...trace import (
@@ -39,7 +48,13 @@ logger = logging.getLogger(__name__)
 
 
 class PlanExecutor:
-    """Handles plan execution with dependency resolution and deadlock detection"""
+    """DAG 步骤执行器。
+
+    核心职责：
+    - 解析依赖并并发执行 step
+    - 收集 step execution result 供后续上下文压缩与迭代继续使用
+    - 识别 waiting_approval，把“工具阻断”提升为“DAG 阻断”
+    """
 
     def __init__(
         self,
@@ -69,8 +84,11 @@ class PlanExecutor:
         self.context_builder = ContextBuilder(
             llm, context_compact_threshold, compact_llm=self.compact_llm
         )
-        # Store step execution results with message history
+        # 保存 step 级完整执行结果，既服务上下文拼装，也服务恢复后的继续执行。
         self.step_execution_results: Dict[str, StepExecutionResult] = {}
+        # 它只存“当前这一轮 DAG 被哪一次审批阻断”的最小必要信息，
+        # 供上层 pattern 持久化到宿主快照，而不是在这里直接落数据库。
+        self._approval_blocked_info: Optional[Dict[str, Any]] = None
 
         # Execution state
         self._pause_event = asyncio.Event()
@@ -82,6 +100,7 @@ class PlanExecutor:
     def reset(self) -> None:
         """Reset execution-specific state before starting a fresh task."""
         self.step_execution_results = {}
+        self._approval_blocked_info = None
         self.skipped_steps.clear()
         self._execution_interrupted = False
         if self._pause_event.is_set():
@@ -93,12 +112,11 @@ class PlanExecutor:
         tool_map: Dict[str, Tool],
         skill_context: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """Execute the plan using queue-driven concurrent execution
+        """按队列驱动并发执行 DAG。
 
-        Args:
-            plan: Execution plan with steps
-            tool_map: Tool name to tool mapping
-            skill_context: Optional skill context to pass to step execution
+        对审批链路而言，这个方法的关键职责不是“批准 SQL”，
+        而是识别某个 step 已经进入 waiting_approval，并立刻停止继续调度后续 step，
+        防止 DAG 在未经审批的前提下向前推进。
         """
         logger.info(
             f"Executing plan {plan.id} with {len(plan.steps)} steps (max concurrency: {self.max_concurrency})"
@@ -106,6 +124,7 @@ class PlanExecutor:
 
         # Reset interrupt flag at the start of execution
         self._execution_interrupted = False
+        self._approval_blocked_info = None
 
         # Trace execution start
         trace_task_id = f"execute_{plan.id}"
@@ -135,7 +154,7 @@ class PlanExecutor:
 
         # Get initial executable steps
         # Consider steps from previous iterations as completed if they have execution results
-        completed_from_previous_iterations = set(self.step_execution_results.keys())
+        completed_from_previous_iterations = self._get_completed_step_result_ids()
         total_completed = completed_steps.union(completed_from_previous_iterations)
 
         initial_executable = plan.get_executable_steps(
@@ -179,6 +198,45 @@ class PlanExecutor:
                         step, tool_map, execution_results, skill_context
                     )
 
+                # 一旦某个 step 返回 waiting_approval，当前 DAG 必须整体停住。
+                # 这里记录的是恢复所需最小快照，而不是完整持久化对象。
+                if self._is_waiting_approval_result(result):
+                    self._approval_blocked_info = {
+                        "step_id": step_id,
+                        "step_name": step.name,
+                        "message": result.get(
+                            "message", "Step is waiting for approval"
+                        ),
+                        "tool_name": result.get("tool_name"),
+                        "tool_args": result.get("tool_args"),
+                        "tool_result": result.get("result"),
+                        "policy_decision": result.get("policy_decision"),
+                        "approval_request_id": result.get("approval_request_id"),
+                        "resume_token": result.get("resume_token"),
+                        "dag_snapshot_version": result.get("dag_snapshot_version"),
+                    }
+                    self._execution_interrupted = True
+                    execution_results.append(
+                        {
+                            "step_id": step_id,
+                            "step_name": step.name,
+                            "result": result.get("result"),
+                            "status": StepStatus.WAITING_APPROVAL.value,
+                            "message": result.get(
+                                "message", "Step is waiting for approval"
+                            ),
+                            "policy_decision": result.get("policy_decision"),
+                            "approval_request_id": result.get(
+                                "approval_request_id"
+                            ),
+                            "resume_token": result.get("resume_token"),
+                        }
+                    )
+                    logger.info(
+                        f"Step {step_id} is waiting for approval, stopping DAG execution"
+                    )
+                    return result
+
                 # Handle successful completion
                 step.status = StepStatus.COMPLETED
                 step.result = result if isinstance(result, dict) else {"value": result}
@@ -198,8 +256,8 @@ class PlanExecutor:
 
                 # Check for new executable steps after this completion
                 # Include steps from previous iterations in completed set
-                completed_from_previous_iterations = set(
-                    self.step_execution_results.keys()
+                completed_from_previous_iterations = (
+                    self._get_completed_step_result_ids()
                 )
                 total_completed = completed_steps.union(
                     completed_from_previous_iterations
@@ -277,8 +335,8 @@ class PlanExecutor:
                 )
 
                 # Include steps from previous iterations in completed set
-                completed_from_previous_iterations = set(
-                    self.step_execution_results.keys()
+                completed_from_previous_iterations = (
+                    self._get_completed_step_result_ids()
                 )
                 total_completed = completed_steps.union(
                     completed_from_previous_iterations
@@ -469,6 +527,8 @@ class PlanExecutor:
         # Mark steps that should be skipped due to conditional branches
         # Check all PENDING steps: if dependencies are met but step can't execute, mark as skipped
         for step in plan.steps:
+            if self._approval_blocked_info is not None:
+                break
             if step.status == StepStatus.PENDING and step.id not in self.skipped_steps:
                 # Check if all dependencies are completed or skipped
                 deps_met = all(
@@ -515,6 +575,13 @@ class PlanExecutor:
                 "failed_steps_count": len(
                     [s for s in plan.steps if s.status == StepStatus.FAILED]
                 ),
+                "waiting_approval_steps_count": len(
+                    [
+                        s
+                        for s in plan.steps
+                        if s.status == StepStatus.WAITING_APPROVAL
+                    ]
+                ),
                 "skipped_steps_count": len(
                     [s for s in plan.steps if s.status == StepStatus.SKIPPED]
                 ),
@@ -524,6 +591,11 @@ class PlanExecutor:
 
         logger.info(f"Plan execution completed for {plan.id}")
         return execution_results
+
+    @property
+    def approval_blocked_info(self) -> Optional[Dict[str, Any]]:
+        """返回当前执行轮次捕获到的审批阻断信息。"""
+        return self._approval_blocked_info
 
     def pause_execution(self) -> None:
         """Pause the current execution"""
@@ -548,13 +620,10 @@ class PlanExecutor:
         execution_results: Optional[List[Dict[str, Any]]] = None,
         skill_context: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Execute a single step using ReAct agent
+        """使用 ReAct 执行单个 step。
 
-        Args:
-            step: Plan step to execute
-            tool_map: Tool name to tool mapping
-            execution_results: Optional list of execution results
-            skill_context: Optional skill context to pass to context builder
+        对审批链路而言，这里是“工具阻断”首次冒出来的地方：
+        ReAct 收到 SQL 工具的 approval_required 结果后，会把它包装成 step 级 waiting_approval。
         """
         logger.info(f"Executing step {step.id}: {step.name}")
 
@@ -762,10 +831,23 @@ class PlanExecutor:
             context_messages.append({"role": "user", "content": task_message})
 
             # Execute the step with enhanced messages
-            result = await react_pattern.run_with_context(  # type: ignore[attr-defined]
-                messages=context_messages,
-                tools=tools,
-            )
+            policy_runtime_token = None
+            try:
+                policy_runtime_context = self._build_sql_policy_runtime_context(
+                    step, tools
+                )
+                if policy_runtime_context is not None:
+                    policy_runtime_token = set_sql_policy_runtime_context(
+                        policy_runtime_context
+                    )
+
+                result = await react_pattern.run_with_context(  # type: ignore[attr-defined]
+                    messages=context_messages,
+                    tools=tools,
+                )
+            finally:
+                if policy_runtime_token is not None:
+                    reset_sql_policy_runtime_context(policy_runtime_token)
 
             # Ensure result is properly typed
             if not isinstance(result, dict):
@@ -775,6 +857,104 @@ class PlanExecutor:
 
             # Store step execution result with complete message history for ContextBuilder
             execution_history = result.get("execution_history", context_messages)
+
+            # 这里把 ReAct 层的 approval_required 结果提升为 DAG step 的 waiting_approval。
+            # 目的是让上层调度器和宿主快照都用统一状态表达，而不依赖具体 agent 协议细节。
+            if self._is_waiting_approval_react_result(result):
+                blocked_result = result.get("tool_result") or {}
+                step.status = StepStatus.WAITING_APPROVAL
+                step.result = blocked_result
+
+                step_execution_result = StepExecutionResult(
+                    step_id=step.id,
+                    messages=execution_history,
+                    final_result={
+                        "status": StepStatus.WAITING_APPROVAL.value,
+                        "tool_result": blocked_result,
+                        "policy_decision": result.get("policy_decision"),
+                        "message": result.get("output"),
+                    },
+                    agent_name="ReAct",
+                    compact_available=True,
+                )
+                self.step_execution_results[step.id] = step_execution_result
+
+                approval_request_id = None
+                policy_decision = result.get("policy_decision")
+                if isinstance(policy_decision, dict):
+                    approval_request_id = policy_decision.get("approval_request_id")
+
+                await trace_step_end(
+                    self.tracer,
+                    trace_step_id,
+                    step.id,
+                    TraceCategory.DAG,
+                    data={
+                        "step_id": step.id,
+                        "step_name": step.name,
+                        "execution_time": (
+                            step.completed_at - step.started_at
+                        ).total_seconds(),
+                        "result": blocked_result,
+                        "tool_names": step.tool_names,
+                        "status": StepStatus.WAITING_APPROVAL.value,
+                        "start_time": step.started_at.isoformat()
+                        if step.started_at
+                        else None,
+                        "end_time": step.completed_at.isoformat()
+                        if step.completed_at
+                        else None,
+                        "success": False,
+                        "approval_request_id": approval_request_id,
+                        "policy_decision": policy_decision,
+                    },
+                )
+
+                if (
+                    self.parent_pattern
+                    and hasattr(self.parent_pattern, "register_waiting_approval")
+                ):
+                    # parent pattern 才掌握宿主持久化能力；
+                    # PlanExecutor 只把阻断摘要上抛，不在这里直接写 Task/DAGExecution。
+                    self.parent_pattern.register_waiting_approval(
+                        {
+                            "step_id": step.id,
+                            "step_name": step.name,
+                            "message": result.get("output"),
+                            "tool_name": result.get("tool_name"),
+                            "tool_args": result.get("tool_args"),
+                            "tool_result": blocked_result,
+                            "policy_decision": policy_decision,
+                            "approval_request_id": approval_request_id,
+                            "resume_token": blocked_result.get("resume_token"),
+                            "dag_snapshot_version": blocked_result.get(
+                                "dag_snapshot_version"
+                            ),
+                        }
+                    )
+
+                return {
+                    "step_id": step.id,
+                    "step_name": step.name,
+                    "status": StepStatus.WAITING_APPROVAL.value,
+                    "message": result.get("output"),
+                    "tool_name": result.get("tool_name"),
+                    "tool_args": result.get("tool_args"),
+                    "result": blocked_result,
+                    "policy_decision": policy_decision,
+                    "approval_request_id": approval_request_id,
+                    "resume_token": blocked_result.get("resume_token"),
+                    "dag_snapshot_version": blocked_result.get(
+                        "dag_snapshot_version"
+                    ),
+                }
+
+            if result.get("type") == "policy_denied":
+                raise DAGStepError(
+                    step_id=step.id,
+                    step_name=step.name,
+                    message=result.get("output", "Tool execution denied by policy"),
+                )
 
             step_execution_result = StepExecutionResult(
                 step_id=step.id,
@@ -1149,3 +1329,131 @@ class PlanExecutor:
         # Simplified implementation - the full logic would check if the step
         # is connected to the current user input context
         return False
+
+    def _is_waiting_approval_react_result(self, result: Dict[str, Any]) -> bool:
+        """识别 ReAct agent 是否返回了审批阻断结果。
+
+        这里故意只看 agent 协议层的 `type=approval_required`，
+        不关心具体 SQL 风险细节；PlanExecutor 只负责把 agent 结果翻译成统一的 step 状态。
+        """
+        return result.get("type") == "approval_required"
+
+    def _is_waiting_approval_result(self, result: Optional[Dict[str, Any]]) -> bool:
+        """识别 step 级结果是否已经进入 waiting_approval。
+
+        这个判断用于队列调度层，目的是让 DAG 调度器能在统一状态机上停止推进，
+        而不是继续感知底层工具或 agent 的私有返回结构。
+        """
+        return bool(result and result.get("status") == StepStatus.WAITING_APPROVAL.value)
+
+    def _get_tool_name(self, tool: Tool) -> str:
+        if hasattr(tool, "name"):
+            return str(getattr(tool, "name"))
+        if hasattr(tool, "metadata") and getattr(tool, "metadata", None):
+            return str(tool.metadata.name)
+        return str(id(tool))
+
+    def _build_sql_policy_runtime_context(
+        self,
+        step: PlanStep,
+        tools: List[Tool],
+    ) -> Optional[Dict[str, Any]]:
+        """为 SQL 工具构造审批 runtime 上下文。
+
+        只有当前 step 实际暴露了 `execute_sql_query` 工具时才注入该上下文，
+        避免把审批语义泄漏给无关工具。返回值是“单次 step 执行最小闭包”，
+        供 SQL tool adapter 拼装审批请求、落库 step run、以及后续恢复使用。
+        """
+        tool_names = {self._get_tool_name(tool) for tool in tools}
+        if "execute_sql_query" not in tool_names:
+            return None
+
+        task_id = getattr(self.parent_pattern, "task_id", None)
+        plan_id = None
+        if self.parent_pattern and getattr(self.parent_pattern, "current_plan", None):
+            plan_id = self.parent_pattern.current_plan.id
+
+        snapshot_version = getattr(self.parent_pattern, "snapshot_version", 0) or 0
+        resume_token = (
+            getattr(self.parent_pattern, "resume_token", None)
+            or f"sql-approval:{task_id}:{plan_id}:{step.id}:{uuid4().hex}"
+        )
+
+        return {
+            "task_id": task_id,
+            "plan_id": plan_id or "unknown_plan",
+            "step_id": step.id,
+            "environment": self._resolve_policy_environment(step),
+            "requested_by": self._resolve_requested_by(),
+            "attempt_no": int(step.context.get("attempt_no", 1) or 1),
+            "dag_snapshot_version": snapshot_version + 1,
+            "resume_token": resume_token,
+            "step_input_payload": {
+                "step_name": step.name,
+                "step_description": step.description,
+                "dependencies": step.dependencies,
+            },
+            "resolved_context": dict(step.context),
+        }
+
+    def _resolve_requested_by(self) -> int:
+        """解析本次审批申请的发起人。
+
+        优先从 parent pattern 的上下文里取宿主已确认的 user_id，
+        其次回退到 web 层线程隔离上下文。这里返回 0 作为兜底，
+        是为了保持工具层和策略层的接口稳定，避免因为缺少身份就直接打断执行器。
+        """
+        if self.parent_pattern and hasattr(self.parent_pattern, "_context"):
+            parent_context = self.parent_pattern._context
+            if isinstance(parent_context, dict):
+                value = parent_context.get("user_id")
+                if value is not None:
+                    return int(value)
+            elif hasattr(parent_context, "state") and parent_context.state:
+                value = parent_context.state.get("user_id")
+                if value is not None:
+                    return int(value)
+
+        try:
+            from .....web.user_isolated_memory import current_user_id
+
+            value = current_user_id.get()
+            if value is not None:
+                return int(value)
+        except Exception:
+            pass
+
+        return 0
+
+    def _resolve_policy_environment(self, step: PlanStep) -> str:
+        """解析审批策略所使用的环境标签。
+
+        设计上优先读取 step 自己显式声明的环境，其次回退到 DAG 级上下文，
+        因为审批风险必须以“当前实际执行目标”为准。默认值保持 `prod`，
+        是为了在信息不完整时走最保守策略，而不是意外降级到低风险环境。
+        """
+        for key in ("target_environment", "environment", "env"):
+            if key in step.context and step.context[key]:
+                return str(step.context[key])
+
+        if self.parent_pattern and hasattr(self.parent_pattern, "_context"):
+            parent_context = self.parent_pattern._context
+            if isinstance(parent_context, dict):
+                state = parent_context
+            else:
+                state = getattr(parent_context, "state", {}) or {}
+
+            for key in ("target_environment", "environment", "env"):
+                value = state.get(key)
+                if value:
+                    return str(value)
+
+        return "prod"
+
+    def _get_completed_step_result_ids(self) -> Set[str]:
+        completed_ids: Set[str] = set()
+        for step_id, result in self.step_execution_results.items():
+            final_status = result.final_result.get("status", StepStatus.COMPLETED.value)
+            if final_status == StepStatus.COMPLETED.value:
+                completed_ids.add(step_id)
+        return completed_ids
