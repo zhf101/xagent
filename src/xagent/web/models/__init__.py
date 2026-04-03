@@ -9,6 +9,7 @@ from .datamake_sql_asset import (
     DataMakeSqlAssetVersion,
 )
 from .datamake_http_resource import DataMakeHttpResource
+from .gdp_http_resource import GdpHttpResource
 from .mcp import MCPServer, UserMCPServer
 from .model import Model
 from .sql_approval import ApprovalLedger, ApprovalRequest, DAGStepRun
@@ -44,6 +45,7 @@ __all__ = [
     "TemplateStats",
     "Text2SQLDatabase",
     "DataMakeHttpResource",
+    "GdpHttpResource",
     "DataMakeSqlAsset",
     "DataMakeSqlAssetVersion",
     "DataMakeSqlAssetRun",

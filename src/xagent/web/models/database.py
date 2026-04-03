@@ -62,6 +62,7 @@ def init_db(db_url: str | None = None) -> None:
     )
     from .agent import Agent  # noqa: F401
     from .sandbox import SandboxInfo  # noqa: F401
+    from .gdp_http_resource import GdpHttpResource  # noqa: F401
     from .text2sql import Text2SQLDatabase  # noqa: F401
 
     global _SessionLocal

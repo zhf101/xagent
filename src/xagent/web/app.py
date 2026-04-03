@@ -14,6 +14,7 @@ from .api.channel import router as channel_router
 from .api.chat import chat_router
 from .api.cloud_storage import cloud_router
 from .api.files import file_router
+from .api.gdp_http_assets import router as gdp_http_assets_router
 from .api.kb import kb_router
 from .api.mcp import mcp_router
 from .api.memory import MemoryManagementRouter
@@ -158,6 +159,7 @@ app.include_router(skills_router)
 app.include_router(system_router)
 app.include_router(templates_router)
 app.include_router(agents_router)
+app.include_router(gdp_http_assets_router)
 app.include_router(datamake_http_assets_router)
 app.include_router(datamake_sql_assets_router)
 app.include_router(channel_router, prefix="/api/channels", tags=["Channels"])
