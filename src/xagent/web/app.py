@@ -33,9 +33,13 @@ from .config import UPLOADS_DIR
 from .dynamic_memory_store import get_memory_store
 from .logging_config import setup_logging
 from .models.database import init_db
+from ..core.database.sql_logging import enable_sql_logging, is_sql_logging_enabled
+from ..core.model.chat.langchain import setup_llm_logging_from_env
+from .models.database import get_engine
 
 # Configure logging when running under gunicorn/uwsgi (no __main__.py)
 setup_logging()  # Uses XAGENT_LOG_LEVEL env var or defaults to INFO
+setup_llm_logging_from_env()
 
 logger = logging.getLogger(__name__)
 
@@ -165,6 +169,13 @@ async def startup_event() -> None:
     logger.info("Initializing database...")
     init_db()
     logger.info("Database initialized successfully")
+    if is_sql_logging_enabled():
+        enable_sql_logging(
+            engine=get_engine(),
+            log_params=os.getenv("SQL_LOG_QUERY_PARAMS", "true").lower() == "true",
+            log_results=os.getenv("SQL_LOG_RESULTS", "false").lower() == "true",
+        )
+        logger.info("SQL 独立日志记录已启用")
 
     # Initialize skill manager
     from ..skills.utils import create_skill_manager
