@@ -11,8 +11,13 @@ from sqlalchemy.orm import Session
 from xagent.core.model.model import (
     ChatModelConfig,
     EmbeddingModelConfig,
-    ImageModelConfig,
     ModelConfig,
+    RerankModelConfig,
+)
+from xagent.core.model.provider_availability import (
+    disabled_provider_message,
+    ensure_provider_enabled,
+    is_provider_disabled,
 )
 from xagent.core.model.providers import default_base_url_for_provider
 from xagent.core.utils.security import redact_sensitive_text
@@ -114,6 +119,13 @@ def _is_default_config_type_compatible(model: Any, config_type: str) -> bool:
     return current_category == expected_category
 
 
+def _validate_provider_or_400(provider: str) -> None:
+    try:
+        ensure_provider_enabled(provider)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @model_router.post("/", response_model=ModelWithAccessInfo)
 @model_router.post("/register", response_model=ModelWithAccessInfo)
 async def create_model(
@@ -135,6 +147,8 @@ async def create_model(
 
     if model_storage.exists(model.model_id):
         raise HTTPException(status_code=400, detail="Model ID already exists")
+
+    _validate_provider_or_400(model.model_provider)
 
     # Only admin can share models with all users
     if model.share_with_users and not user.is_admin:
@@ -169,22 +183,8 @@ async def create_model(
             description=model.description,
             dimension=model.dimension,
         )
-    elif model.category == "image":
-        config = ImageModelConfig(
-            id=model.model_id,
-            model_name=model.model_name,
-            model_provider=model.model_provider,
-            base_url=base_url,
-            api_key=model.api_key,
-            default_temperature=model.temperature,
-            timeout=180.0,
-            abilities=model.abilities,
-            description=model.description,
-        )
-    elif model.category == "speech":
-        from xagent.core.model.model import SpeechModelConfig
-
-        config = SpeechModelConfig(
+    elif model.category == "rerank":
+        config = RerankModelConfig(
             id=model.model_id,
             model_name=model.model_name,
             model_provider=model.model_provider,
@@ -193,10 +193,6 @@ async def create_model(
             timeout=180.0,
             abilities=model.abilities,
             description=model.description,
-            language=model.language,
-            voice=model.voice,
-            format=model.format,
-            sample_rate=model.sample_rate,
         )
     else:
         raise HTTPException(status_code=400, detail="Invalid model category")
@@ -575,6 +571,8 @@ async def update_model(
 
     # Update model configuration in-place
     update_data = model_update.model_dump(exclude_unset=True)
+    if update_data.get("model_provider") is not None:
+        _validate_provider_or_400(str(update_data["model_provider"]))
     for field, value in update_data.items():
         # Don't update api_key with empty string
         if field == "api_key" and value == "":
@@ -671,6 +669,18 @@ async def test_models(
         start_time = time.time()
 
         try:
+            if is_provider_disabled(str(model.model_provider)):
+                test_results.append(
+                    ModelTestResponse(
+                        model_id=model.model_id,
+                        status="failed",
+                        response_time=None,
+                        message="Model test skipped",
+                        error=disabled_provider_message(str(model.model_provider)),
+                    )
+                )
+                continue
+
             llm = model_storage.get_llm_by_id(str(model.model_id))
             if not llm:
                 test_results.append(
@@ -732,12 +742,6 @@ async def get_available_model_providers() -> dict:
                 "description": "OpenAI API compatible models",
                 "examples": ["gpt-4", "gpt-4o", "gpt-3.5-turbo"],
             },
-            {
-                "type": "zhipu",
-                "name": "Zhipu AI",
-                "description": "Zhipu AI models",
-                "examples": ["glm-4", "glm-4-air", "glm-3-turbo"],
-            },
         ]
     }
 
@@ -782,7 +786,9 @@ async def list_model_providers(
     )
 
     return {
-        "providers": [prov[0] for prov in providers],
+        "providers": [
+            prov[0] for prov in providers if not is_provider_disabled(str(prov[0]))
+        ],
     }
 
 
@@ -1382,6 +1388,8 @@ async def list_public_models(
 
     result = []
     for model in models:
+        if is_provider_disabled(str(model.model_provider)):
+            continue
         model_data: dict[str, Any] = {
             "id": model.id,
             "model_id": model.model_id,
@@ -1430,7 +1438,9 @@ async def list_public_providers(
     )
 
     return {
-        "providers": [prov[0] for prov in providers],
+        "providers": [
+            prov[0] for prov in providers if not is_provider_disabled(str(prov[0]))
+        ],
     }
 
 
@@ -1624,6 +1634,12 @@ async def list_xinference_tts_models(
     For ASR models, use abilities: ["asr"]
     For models with both capabilities, use: ["tts", "asr"]
     """
+    if is_provider_disabled("xinference"):
+        raise HTTPException(
+            status_code=503,
+            detail=disabled_provider_message("xinference"),
+        )
+
     try:
         from xagent.core.model.tts.xinference import XinferenceTTS
 

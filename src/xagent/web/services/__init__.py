@@ -23,8 +23,6 @@ from .kb_file_service import (
     upsert_uploaded_file_record,
 )
 from .model_service import (
-    get_default_image_edit_model,
-    get_default_image_generate_model,
     get_default_model,
     get_default_vision_model,
 )
@@ -54,6 +52,4 @@ __all__ = [
     "delete_uploaded_file_if_orphaned",
     "get_default_model",
     "get_default_vision_model",
-    "get_default_image_generate_model",
-    "get_default_image_edit_model",
 ]

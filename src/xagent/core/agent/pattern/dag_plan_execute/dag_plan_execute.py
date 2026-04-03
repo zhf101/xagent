@@ -149,6 +149,13 @@ class DAGPlanExecutePattern(AgentPattern):
         self.current_plan: Optional[ExecutionPlan] = None
         self.skipped_steps: Set[str] = set()
         self.phase: ExecutionPhase = ExecutionPhase.PLANNING
+        self.blocked_step_id: Optional[str] = None
+        self.blocked_action_type: Optional[str] = None
+        self.approval_request_id: Optional[int] = None
+        self.resume_token: Optional[str] = None
+        self.snapshot_version: int = 0
+        self.global_iteration: int = 0
+        self._approval_blocked_info: Optional[Dict[str, Any]] = None
         self._final_answer: Optional[str] = None
         self._context: Optional[AgentContext] = None
         self._skill_context: Optional[str] = (
@@ -403,6 +410,7 @@ class DAGPlanExecutePattern(AgentPattern):
                 # Trace iteration start
                 # execution_history contains previous iterations, so current iteration is len(execution_history) + 1
                 global_iteration = len(execution_history) + 1
+                self.global_iteration = global_iteration
                 logger.info(
                     f"DEBUG: Sending trace_task_start for iteration {iteration}, global_iteration: {global_iteration}, execution_history length: {len(execution_history)}"
                 )
@@ -966,6 +974,56 @@ class DAGPlanExecutePattern(AgentPattern):
 
                 # Update results in the history entry
                 execution_history[-1]["results"] = execution_results
+
+                if self.plan_executor.approval_blocked_info:
+                    # PlanExecutor 只识别到了“本轮 DAG 被哪个 step 阻断”；
+                    # 这里负责把它提升为宿主级阻断状态，并立即持久化成可恢复快照。
+                    blocked_info = dict(self.plan_executor.approval_blocked_info)
+                    blocked_info.setdefault("plan_id", plan.id)
+                    blocked_info.setdefault("global_iteration", global_iteration)
+                    blocked_info.setdefault(
+                        "dag_snapshot_version",
+                        self.snapshot_version + 1,
+                    )
+                    self.register_waiting_approval(blocked_info)
+                    self.snapshot_version = int(
+                        blocked_info.get("dag_snapshot_version")
+                        or self.snapshot_version
+                        or 1
+                    )
+                    execution_history[-1]["approval_blocked"] = blocked_info
+                    self.step_execution_results = dict(
+                        self.plan_executor.step_execution_results
+                    )
+                    await self._persist_waiting_approval_snapshot()
+                    if hasattr(self, "tracer") and self.tracer and self.task_id:
+                        await trace_dag_execution(
+                            self.tracer,
+                            self.task_id,
+                            "waiting_approval",
+                            data={
+                                "blocked_step_id": self.blocked_step_id,
+                                "approval_request_id": self.approval_request_id,
+                                "resume_token": self.resume_token,
+                                "snapshot_version": self.snapshot_version,
+                                "current_plan": self.current_plan.to_dict()
+                                if self.current_plan
+                                else {},
+                            },
+                        )
+                    return {
+                        "success": True,
+                        "waiting_approval": True,
+                        "phase": ExecutionPhase.WAITING_APPROVAL.value,
+                        "output": blocked_info.get(
+                            "message", "Task is waiting for approval"
+                        ),
+                        "approval_request_id": self.approval_request_id,
+                        "blocked_step_id": self.blocked_step_id,
+                        "resume_token": self.resume_token,
+                        "snapshot_version": self.snapshot_version,
+                        "history": execution_history,
+                    }
 
                 # Store execution results for context building
                 for step_result in execution_results:
@@ -1658,7 +1716,284 @@ class DAGPlanExecutePattern(AgentPattern):
             "pause_reason": self._pause_reason,
             "execution_interrupted": self._execution_interrupted,
             "new_user_input": self._new_user_input,
+            "blocked_step_id": self.blocked_step_id,
+            "blocked_action_type": self.blocked_action_type,
+            "approval_request_id": self.approval_request_id,
+            "resume_token": self.resume_token,
+            "snapshot_version": self.snapshot_version,
+            "global_iteration": self.global_iteration,
+            "approval_blocked_info": self._approval_blocked_info,
         }
+
+    def register_waiting_approval(self, blocked_info: Dict[str, Any]) -> None:
+        """把一次工具级审批阻断登记为当前 DAG 的宿主状态。
+
+        这个方法不做数据库写入，只负责把恢复所需的最小锚点挂到 pattern 实例上，
+        后续由 `_persist_waiting_approval_snapshot()` 统一落宿主快照。
+        """
+        self.phase = ExecutionPhase.WAITING_APPROVAL
+        self._approval_blocked_info = dict(blocked_info)
+        self.blocked_step_id = blocked_info.get("step_id")
+        self.blocked_action_type = blocked_info.get(
+            "blocked_action_type", "sql_execution"
+        )
+        self.approval_request_id = blocked_info.get("approval_request_id")
+        self.resume_token = blocked_info.get("resume_token")
+        if blocked_info.get("dag_snapshot_version") is not None:
+            self.snapshot_version = int(blocked_info["dag_snapshot_version"])
+
+    def fail_waiting_approval(self, approval_request_id: Optional[int] = None) -> None:
+        """把内存中的 waiting_approval 运行态收口为 failed。
+
+        这个入口只修正进程内 pattern 状态，不触碰数据库。
+        它用于审批被拒绝或恢复资格失效后，避免旧 agent 还把任务当成可续跑的 waiting_approval。
+        """
+        if (
+            approval_request_id is not None
+            and self.approval_request_id is not None
+            and int(self.approval_request_id) != int(approval_request_id)
+        ):
+            return
+
+        self.phase = ExecutionPhase.FAILED
+        self._approval_blocked_info = None
+        self.blocked_action_type = None
+        self.approval_request_id = None
+        self.resume_token = None
+
+    async def _persist_waiting_approval_snapshot(self) -> None:
+        """把当前 waiting_approval 快照持久化到 web 宿主模型。
+
+        设计目标是让聊天页、审批页、任务列表都从同一份 Task/DAGExecution 状态恢复，
+        而不是依赖内存里的 pattern 实例继续存活。
+        """
+        if not self.task_id or not str(self.task_id).isdigit():
+            return
+
+        try:
+            from .....web.models.database import get_db
+            from .....web.models.task import (
+                DAGExecution,
+                DAGExecutionPhase,
+                Task,
+                TaskStatus,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to import web persistence models for approval snapshot: %s",
+                exc,
+            )
+            return
+
+        def _persist() -> None:
+            db_gen = get_db()
+            db = next(db_gen)
+            try:
+                task_id = int(self.task_id)  # type: ignore[arg-type]
+                task = db.query(Task).filter(Task.id == task_id).first()
+                if task is None:
+                    return
+
+                dag_execution = (
+                    db.query(DAGExecution)
+                    .filter(DAGExecution.task_id == task_id)
+                    .first()
+                )
+                if dag_execution is None:
+                    dag_execution = DAGExecution(task_id=task_id)
+                    db.add(dag_execution)
+
+                task.status = TaskStatus.WAITING_APPROVAL
+                dag_execution.phase = DAGExecutionPhase.WAITING_APPROVAL
+                dag_execution.plan_id = self.current_plan.id if self.current_plan else None
+                dag_execution.global_iteration = self.global_iteration
+                dag_execution.snapshot_version = self.snapshot_version
+                dag_execution.blocked_step_id = self.blocked_step_id
+                dag_execution.blocked_action_type = self.blocked_action_type
+                dag_execution.current_plan = (
+                    self.current_plan.to_dict() if self.current_plan else None
+                )
+                dag_execution.step_states = (
+                    {
+                        step.id: step.status.value
+                        for step in self.current_plan.steps
+                    }
+                    if self.current_plan
+                    else None
+                )
+                dag_execution.completed_step_ids = (
+                    [
+                        step.id
+                        for step in self.current_plan.steps
+                        if step.status == StepStatus.COMPLETED
+                    ]
+                    if self.current_plan
+                    else []
+                )
+                dag_execution.failed_step_ids = (
+                    [
+                        step.id
+                        for step in self.current_plan.steps
+                        if step.status == StepStatus.FAILED
+                    ]
+                    if self.current_plan
+                    else []
+                )
+                dag_execution.running_step_ids = (
+                    [
+                        step.id
+                        for step in self.current_plan.steps
+                        if step.status == StepStatus.RUNNING
+                    ]
+                    if self.current_plan
+                    else []
+                )
+                dag_execution.step_execution_results = (
+                    self._serialize_step_execution_results()
+                )
+                dag_execution.dependency_graph = (
+                    {
+                        step.id: list(step.dependencies)
+                        for step in self.current_plan.steps
+                    }
+                    if self.current_plan
+                    else None
+                )
+                dag_execution.approval_request_id = self.approval_request_id
+                dag_execution.resume_token = self.resume_token
+                dag_execution.total_steps = (
+                    len(self.current_plan.steps) if self.current_plan else 0
+                )
+                dag_execution.completed_steps = len(
+                    dag_execution.completed_step_ids or []
+                )
+                if dag_execution.start_time is None:
+                    dag_execution.start_time = datetime.now()
+
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
+            finally:
+                db.close()
+
+        try:
+            await asyncio.to_thread(_persist)
+        except Exception as exc:
+            logger.error("Failed to persist waiting approval snapshot: %s", exc)
+            raise RuntimeError(
+                "Failed to persist waiting approval snapshot"
+            ) from exc
+
+    def _serialize_step_execution_results(self) -> Dict[str, Any]:
+        return {
+            step_id: {
+                "messages": result.messages,
+                "final_result": result.final_result,
+                "agent_name": result.agent_name,
+                "compact_available": result.compact_available,
+            }
+            for step_id, result in self.step_execution_results.items()
+        }
+
+    async def resume_waiting_approval(
+        self,
+        task: str,
+        tools: List[Tool],
+        context: Optional[AgentContext] = None,
+    ) -> Dict[str, Any]:
+        """Resume a DAG that was blocked waiting for SQL approval."""
+        if self.phase != ExecutionPhase.WAITING_APPROVAL or not self.current_plan:
+            raise ValueError("DAG is not in waiting approval state")
+
+        if context is not None:
+            self._context = context
+        self._original_goal = task
+
+        blocked_step = (
+            self.current_plan.get_step_by_id(self.blocked_step_id)
+            if self.blocked_step_id
+            else None
+        )
+        if blocked_step and blocked_step.status == StepStatus.WAITING_APPROVAL:
+            blocked_step.status = StepStatus.PENDING
+            blocked_step.context["attempt_no"] = int(
+                blocked_step.context.get("attempt_no", 1) or 1
+            ) + 1
+
+        if blocked_step and blocked_step.id in self.step_execution_results:
+            self.step_execution_results.pop(blocked_step.id, None)
+        if blocked_step and blocked_step.id in self.plan_executor.step_execution_results:
+            self.plan_executor.step_execution_results.pop(blocked_step.id, None)
+
+        self._approval_blocked_info = None
+        self.blocked_step_id = None
+        self.blocked_action_type = None
+        self.approval_request_id = None
+        self.resume_token = None
+        self.phase = ExecutionPhase.EXECUTING
+
+        tool_map: Dict[str, Any] = {}
+        for tool in tools:
+            if hasattr(tool, "name"):
+                tool_name = tool.name
+            elif hasattr(tool, "metadata") and hasattr(tool.metadata, "name"):
+                tool_name = tool.metadata.name
+            else:
+                tool_name = str(id(tool))
+            tool_map[tool_name] = tool
+
+        execution_results = await self.plan_executor.execute_plan(
+            self.current_plan, tool_map, self._skill_context
+        )
+
+        if self.plan_executor.approval_blocked_info:
+            blocked_info = dict(self.plan_executor.approval_blocked_info)
+            blocked_info.setdefault("plan_id", self.current_plan.id)
+            blocked_info.setdefault("global_iteration", self.global_iteration)
+            blocked_info.setdefault(
+                "dag_snapshot_version",
+                self.snapshot_version + 1,
+            )
+            self.register_waiting_approval(blocked_info)
+            self.snapshot_version = int(
+                blocked_info.get("dag_snapshot_version") or self.snapshot_version or 1
+            )
+            self.step_execution_results = dict(self.plan_executor.step_execution_results)
+            await self._persist_waiting_approval_snapshot()
+            return {
+                "success": True,
+                "waiting_approval": True,
+                "phase": ExecutionPhase.WAITING_APPROVAL.value,
+                "output": blocked_info.get(
+                    "message", "Task is waiting for approval"
+                ),
+                "approval_request_id": self.approval_request_id,
+                "blocked_step_id": self.blocked_step_id,
+                "resume_token": self.resume_token,
+                "snapshot_version": self.snapshot_version,
+            }
+
+        self.step_execution_results = dict(self.plan_executor.step_execution_results)
+        self.phase = (
+            ExecutionPhase.COMPLETED
+            if self.current_plan.is_complete()
+            else ExecutionPhase.EXECUTING
+        )
+
+        iteration_history = [
+            {
+                "iteration": self.global_iteration or self.current_plan.iteration,
+                "plan": self.current_plan.to_dict(),
+                "results": execution_results,
+                "timestamp": datetime.now().isoformat(),
+            }
+        ]
+        final_result = self._compile_final_result(task, iteration_history)
+        final_output = final_result.get("output")
+        if isinstance(final_output, str) and final_output.strip():
+            self._add_assistant_message(final_output)
+        return final_result
 
     def get_plan_info(self) -> Optional[Dict[str, Any]]:
         """Get current plan information including task_name.
@@ -1705,6 +2040,13 @@ class DAGPlanExecutePattern(AgentPattern):
         # Clear the current plan
         self.current_plan = None
         self.phase = ExecutionPhase.PLANNING
+        self.blocked_step_id = None
+        self.blocked_action_type = None
+        self.approval_request_id = None
+        self.resume_token = None
+        self.snapshot_version = 0
+        self.global_iteration = 0
+        self._approval_blocked_info = None
         self._final_answer = None
         self._context = None
         self._skill_context = None

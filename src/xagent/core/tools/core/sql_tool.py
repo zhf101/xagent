@@ -1,29 +1,29 @@
-"""
-SQL Tool for xagent - SQL execution using SQLAlchemy
+"""SQL 执行工具。
 
-Database connections are configured via environment variables, not raw URLs.
-Connection format: XAGENT_EXTERNAL_DB_<NAME>=<connection_url>
+职责边界：
+- 负责真正连接外部数据库并执行 SQL；
+- 可选接入策略网关，在执行前把 SQL 交给审批策略判定；
+- 返回统一结构化结果给上层工具适配器或 ReAct/DAG 执行器。
 
-Example:
-    XAGENT_EXTERNAL_DB_ANALYTICS=postgresql://user:pass@localhost:5432/analytics
-    XAGENT_EXTERNAL_DB_PROD=mysql+pymysql://user:pass@localhost:3306/production
-    XAGENT_EXTERNAL_DB_LOCAL=sqlite:///path/to/database.db
-    XAGENT_EXTERNAL_DB_DUCKDB=duckdb:///path/to/database.duckdb
-
-Note: This tool uses SQLAlchemy's synchronous engine.
-Async drivers are not supported currently.
+注意：
+- 数据库连接来自环境变量，不接受任意原始 URL；
+- 这里不直接修改 Task/DAG 状态，只返回 allow / wait_approval / deny 的结果。
 """
 
 import csv
 import json
 import logging
 import os
+from dataclasses import asdict
 from pathlib import Path
+import time
 from typing import TYPE_CHECKING, Any, Optional
 
 from pydantic import BaseModel, Field
 from sqlalchemy import URL, create_engine, text
 from sqlalchemy.engine import CursorResult, Row, make_url
+
+from ...database.sql_logging import log_sql_tool_event
 
 if TYPE_CHECKING:
     from ...workspace import TaskWorkspace
@@ -32,14 +32,17 @@ logger = logging.getLogger(__name__)
 
 
 class SQLQueryArgs(BaseModel):
-    """Arguments for SQL query execution."""
+    """SQL 查询工具输入契约。"""
 
     connection_name: str = Field(description="Database connection name to use")
     query: str = Field(description="SQL query to execute")
 
 
 class SQLQueryResult(BaseModel):
-    """Result from SQL query execution in LLM-friendly format"""
+    """SQL 工具输出契约。
+
+    目标不是暴露底层数据库细节，而是给上层 agent 一个稳定、可序列化的结果结构。
+    """
 
     success: bool = Field(description="Whether the query executed successfully")
     rows: list[dict[str, Any]] = Field(
@@ -107,30 +110,95 @@ def execute_sql_query(
     output_file: Optional[str] = None,
     workspace: Optional["TaskWorkspace"] = None,
     connection_url: Optional[str] = None,
+    policy_gateway: Optional[Any] = None,
+    policy_context: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
-    """Execute SQL queries on databases and return structured results.
+    """执行 SQL 并返回统一结果。
 
-    Args:
-        connection_name: Database connection name to use
-        query: SQL statement to execute
-        output_file: Optional file path to export query results.
-            Supported formats: .csv, .parquet, .json, .jsonl, .ndjson (relative to workspace output directory).
-            When provided, query results are exported to file instead of being returned.
-        workspace: Optional TaskWorkspace instance for file exports.
+    业务语义：
+    - 如果传入 policy_gateway，会先做审批策略判定；
+    - 如果策略要求等待审批或直接拒绝，这里不会碰数据库；
+    - 只有 allow_direct 才会真正执行 SQL。
 
-    Returns:
-        dict:
-            with keys:
-            - success: true if query worked
-            - rows: query results as list of dicts (SELECT only, empty when exported)
-            - row_count: number of rows returned or affected
-            - columns: column names in the result
-            - message: what happened
+    返回值始终是 dict，供 tool adapter / agent 统一消费。
     """
-    # Get connection URL from environment
+    started_at = time.time()
+    log_sql_tool_event(
+        "query_requested",
+        connection_name=connection_name,
+        output_file=output_file,
+        has_policy_gateway=policy_gateway is not None,
+        query=query,
+    )
+
+    if policy_gateway is not None:
+        if policy_context is None:
+            raise ValueError(
+                "policy_context is required when policy_gateway is provided"
+            )
+
+        # 核心约束：SQL 工具自己不理解业务审批，只把必要上下文交给策略网关。
+        decision = policy_gateway.evaluate(
+            task_id=policy_context["task_id"],
+            plan_id=policy_context["plan_id"],
+            step_id=policy_context["step_id"],
+            datasource_id=connection_name,
+            environment=policy_context["environment"],
+            sql=query,
+            tool_name=policy_context["tool_name"],
+            tool_payload=policy_context["tool_payload"],
+            requested_by=policy_context["requested_by"],
+            attempt_no=policy_context["attempt_no"],
+            dag_snapshot_version=policy_context["dag_snapshot_version"],
+            resume_token=policy_context["resume_token"],
+        )
+
+        if decision.decision != "allow_direct":
+            # 一旦被策略拦截，返回"阻断结果"而不是抛异常。
+            # 这样上层执行器可以把它投影成 waiting_approval，而不是把流程当成普通失败。
+            blocked_result = {
+                "success": False,
+                "blocked": decision.decision == "wait_approval",
+                "decision": decision.decision,
+                "policy_decision": asdict(decision),
+                "message": decision.message or "SQL execution blocked by policy",
+                "task_id": policy_context["task_id"],
+                "plan_id": policy_context["plan_id"],
+                "step_id": policy_context["step_id"],
+                "dag_snapshot_version": policy_context["dag_snapshot_version"],
+                "resume_token": policy_context["resume_token"],
+                "rows": [],
+                "row_count": 0,
+                "columns": [],
+            }
+            log_sql_tool_event(
+                "query_blocked",
+                connection_name=connection_name,
+                decision=decision.decision,
+                elapsed_ms=round((time.time() - started_at) * 1000, 2),
+                query=query,
+                policy_decision=asdict(decision),
+            )
+            return blocked_result
+
+    # 只有明确放行后，才允许真正打开外部数据库连接。
+    # Get connection URL from environment or passed connection_url
     url = _get_connection_url(connection_name, connection_url)
     stmt = text(query)
     engine = create_engine(url)
+    database_url = (
+        url.render_as_string(hide_password=True)
+        if hasattr(url, "render_as_string")
+        else str(url)
+    )
+    log_sql_tool_event(
+        "query_started",
+        connection_name=connection_name,
+        database_type=url.drivername.split("+")[0],
+        database_url=database_url,
+        output_file=output_file,
+        query=query,
+    )
 
     try:
         with engine.connect() as conn:
@@ -143,13 +211,23 @@ def execute_sql_query(
                     _, exported_count, columns = _stream_export_to_csv(
                         workspace, output_file, result
                     )
-                    return SQLQueryResult(
+                    tool_result = SQLQueryResult(
                         success=True,
                         rows=[],
                         row_count=exported_count,
                         columns=columns,
                         message=f"Query executed successfully on '{connection_name}', exported {exported_count} row(s) to {output_file}",
                     ).model_dump()
+                    log_sql_tool_event(
+                        "query_succeeded",
+                        connection_name=connection_name,
+                        elapsed_ms=round((time.time() - started_at) * 1000, 2),
+                        row_count=tool_result["row_count"],
+                        columns=tool_result["columns"],
+                        output_file=output_file,
+                        query=query,
+                    )
+                    return tool_result
                 elif file_ext == ".parquet":
                     # Streaming export with Parquet (better compression & type preservation)
                     result = conn.execute(stmt)
@@ -158,13 +236,23 @@ def execute_sql_query(
                         exported_count,
                         columns,
                     ) = _stream_export_to_parquet(workspace, output_file, result)
-                    return SQLQueryResult(
+                    tool_result = SQLQueryResult(
                         success=True,
                         rows=[],
                         row_count=exported_count,
                         columns=columns,
                         message=f"Query executed successfully on '{connection_name}', exported {exported_count} row(s) to {output_file}",
                     ).model_dump()
+                    log_sql_tool_event(
+                        "query_succeeded",
+                        connection_name=connection_name,
+                        elapsed_ms=round((time.time() - started_at) * 1000, 2),
+                        row_count=tool_result["row_count"],
+                        columns=tool_result["columns"],
+                        output_file=output_file,
+                        query=query,
+                    )
+                    return tool_result
                 elif file_ext in (".json", ".jsonl", ".ndjson"):
                     # Streaming JSON Lines (NDJSON) export
                     result = conn.execute(stmt)
@@ -173,13 +261,23 @@ def execute_sql_query(
                         exported_count,
                         columns,
                     ) = _stream_export_to_jsonlines(workspace, output_file, result)
-                    return SQLQueryResult(
+                    tool_result = SQLQueryResult(
                         success=True,
                         rows=[],
                         row_count=exported_count,
                         columns=columns,
                         message=f"Query executed successfully on '{connection_name}', exported {exported_count} row(s) to {output_file}",
                     ).model_dump()
+                    log_sql_tool_event(
+                        "query_succeeded",
+                        connection_name=connection_name,
+                        elapsed_ms=round((time.time() - started_at) * 1000, 2),
+                        row_count=tool_result["row_count"],
+                        columns=tool_result["columns"],
+                        output_file=output_file,
+                        query=query,
+                    )
+                    return tool_result
                 else:
                     raise ValueError(
                         f"Unsupported file format: {file_ext}. "
@@ -197,13 +295,23 @@ def execute_sql_query(
                 # Extract column names from first row
                 columns = list(row_list[0].keys()) if row_list else []
 
-                return SQLQueryResult(
+                tool_result = SQLQueryResult(
                     success=True,
                     rows=row_list,
                     row_count=len(row_list),
                     columns=columns,
                     message=f"Query executed successfully on '{connection_name}', returned {len(row_list)} row(s)",
                 ).model_dump()
+                log_sql_tool_event(
+                    "query_succeeded",
+                    connection_name=connection_name,
+                    elapsed_ms=round((time.time() - started_at) * 1000, 2),
+                    row_count=tool_result["row_count"],
+                    columns=tool_result["columns"],
+                    output_file=output_file,
+                    query=query,
+                )
+                return tool_result
             else:
                 # For INSERT, UPDATE, DELETE operations
                 rowcount = result.rowcount if hasattr(result, "rowcount") else 0
@@ -211,13 +319,34 @@ def execute_sql_query(
                 # Commit the transaction for non-SELECT queries
                 conn.commit()
 
-                return SQLQueryResult(
+                tool_result = SQLQueryResult(
                     success=True,
                     rows=[],
                     row_count=rowcount,
                     columns=[],
                     message=f"Query executed successfully on '{connection_name}', affected {rowcount} row(s)",
                 ).model_dump()
+                log_sql_tool_event(
+                    "query_succeeded",
+                    connection_name=connection_name,
+                    elapsed_ms=round((time.time() - started_at) * 1000, 2),
+                    row_count=tool_result["row_count"],
+                    columns=tool_result["columns"],
+                    output_file=output_file,
+                    query=query,
+                )
+                return tool_result
+    except Exception as exc:
+        log_sql_tool_event(
+            "query_failed",
+            connection_name=connection_name,
+            elapsed_ms=round((time.time() - started_at) * 1000, 2),
+            output_file=output_file,
+            query=query,
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
+        raise
     finally:
         engine.dispose()
 

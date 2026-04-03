@@ -1,4 +1,4 @@
-"""Text2SQL database configuration models"""
+"""Text2SQL 数据源配置模型。"""
 
 from enum import Enum
 from typing import Any, Dict
@@ -9,6 +9,8 @@ from sqlalchemy import ForeignKey, Integer, String, Text
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
+from ...core.database.types import DatabaseType, normalize_database_type
+
 # Import Base explicitly to avoid mypy issues
 from .database import Base
 
@@ -16,25 +18,22 @@ from .database import Base
 
 
 class DatabaseStatus(str, Enum):
-    """Database connection status"""
+    """数据库连接状态。"""
 
     CONNECTED = "connected"
     DISCONNECTED = "disconnected"
     ERROR = "error"
 
 
-class DatabaseType(str, Enum):
-    """Supported database types"""
-
-    SQLITE = "sqlite"
-    POSTGRESQL = "postgresql"
-    MYSQL = "mysql"
-    SQLSERVER = "sqlserver"
-    ORACLE = "oracle"
-
-
 class Text2SQLDatabase(Base):
-    """Text2SQL database configuration model"""
+    """Text2SQL 数据源配置。
+
+    当前这个模型仍然只承担“数据源连接配置宿主”的职责：
+    - 保存名称、类型、URL、只读约束、连通状态
+    - 被 datamake / SQL Brain / Text2SQL 共用
+
+    它不承担业务流程控制职责。
+    """
 
     __tablename__ = "text2sql_databases"
 
@@ -43,6 +42,8 @@ class Text2SQLDatabase(Base):
 
     # Database configuration
     name = Column(String(255), nullable=False)
+    system_short = Column(String(64), nullable=False, index=True)
+    env = Column(String(32), nullable=False, index=True)
     type = Column(SQLEnum(DatabaseType), nullable=False)
     url = Column(Text, nullable=False)  # Database connection URL
     read_only = Column(Boolean, default=True, nullable=False)
@@ -65,11 +66,13 @@ class Text2SQLDatabase(Base):
     user = relationship("User", back_populates="text2sql_databases")
 
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary"""
+        """转成 API 可序列化字典。"""
         return {
             "id": self.id,
             "user_id": self.user_id,
             "name": self.name,
+            "system_short": self.system_short,
+            "env": self.env,
             "type": self.type.value,
             "url": self.url,
             "read_only": self.read_only,
@@ -85,11 +88,16 @@ class Text2SQLDatabase(Base):
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Text2SQLDatabase":
-        """Create from dictionary"""
+        """从字典恢复模型。
+
+        这里对数据库类型做 canonical 归一化，保证别名输入不会把宿主表写脏。
+        """
         return cls(
             user_id=data.get("user_id"),
             name=data.get("name"),
-            type=DatabaseType(data.get("type", "sqlite")),
+            system_short=data.get("system_short", "unknown"),
+            env=data.get("env", "unknown"),
+            type=DatabaseType(normalize_database_type(data.get("type", "sqlite"))),
             url=data.get("url"),
             read_only=data.get("read_only", True),
             status=DatabaseStatus(data.get("status", "disconnected")),

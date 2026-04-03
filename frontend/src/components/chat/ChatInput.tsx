@@ -32,7 +32,7 @@ interface ChatInputProps {
   onModeChange?: (mode: "task" | "process") => void;
   inputValue?: string;
   onInputChange?: (value: string) => void;
-  taskStatus?: "pending" | "running" | "completed" | "failed" | "paused";
+  taskStatus?: "pending" | "running" | "completed" | "failed" | "paused" | "waiting_approval";
   onPause?: () => void;
   onResume?: () => void;
   taskConfig?: {
@@ -329,7 +329,7 @@ export function ChatInput({
     const hasText = message.trim().length > 0;
     const hasFiles = files.length > 0;
     const isUploadingFiles = uploadingFiles.size > 0;
-    return (hasText || hasFiles) && !isLoading && !isUploadingFiles;
+    return (hasText || hasFiles) && !isLoading && !isUploadingFiles && taskStatus !== "waiting_approval";
   };
 
   const handleSubmit = async (e: React.FormEvent) => {

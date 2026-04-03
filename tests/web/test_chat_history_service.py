@@ -8,7 +8,10 @@ from xagent.web.models.task import Task, TaskStatus
 from xagent.web.models.user import User
 from xagent.web.services.chat_history_service import (
     load_task_transcript,
+    persist_approval_request_message,
+    persist_approval_result_message,
     persist_assistant_message,
+    persist_resume_notice_message,
     persist_user_message,
 )
 
@@ -123,3 +126,59 @@ def test_build_assistant_transcript_content_skips_empty_unknown_interactions_hea
     content = build_assistant_transcript_content("Test", [{"type": "unknown_type"}])
 
     assert content == "Test"
+
+
+def test_persist_approval_request_message():
+    db_session = _create_db_session()
+    try:
+        task = _create_task(db_session)
+
+        message = persist_approval_request_message(
+            db_session,
+            int(task.id),
+            int(task.user_id),
+            datasource_id="analytics",
+            step_id="step_sql",
+            risk_level="high",
+            risk_reasons=["write_statement"],
+            request_id=9,
+            sql_preview="DELETE FROM users WHERE id = 1",
+        )
+
+        assert message is not None
+        assert message.message_type == "approval_request"
+        assert "waiting for approval" in message.content
+        assert "Approval request: 9" in message.content
+    finally:
+        db_session.close()
+
+
+def test_persist_approval_result_message_and_resume_notice():
+    db_session = _create_db_session()
+    try:
+        task = _create_task(db_session)
+
+        result_message = persist_approval_result_message(
+            db_session,
+            int(task.id),
+            int(task.user_id),
+            request_id=10,
+            status="approved",
+            reason="Looks safe",
+        )
+        resume_message = persist_resume_notice_message(
+            db_session,
+            int(task.id),
+            int(task.user_id),
+            request_id=10,
+        )
+
+        assert result_message is not None
+        assert result_message.message_type == "approval_result"
+        assert "approved" in result_message.content
+
+        assert resume_message is not None
+        assert resume_message.message_type == "approval_resume"
+        assert "resumed after approval" in resume_message.content
+    finally:
+        db_session.close()

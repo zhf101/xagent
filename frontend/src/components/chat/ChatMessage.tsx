@@ -82,12 +82,14 @@ function GeneratingIndicator({latestTitle, taskStatus, errorMessage}: {latestTit
 
   const displayTitle = taskStatus === 'paused'
     ? t("common.taskPaused")
+    : taskStatus === 'waiting_approval'
+      ? "等待审批"
     : (latestTitle ? `${latestTitle} ` : t("common.planning"));
 
   return (
     <div className="py-3 text-sm leading-relaxed text-muted-foreground flex items-center">
       <span>{displayTitle}</span>
-      {!["failed", "paused"].includes(taskStatus || "") && (
+      {!["failed", "paused", "waiting_approval"].includes(taskStatus || "") && (
         <span className="ml-1 inline-flex items-end gap-1">
           <span className="dot" />
           <span className="dot" />

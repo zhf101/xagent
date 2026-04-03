@@ -901,6 +901,22 @@ class ReActPattern(AgentPattern):
                         "pattern": "react",
                     }
 
+                # ReAct 只负责把工具层阻断结果原样带出；
+                # 是否投影成 DAG 的 waiting_approval、是否允许恢复，交给上层执行器和宿主服务处理。
+                if result["type"] in {"approval_required", "policy_denied"}:
+                    return {
+                        "success": result["type"] != "policy_denied",
+                        "output": result["content"],
+                        "iterations": iteration + 1,
+                        "execution_history": messages,
+                        "pattern": "react",
+                        "type": result["type"],
+                        "tool_name": result.get("tool_name"),
+                        "tool_args": result.get("tool_args"),
+                        "tool_result": result.get("tool_result"),
+                        "policy_decision": result.get("policy_decision"),
+                    }
+
                 # Add observation to conversation for tool results
                 observation_content = f"Tool result from {result.get('tool_name', 'unknown')}:\n{result['content']}\n\nBased on this result, if you have enough information to answer the user's question, provide your final answer. Otherwise, call another tool."
                 messages.append({"role": "user", "content": observation_content})
@@ -2154,6 +2170,31 @@ After using tools, provide a clear summary of the results in the SAME LANGUAGE a
                             "sandboxed": is_sandboxed,
                         },
                     )
+
+                if isinstance(result, dict):
+                    if result.get("blocked"):
+                        return {
+                            "type": "approval_required",
+                            "content": result.get(
+                                "message", "Tool execution blocked pending approval"
+                            ),
+                            "tool_name": action.tool_name,
+                            "tool_args": tool_args,
+                            "tool_result": result,
+                            "policy_decision": result.get("policy_decision"),
+                        }
+
+                    if result.get("decision") == "deny":
+                        return {
+                            "type": "policy_denied",
+                            "content": result.get(
+                                "message", "Tool execution denied by policy"
+                            ),
+                            "tool_name": action.tool_name,
+                            "tool_args": tool_args,
+                            "tool_result": result,
+                            "policy_decision": result.get("policy_decision"),
+                        }
 
                 return {
                     "type": "observation",

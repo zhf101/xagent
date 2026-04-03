@@ -8,6 +8,7 @@ from ...core.model.providers import (
     default_base_url_for_provider,
     get_supported_provider_metadata,
 )
+from ...core.model.provider_availability import ensure_provider_enabled
 from ...core.utils.security import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
@@ -46,6 +47,7 @@ async def fetch_zhipu_models(
     Returns:
         List of available Zhipu models
     """
+    ensure_provider_enabled("zhipu")
     from ...core.model.chat.basic.zhipu import ZhipuLLM
 
     return await ZhipuLLM.list_available_models(api_key, base_url)
@@ -63,6 +65,7 @@ async def fetch_claude_models(
     Returns:
         List of available Claude models
     """
+    ensure_provider_enabled("claude")
     from ...core.model.chat.basic.claude import ClaudeLLM
 
     return await ClaudeLLM.list_available_models(api_key, base_url)
@@ -80,6 +83,7 @@ async def fetch_gemini_models(
     Returns:
         List of available Gemini models
     """
+    ensure_provider_enabled("gemini")
     from ...core.model.chat.basic.gemini import GeminiLLM
 
     return await GeminiLLM.list_available_models(api_key, base_url)
@@ -100,6 +104,7 @@ async def fetch_xinference_models(
     if not base_url:
         raise ValueError("base_url is required for Xinference")
 
+    ensure_provider_enabled("xinference")
     from ...core.model.chat.basic.xinference import XinferenceLLM
 
     return await XinferenceLLM.list_available_models(base_url=base_url, api_key=api_key)
@@ -153,26 +158,35 @@ async def fetch_kimi_for_coding_models(
     api_key: str, base_url: Optional[str] = None
 ) -> List[Dict[str, Any]]:
     """Fetch available Kimi For Coding models via the Claude-compatible API."""
+    ensure_provider_enabled("kimi-for-coding")
     return await fetch_claude_models(api_key, base_url)
 
 
 # Provider registry mapping provider names to their fetch functions
 PROVIDER_FETCHERS: Dict[str, Any] = {
     "openai": fetch_openai_models,
-    "zhipu": fetch_zhipu_models,
-    "claude": fetch_claude_models,
-    "anthropic": fetch_claude_models,
-    "gemini": fetch_gemini_models,
-    "google": fetch_gemini_models,
-    "xinference": fetch_xinference_models,
     "zai-coding-plan": fetch_openai_models,
     "zhipuai-coding-plan": fetch_openai_models,
     "alibaba-coding-plan": fetch_alibaba_coding_plan_models,
     "alibaba-coding-plan-cn": fetch_alibaba_coding_plan_cn_models,
-    "minimax-coding-plan": fetch_minimax_coding_plan_models,
-    "minimax-cn-coding-plan": fetch_minimax_cn_coding_plan_models,
-    "kimi-for-coding": fetch_kimi_for_coding_models,
 }
+
+for provider_name, fetcher in (
+    ("zhipu", fetch_zhipu_models),
+    ("claude", fetch_claude_models),
+    ("anthropic", fetch_claude_models),
+    ("gemini", fetch_gemini_models),
+    ("google", fetch_gemini_models),
+    ("xinference", fetch_xinference_models),
+    ("minimax-coding-plan", fetch_minimax_coding_plan_models),
+    ("minimax-cn-coding-plan", fetch_minimax_cn_coding_plan_models),
+    ("kimi-for-coding", fetch_kimi_for_coding_models),
+):
+    try:
+        ensure_provider_enabled(provider_name)
+    except ValueError:
+        continue
+    PROVIDER_FETCHERS[provider_name] = fetcher
 
 
 async def fetch_models_from_provider(

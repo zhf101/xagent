@@ -11,12 +11,17 @@ os.environ["OAUTHLIB_RELAX_TOKEN_SCOPE"] = "1"
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
-from google_auth_oauthlib.flow import Flow  # type: ignore
-from googleapiclient.discovery import build  # type: ignore
 from jose import JWTError, jwt
 from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+
+try:
+    from google_auth_oauthlib.flow import Flow  # type: ignore
+    from googleapiclient.discovery import build  # type: ignore
+except ImportError:
+    Flow = None  # type: ignore[assignment]
+    build = None  # type: ignore[assignment]
 
 from ..auth_config import (
     ACCESS_TOKEN_EXPIRE_MINUTES,
@@ -35,6 +40,16 @@ auth_router = APIRouter(prefix="/api/auth", tags=["Authentication"])
 
 REGISTRATION_ENABLED_SETTING_KEY = "registration_enabled"
 SETUP_COMPLETED_SETTING_KEY = "setup_completed"
+
+GOOGLE_OAUTH_DISABLED_MESSAGE = (
+    "Google OAuth is disabled because google-auth-oauthlib/google-api-python-client "
+    "dependencies are commented out in pyproject.toml."
+)
+
+
+def _ensure_google_oauth_enabled() -> None:
+    if Flow is None or build is None:
+        raise HTTPException(status_code=503, detail=GOOGLE_OAUTH_DISABLED_MESSAGE)
 
 
 def create_access_token(
@@ -756,6 +771,7 @@ async def google_login(
     token: Optional[str] = None, db: Session = Depends(get_db)
 ) -> Any:
     """Initiate Google OAuth flow"""
+    _ensure_google_oauth_enabled()
     client_config = get_google_client_config()
     if not client_config:
         # Fallback for demo/development if no env vars
@@ -822,6 +838,7 @@ async def google_login(
 @auth_router.get("/google/callback")
 async def google_callback(request: Request, db: Session = Depends(get_db)) -> Any:
     """Handle Google OAuth callback"""
+    _ensure_google_oauth_enabled()
     code = request.query_params.get("code")
     state = request.query_params.get("state")
 

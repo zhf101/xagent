@@ -54,6 +54,9 @@ const zh = {
     search: "搜索任务",
     templates: "模板",
     channels: "渠道",
+    sqlDataSources: "SQL 数据源",
+    sqlAssets: "Vanna 知识库",
+    httpAssets: "HTTP 资产",
     sections: {
       agentDevelopment: "Agent 开发",
       resources: "资源",

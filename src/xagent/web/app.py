@@ -16,6 +16,7 @@ from .api.channel import router as channel_router
 from .api.chat import chat_router
 from .api.cloud_storage import cloud_router
 from .api.files import file_router
+from .api.gdp_http_assets import router as gdp_http_assets_router
 from .api.kb import kb_router
 from .api.mcp import mcp_router
 from .api.memory import MemoryManagementRouter
@@ -23,8 +24,11 @@ from .api.model import model_router
 from .api.monitor import monitor_router
 from .api.progress_ws import progress_ws_router
 from .api.skills import router as skills_router
+from .api.sql_approval import approval_router
 from .api.system import system_router
 from .api.templates import router as templates_router
+from .api.datamake_http_assets import router as datamake_http_assets_router
+from .api.datamake_sql_assets import router as datamake_sql_assets_router
 from .api.text2sql import text2sql_router
 from .api.tools import tools_router
 from .api.websocket import ws_router
@@ -32,9 +36,13 @@ from .config import UPLOADS_DIR
 from .dynamic_memory_store import get_memory_store
 from .logging_config import setup_logging
 from .models.database import init_db
+from ..core.database.sql_logging import enable_sql_logging, is_sql_logging_enabled
+from ..core.model.chat.langchain import setup_llm_logging_from_env
+from .models.database import get_engine
 
 # Configure logging when running under gunicorn/uwsgi (no __main__.py)
 setup_logging()  # Uses XAGENT_LOG_LEVEL env var or defaults to INFO
+setup_llm_logging_from_env()
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +156,7 @@ app.include_router(monitor_router)
 app.include_router(progress_ws_router)
 app.include_router(memory_router)
 app.include_router(mcp_router)
+app.include_router(approval_router)
 app.include_router(text2sql_router)
 app.include_router(tools_router)
 app.include_router(admin_users_router)
@@ -155,6 +164,9 @@ app.include_router(skills_router)
 app.include_router(system_router)
 app.include_router(templates_router)
 app.include_router(agents_router)
+app.include_router(gdp_http_assets_router)
+app.include_router(datamake_http_assets_router)
+app.include_router(datamake_sql_assets_router)
 app.include_router(channel_router, prefix="/api/channels", tags=["Channels"])
 
 
@@ -165,6 +177,13 @@ async def startup_event() -> None:
     logger.info("Initializing database...")
     init_db()
     logger.info("Database initialized successfully")
+    if is_sql_logging_enabled():
+        enable_sql_logging(
+            engine=get_engine(),
+            log_params=os.getenv("SQL_LOG_QUERY_PARAMS", "true").lower() == "true",
+            log_results=os.getenv("SQL_LOG_RESULTS", "false").lower() == "true",
+        )
+        logger.info("SQL 独立日志记录已启用")
 
     # Initialize skill manager
     from ..skills.utils import create_skill_manager

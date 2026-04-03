@@ -19,10 +19,15 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.responses import JSONResponse
-from googleapiclient.discovery import build  # type: ignore
-from googleapiclient.http import MediaIoBaseDownload  # type: ignore
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
+
+try:
+    from googleapiclient.discovery import build  # type: ignore
+    from googleapiclient.http import MediaIoBaseDownload  # type: ignore
+except ImportError:
+    build = None  # type: ignore[assignment]
+    MediaIoBaseDownload = None  # type: ignore[assignment]
 
 from ...core.tools.core.RAG_tools.core.schemas import (
     ChunkStrategy,
@@ -90,6 +95,16 @@ from .cloud_storage import get_google_credentials
 
 T = TypeVar("T", bound=Callable[..., Any])
 logger = logging.getLogger(__name__)
+
+GOOGLE_CLOUD_INGEST_DISABLED_MESSAGE = (
+    "Cloud ingestion from Google Drive is disabled because google-api-python-client "
+    "dependencies are commented out in pyproject.toml."
+)
+
+
+def _ensure_google_cloud_ingest_enabled() -> None:
+    if build is None or MediaIoBaseDownload is None:
+        raise HTTPException(status_code=503, detail=GOOGLE_CLOUD_INGEST_DISABLED_MESSAGE)
 
 
 def handle_kb_exceptions(func: T) -> T:
@@ -470,6 +485,7 @@ async def ingest_cloud(
     _user: User = Depends(get_current_user),
 ) -> List[IngestionResult]:
     """Ingest files from cloud storage."""
+    _ensure_google_cloud_ingest_enabled()
     results = []
 
     # Common configuration setup

@@ -54,6 +54,9 @@ const en = {
     search: "Search Tasks",
     templates: "Templates",
     channels: "Channels",
+    sqlDataSources: "SQL Data Sources",
+    sqlAssets: "Vanna Knowledge Base",
+    httpAssets: "HTTP Assets",
     sections: {
       agentDevelopment: "Agent Development",
       resources: "Resources",

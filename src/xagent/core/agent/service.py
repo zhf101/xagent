@@ -300,7 +300,25 @@ class AgentService:
 
                     # Check if we have a DAG pattern that supports continuation
                     dag_pattern = self.get_dag_pattern()
-                    if dag_pattern and hasattr(dag_pattern, "handle_continuation"):
+                    if (
+                        dag_pattern
+                        and getattr(dag_pattern, "phase", None)
+                        == ExecutionPhase.WAITING_APPROVAL
+                        and hasattr(dag_pattern, "resume_waiting_approval")
+                    ):
+                        # continuation 入口可能绕过专门的审批恢复 API，
+                        # 因此这里必须再做一次审批状态校验，防止未批准时直接续跑。
+                        await self._ensure_waiting_approval_can_resume(
+                            str(task_id), dag_pattern
+                        )
+                        logger.info(
+                            f"Resuming waiting-approval DAG execution for task {task_id}"
+                        )
+                        result = await dag_pattern.resume_waiting_approval(
+                            task,
+                            self.tools,
+                        )
+                    elif dag_pattern and hasattr(dag_pattern, "handle_continuation"):
                         # Check if DAG pattern has a current plan
                         if (
                             hasattr(dag_pattern, "current_plan")
@@ -363,9 +381,18 @@ class AgentService:
                     if not normalized_output:
                         normalized_output = result.get("error", "No output provided")
 
+                    execution_phase = execution_status.get("phase", "unknown")
+                    normalized_status = (
+                        "waiting_approval"
+                        if execution_phase == ExecutionPhase.WAITING_APPROVAL.value
+                        else "completed"
+                        if result.get("success")
+                        else "failed"
+                    )
+
                     # Normalize result format
                     return {
-                        "status": "completed" if result.get("success") else "failed",
+                        "status": normalized_status,
                         "output": normalized_output,
                         "success": result.get("success", False),
                         "chat_response": chat_response,
@@ -376,7 +403,7 @@ class AgentService:
                             "tools_available": len(self.tools),
                             "execution_type": "dag_plan_execute",
                             "iterations": result.get("iterations", 0),
-                            "phase": execution_status.get("phase", "unknown"),
+                            "phase": execution_phase,
                             "task_id": self._current_task_id,
                         },
                     }
@@ -585,6 +612,15 @@ class AgentService:
                 if isinstance(pattern, DAGPlanExecutePattern):
                     return pattern
         return None
+
+    def fail_waiting_approval(self, approval_request_id: Optional[int] = None) -> None:
+        """把内存里的 waiting_approval DAG 标记为失败。
+
+        这是宿主数据库状态之外的进程内兜底，防止旧 agent 继续把已拒绝审批当成可恢复阻断。
+        """
+        dag_pattern = self.get_dag_pattern()
+        if dag_pattern and hasattr(dag_pattern, "fail_waiting_approval"):
+            dag_pattern.fail_waiting_approval(approval_request_id=approval_request_id)
 
     def set_conversation_history(self, messages: List[Dict[str, Any]]) -> None:
         """Load a persisted transcript into patterns that support top-level chat history."""
@@ -840,11 +876,13 @@ class AgentService:
             from .pattern.dag_plan_execute.models import (
                 ExecutionPlan,
                 PlanStep,
+                ExecutionPhase,
                 StepStatus,
             )
 
             # Reconstruct ExecutionPlan
-            steps_data = plan_state.get("steps", [])
+            plan_payload = plan_state.get("current_plan", plan_state)
+            steps_data = plan_payload.get("steps", [])
             steps = []
 
             for step_data in steps_data:
@@ -866,24 +904,37 @@ class AgentService:
 
             # Create ExecutionPlan
             execution_plan = ExecutionPlan(
-                id=plan_state["id"],
-                goal=plan_state["goal"],
-                iteration=plan_state.get("iteration", 1),
+                id=plan_payload["id"],
+                goal=plan_payload["goal"],
+                iteration=plan_payload.get("iteration", 1),
                 steps=steps,
             )
 
             # Set DAG pattern's plan
             dag_pattern.current_plan = execution_plan
+            dag_pattern.phase = ExecutionPhase(
+                plan_state.get("phase", ExecutionPhase.EXECUTING.value)
+            )
+            dag_pattern.blocked_step_id = plan_state.get("blocked_step_id")
+            dag_pattern.blocked_action_type = plan_state.get("blocked_action_type")
+            dag_pattern.approval_request_id = plan_state.get("approval_request_id")
+            dag_pattern.resume_token = plan_state.get("resume_token")
+            dag_pattern.snapshot_version = int(plan_state.get("snapshot_version") or 0)
+            dag_pattern.global_iteration = int(plan_state.get("global_iteration") or 0)
 
             # Reconstruct execution state from tracer events
             completed_steps = set()
             failed_steps = set()
+            waiting_approval_steps = set()
 
             for event in tracer_events:
                 if event.get("event_type", "").startswith("step_end_"):
                     step_id = event.get("step_id")
                     if step_id:
-                        if event.get("data", {}).get("success", False):
+                        status = event.get("data", {}).get("status")
+                        if status == StepStatus.WAITING_APPROVAL.value:
+                            waiting_approval_steps.add(step_id)
+                        elif event.get("data", {}).get("success", False):
                             completed_steps.add(step_id)
                         else:
                             failed_steps.add(step_id)
@@ -891,17 +942,43 @@ class AgentService:
             # Set execution state
             from .utils import StepExecutionResult
 
-            dag_pattern.step_execution_results = {
-                step_id: StepExecutionResult(
-                    step_id=step_id,
-                    messages=[],
-                    final_result={"status": "completed"}
-                    if step_id in completed_steps
-                    else {"status": "failed"},
-                    agent_name="reconstructed_agent",
+            serialized_step_results = plan_state.get("step_execution_results") or {}
+            if serialized_step_results:
+                dag_pattern.step_execution_results = {
+                    step_id: StepExecutionResult(
+                        step_id=step_id,
+                        messages=result_data.get("messages", []),
+                        final_result=result_data.get("final_result", {}),
+                        agent_name=result_data.get("agent_name"),
+                        compact_available=result_data.get("compact_available", True),
+                    )
+                    for step_id, result_data in serialized_step_results.items()
+                }
+            else:
+                dag_pattern.step_execution_results = {
+                    step_id: StepExecutionResult(
+                        step_id=step_id,
+                        messages=[],
+                        final_result={"status": "completed"}
+                        if step_id in completed_steps
+                        else {"status": "waiting_approval"}
+                        if step_id in waiting_approval_steps
+                        else {"status": "failed"},
+                        agent_name="reconstructed_agent",
+                    )
+                    for step_id in completed_steps | failed_steps | waiting_approval_steps
+                }
+
+            if dag_pattern.phase == ExecutionPhase.WAITING_APPROVAL:
+                dag_pattern.register_waiting_approval(
+                    {
+                        "step_id": dag_pattern.blocked_step_id,
+                        "blocked_action_type": dag_pattern.blocked_action_type,
+                        "approval_request_id": dag_pattern.approval_request_id,
+                        "resume_token": dag_pattern.resume_token,
+                        "dag_snapshot_version": dag_pattern.snapshot_version,
+                    }
                 )
-                for step_id in completed_steps | failed_steps
-            }
 
             logger.info(f"DAG pattern reconstructed with {len(steps)} steps")
 
@@ -950,8 +1027,28 @@ class AgentService:
             and hasattr(dag_pattern, "current_plan")
             and dag_pattern.current_plan
         ):
-            data["plan_state"] = dag_pattern.current_plan.to_dict()
-            data["execution_status"] = dag_pattern.get_execution_status()
+            execution_status = dag_pattern.get_execution_status()
+            plan_state = dag_pattern.current_plan.to_dict()
+            plan_state.update(
+                {
+                    "phase": execution_status.get("phase"),
+                    "blocked_step_id": execution_status.get("blocked_step_id"),
+                    "blocked_action_type": execution_status.get(
+                        "blocked_action_type"
+                    ),
+                    "approval_request_id": execution_status.get(
+                        "approval_request_id"
+                    ),
+                    "resume_token": execution_status.get("resume_token"),
+                    "snapshot_version": execution_status.get("snapshot_version"),
+                    "global_iteration": execution_status.get("global_iteration"),
+                    "step_execution_results": dag_pattern._serialize_step_execution_results()
+                    if hasattr(dag_pattern, "_serialize_step_execution_results")
+                    else None,
+                }
+            )
+            data["plan_state"] = plan_state
+            data["execution_status"] = execution_status
 
         return data
 
@@ -1086,3 +1183,56 @@ class AgentService:
                 raise RuntimeError(
                     f"Tool initialization failed for AgentService '{self.name}': {e}"
                 ) from e
+
+    async def _ensure_waiting_approval_can_resume(
+        self, task_id: str, dag_pattern: Any
+    ) -> None:
+        """在续跑 waiting_approval DAG 前校验审批状态。
+
+        这是 AgentService 层的兜底防线：
+        即使调用方绕过了 web 恢复 API，直接走 continuation，也必须确认
+        当前阻断请求已经批准，否则拒绝恢复执行。该方法只读审批状态，不改库。
+        """
+        if not task_id.isdigit():
+            return
+
+        approval_request_id = getattr(dag_pattern, "approval_request_id", None)
+        resume_token = getattr(dag_pattern, "resume_token", None)
+        if approval_request_id is None and not resume_token:
+            raise RuntimeError(
+                f"Task {task_id} cannot resume: missing approval request identity"
+            )
+
+        def _load_request_status() -> tuple[str, Optional[int]]:
+            from ...web.models.database import get_db
+            from ...web.services.sql_approval_service import SQLApprovalService
+
+            db_gen = get_db()
+            db = next(db_gen)
+            try:
+                approval_service = SQLApprovalService(db)
+                # 续跑前顺手做一次过期同步，避免把事实上已失效的 pending 请求当成可恢复对象。
+                approval_service.expire_pending_requests(task_id=int(task_id))
+
+                request = None
+                if approval_request_id is not None:
+                    request = approval_service.get_request(int(approval_request_id))
+                if request is None and resume_token:
+                    request = approval_service.get_request_by_resume_token(
+                        str(resume_token)
+                    )
+
+                if request is None:
+                    raise RuntimeError(
+                        f"Task {task_id} cannot resume: approval request not found"
+                    )
+
+                return str(request.status), int(request.id)
+            finally:
+                db.close()
+
+        status, resolved_request_id = await asyncio.to_thread(_load_request_status)
+        if status != "approved":
+            raise RuntimeError(
+                f"Task {task_id} cannot resume: approval request {resolved_request_id} is {status}"
+            )

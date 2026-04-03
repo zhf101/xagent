@@ -1,8 +1,18 @@
 from .agent import Agent
 from .chat_message import TaskChatMessage
 from .database import Base, get_db, get_engine, get_session_local
+from .datamake_sql_asset import (
+    DataMakeSqlAsset,
+    DataMakeSqlAssetChunk,
+    DataMakeSqlAssetHarvestJob,
+    DataMakeSqlAssetRun,
+    DataMakeSqlAssetVersion,
+)
+from .datamake_http_resource import DataMakeHttpResource
+from .gdp_http_resource import GdpHttpResource
 from .mcp import MCPServer, UserMCPServer
 from .model import Model
+from .sql_approval import ApprovalLedger, ApprovalRequest, DAGStepRun
 from .sandbox import SandboxInfo
 from .system_setting import SystemSetting
 from .task import DAGExecution, Task
@@ -13,6 +23,15 @@ from .uploaded_file import UploadedFile
 from .user import User, UserDefaultModel, UserModel
 from .user_channel import UserChannel
 from .user_oauth import UserOAuth
+from .vanna import (
+    VannaAskRun,
+    VannaEmbeddingChunk,
+    VannaKnowledgeBase,
+    VannaSchemaColumn,
+    VannaSchemaHarvestJob,
+    VannaSchemaTable,
+    VannaTrainingEntry,
+)
 
 __all__ = [
     "Base",
@@ -29,8 +48,18 @@ __all__ = [
     "UserMCPServer",
     "Task",
     "DAGExecution",
+    "ApprovalLedger",
+    "ApprovalRequest",
+    "DAGStepRun",
     "TemplateStats",
     "Text2SQLDatabase",
+    "DataMakeHttpResource",
+    "GdpHttpResource",
+    "DataMakeSqlAsset",
+    "DataMakeSqlAssetVersion",
+    "DataMakeSqlAssetRun",
+    "DataMakeSqlAssetChunk",
+    "DataMakeSqlAssetHarvestJob",
     "ToolConfig",
     "ToolUsage",
     "SystemSetting",
@@ -38,4 +67,11 @@ __all__ = [
     "TaskChatMessage",
     "UploadedFile",
     "SandboxInfo",
+    "VannaKnowledgeBase",
+    "VannaSchemaHarvestJob",
+    "VannaSchemaTable",
+    "VannaSchemaColumn",
+    "VannaTrainingEntry",
+    "VannaEmbeddingChunk",
+    "VannaAskRun",
 ]

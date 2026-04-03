@@ -53,6 +53,101 @@ def persist_assistant_message(
     )
 
 
+def persist_system_status_message(
+    db: Session,
+    task_id: int,
+    user_id: int,
+    content: str,
+    *,
+    message_type: str = "system_status",
+) -> Optional[TaskChatMessage]:
+    return _persist_message(
+        db=db,
+        task_id=task_id,
+        user_id=user_id,
+        role="assistant",
+        content=content,
+        message_type=message_type,
+    )
+
+
+def persist_approval_request_message(
+    db: Session,
+    task_id: int,
+    user_id: int,
+    *,
+    datasource_id: str,
+    step_id: str,
+    risk_level: str,
+    risk_reasons: Optional[List[str]] = None,
+    request_id: Optional[int] = None,
+    sql_preview: Optional[str] = None,
+) -> Optional[TaskChatMessage]:
+    details = [
+        "SQL execution is waiting for approval.",
+        f"Step: {step_id}",
+        f"Datasource: {datasource_id}",
+        f"Risk level: {risk_level}",
+    ]
+    if request_id is not None:
+        details.append(f"Approval request: {request_id}")
+    if risk_reasons:
+        details.append(f"Reasons: {', '.join(risk_reasons)}")
+    if sql_preview:
+        details.append(f"SQL: {sql_preview}")
+
+    return persist_system_status_message(
+        db,
+        task_id,
+        user_id,
+        "\n".join(details),
+        message_type="approval_request",
+    )
+
+
+def persist_approval_result_message(
+    db: Session,
+    task_id: int,
+    user_id: int,
+    *,
+    request_id: int,
+    status: str,
+    reason: Optional[str] = None,
+) -> Optional[TaskChatMessage]:
+    lines = [f"Approval request {request_id} was {status}."]
+    if reason:
+        lines.append(f"Reason: {reason}")
+    return persist_system_status_message(
+        db,
+        task_id,
+        user_id,
+        "\n".join(lines),
+        message_type="approval_result",
+    )
+
+
+def persist_resume_notice_message(
+    db: Session,
+    task_id: int,
+    user_id: int,
+    *,
+    request_id: Optional[int] = None,
+    content: Optional[str] = None,
+) -> Optional[TaskChatMessage]:
+    message = content or (
+        f"Task resumed after approval request {request_id}."
+        if request_id is not None
+        else "Task resumed after approval."
+    )
+    return persist_system_status_message(
+        db,
+        task_id,
+        user_id,
+        message,
+        message_type="approval_resume",
+    )
+
+
 def load_task_transcript(
     db: Session,
     task_id: int,

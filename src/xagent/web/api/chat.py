@@ -13,7 +13,7 @@ from ...core.agent.service import AgentService
 from ...core.agent.trace import Tracer
 from ...core.model.chat.basic.base import BaseLLM
 from ...core.model.chat.basic.openai import OpenAILLM
-from ...core.model.chat.basic.zhipu import ZhipuLLM
+from ...core.model.provider_availability import ensure_provider_enabled
 from ..auth_dependencies import get_current_user
 from ..config import ALLOWED_EXTERNAL_UPLOAD_DIRS, UPLOADS_DIR
 from ..dynamic_memory_store import get_memory_store
@@ -24,6 +24,7 @@ from ..models.task import AgentType, Task, TaskStatus
 from ..models.user import User
 from ..schemas.chat import TaskCreateRequest, TaskCreateResponse
 from ..services.chat_history_service import load_task_transcript
+from ..services.dag_recovery_service import DAGRecoveryService
 from ..services.llm_utils import resolve_llms_from_names
 from ..services.task_execution_context_service import (
     load_task_execution_recovery_state,
@@ -40,67 +41,45 @@ logger = logging.getLogger(__name__)
 chat_router = APIRouter(prefix="/api/chat", tags=["chat"])
 
 
+def _build_task_approval_summary(db: Session, task_id: int) -> Dict[str, Any]:
+    try:
+        return DAGRecoveryService(db).build_approval_summary(task_id)
+    except Exception as exc:
+        logger.warning(
+            "Failed to build approval summary for task %s: %s",
+            task_id,
+            exc,
+        )
+        return {
+            "task_status": None,
+            "dag_phase": None,
+            "blocked_step_id": None,
+            "blocked_action_type": None,
+            "approval_request_id": None,
+            "resume_token": None,
+            "snapshot_version": None,
+            "global_iteration": None,
+            "pending_request": None,
+            "approved_request": None,
+            "latest_request": None,
+            "blocked_step_run": None,
+            "can_resume": False,
+            "last_resume_at": None,
+            "last_resume_by": None,
+        }
+
+
 def create_default_llm() -> Optional[BaseLLM]:
     """Create a default LLM instance based on environment configuration"""
     try:
-        # For OpenAI: allow empty string API key (use is not None check)
-        # For Zhipu: don't allow empty string API key (use truthy check)
+        # 当前默认模型只支持 OpenAI 兼容接口。
         openai_api_key = os.getenv("OPENAI_API_KEY")
-        zhipu_api_key = os.getenv("ZHIPU_API_KEY")
 
-        # Similarly for base_url: prefer OPENAI_BASE_URL if it exists (even if empty string)
-        # Only fallback to ZHIPU_BASE_URL if OPENAI_BASE_URL is None
         openai_base_url = os.getenv("OPENAI_BASE_URL")
-        zhipu_base_url = os.getenv("ZHIPU_BASE_URL")
 
-        # For model_name: prefer OPENAI_MODEL if it exists (even if empty string)
-        # Only fallback to ZHIPU_MODEL_NAME if OPENAI_MODEL is None
         openai_model = os.getenv("OPENAI_MODEL")
-        zhipu_model = os.getenv("ZHIPU_MODEL_NAME")
 
-        # Check if Zhipu
-        zhipu_models = {
-            "glm-4.7",
-            "glm-4.7-flashx",
-            "glm-4.6",
-            "glm-4.5-air",
-            "glm-4.5-airx",
-            "glm-4-long",
-            "glm-4-flashx-250414",
-            "glm-4.7-flash",
-            "glm-4-Flash-250414",
-        }
-        is_zhipu = (
-            zhipu_base_url
-            and any(
-                domain in zhipu_base_url.lower()
-                for domain in {"zhipu", "bigmodel.cn", "api.z.ai"}
-            )
-        ) or (
-            zhipu_model
-            and any(zhipu_model.lower().strip() in x.lower() for x in zhipu_models)
-        )
-
-        if is_zhipu:
-            if zhipu_api_key:
-                logger.info(f"Using Zhipu LLM with model: {zhipu_model}")
-                # Use automatic thinking mode (None) by default
-                thinking_mode_env = os.getenv("ZHIPU_THINKING_MODE", "auto").lower()
-                thinking_mode = (
-                    None if thinking_mode_env == "auto" else thinking_mode_env == "true"
-                )
-                return ZhipuLLM(
-                    model_name=zhipu_model or "glm-4.7-flash",
-                    api_key=zhipu_api_key,
-                    base_url=zhipu_base_url,
-                    thinking_mode=thinking_mode,
-                )
-            else:
-                logger.error(
-                    "Zhipu API key not found in environment variables. Set ZHIPU_API_KEY to enable Zhipu LLM functionality."
-                )
-                return None
-        elif openai_api_key is not None:
+        if openai_api_key is not None:
             logger.info(f"Using OpenAI LLM with model: {openai_model}")
             return OpenAILLM(
                 model_name=openai_model or "gpt-4o-mini",
@@ -110,7 +89,7 @@ def create_default_llm() -> Optional[BaseLLM]:
 
         # No LLM available - AgentService will run without DAG pattern
         logger.error(
-            "No API key found in environment variables. Set OPENAI_API_KEY or ZHIPU_API_KEY to enable LLM functionality."
+            "No API key found in environment variables. Set OPENAI_API_KEY to enable LLM functionality."
         )
         return None
 
@@ -465,6 +444,7 @@ class AgentServiceManager:
                 should_reconstruct = task is not None and task.status in [
                     TaskStatus.RUNNING,
                     TaskStatus.PAUSED,
+                    TaskStatus.WAITING_APPROVAL,
                 ]
                 # Task exists in database, try to reconstruct from history only for active executions
                 if db is not None and should_reconstruct:
@@ -872,6 +852,16 @@ class AgentServiceManager:
 
         # LLM configuration is now stored in Task table, no need to clean up memory storage
 
+    def fail_waiting_approval(
+        self, task_id: int, approval_request_id: Optional[int] = None
+    ) -> None:
+        """把指定任务的内存态 waiting_approval 收口为 failed。"""
+        agent = self._agents.get(task_id)
+        if agent is None:
+            return
+        if hasattr(agent, "fail_waiting_approval"):
+            agent.fail_waiting_approval(approval_request_id=approval_request_id)
+
     async def execute_task(
         self,
         agent_service: "AgentService",
@@ -1202,6 +1192,8 @@ class AgentServiceManager:
                 )
                 .all()
             )
+            if not isinstance(trace_events, list):
+                trace_events = []
             for event in trace_events:
                 tracer_events.append(
                     {
@@ -1221,11 +1213,25 @@ class AgentServiceManager:
             dag_execution = (
                 db.query(DAGExecution).filter(DAGExecution.task_id == task_id).first()
             )
-            if dag_execution and dag_execution.current_plan:
-                plan_state = (
-                    dict(dag_execution.current_plan)
-                    if dag_execution.current_plan
-                    else None
+            if (
+                dag_execution
+                and isinstance(dag_execution.current_plan, dict)
+                and dag_execution.current_plan
+            ):
+                plan_state = dict(dag_execution.current_plan)
+                plan_state.update(
+                    {
+                        "phase": dag_execution.phase.value
+                        if dag_execution.phase
+                        else None,
+                        "blocked_step_id": dag_execution.blocked_step_id,
+                        "blocked_action_type": dag_execution.blocked_action_type,
+                        "approval_request_id": dag_execution.approval_request_id,
+                        "resume_token": dag_execution.resume_token,
+                        "snapshot_version": dag_execution.snapshot_version,
+                        "global_iteration": dag_execution.global_iteration,
+                        "step_execution_results": dag_execution.step_execution_results,
+                    }
                 )
 
             if tracer_events or plan_state:
@@ -1873,6 +1879,13 @@ async def get_task(
                 dag_data = {
                     "phase": dag_execution.phase.value if dag_execution.phase else None,
                     "current_plan": dag_execution.current_plan,
+                    "blocked_step_id": dag_execution.blocked_step_id,
+                    "blocked_action_type": dag_execution.blocked_action_type,
+                    "approval_request_id": dag_execution.approval_request_id,
+                    "resume_token": dag_execution.resume_token,
+                    "snapshot_version": dag_execution.snapshot_version,
+                    "global_iteration": dag_execution.global_iteration,
+                    "step_execution_results": dag_execution.step_execution_results,
                     "created_at": safe_timestamp_to_unix(dag_execution.created_at)
                     if dag_execution.created_at
                     else None,
@@ -1880,6 +1893,8 @@ async def get_task(
                     if dag_execution.updated_at
                     else None,
                 }
+
+            approval = _build_task_approval_summary(db, task_id)
 
             # If model_id columns are not populated (legacy rows), best-effort resolve them
             # from stored provider-facing model_name values.
@@ -1902,6 +1917,7 @@ async def get_task(
                 "visual_model_name": task.visual_model_name,
                 "compact_model_name": task.compact_model_name,
                 "dag_data": dag_data,
+                "approval": approval,
                 "input_tokens": task.input_tokens or 0,
                 "output_tokens": task.output_tokens or 0,
                 "total_tokens": task.total_tokens or 0,
@@ -1951,6 +1967,7 @@ async def get_task_status(
 
             llm_ids = get_agent_manager()._get_task_llm_ids(task, db)
             model_id, small_fast_model_id, visual_model_id, compact_model_id = llm_ids
+            approval = _build_task_approval_summary(db, task_id)
 
             return {
                 "task_id": task.id,
@@ -1966,6 +1983,7 @@ async def get_task_status(
                 "small_fast_model_name": task.small_fast_model_name,
                 "visual_model_name": task.visual_model_name,
                 "compact_model_name": task.compact_model_name,
+                "approval": approval,
                 "input_tokens": task.input_tokens or 0,
                 "output_tokens": task.output_tokens or 0,
                 "total_tokens": task.total_tokens or 0,

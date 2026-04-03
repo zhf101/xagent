@@ -1,4 +1,9 @@
 from .base import BaseRerank
-from .dashscope import DashscopeRerank
+from .adapter import OpenAIRerank, RerankModelAdapter, create_rerank_adapter
 
-__all__ = ["BaseRerank", "DashscopeRerank"]
+__all__ = [
+    "BaseRerank",
+    "OpenAIRerank",
+    "RerankModelAdapter",
+    "create_rerank_adapter",
+]
