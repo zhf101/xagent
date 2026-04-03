@@ -1,11 +1,13 @@
 "use client";
 
-import { useState, useRef, useEffect, Suspense, useCallback, useMemo } from "react";
-import { GitMerge, Bot, ArrowLeft, Loader2, Sparkles, FolderOpen } from "lucide-react";
+import React, { useState, useRef, useEffect, Suspense, useCallback, useMemo } from "react";
+import { GitMerge, ArrowLeft, Loader2, FolderOpen, ShieldAlert, Play } from "lucide-react";
 import { ChatMessage } from "@/components/chat/ChatMessage";
 import { ChatInput } from "@/components/chat/ChatInput";
 import { Button } from "@/components/ui/button";
-import { useApp } from "@/contexts/app-context-chat";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { useApp, type TaskApprovalSummary } from "@/contexts/app-context-chat";
 import { useI18n } from "@/contexts/i18n-context";
 import { useParams, useRouter } from "next/navigation"
 import { PreviewSheet } from "@/components/preview-sheet";
@@ -14,15 +16,220 @@ import { TokenUsageDisplay } from "@/components/chat/TokenUsageDisplay";
 import { TaskFileManager } from "@/components/file/task-file-manager";
 import { getApiUrl } from "@/lib/utils";
 import { apiRequest } from "@/lib/api-wrapper";
-import type React from "react";
 import dagre from "dagre"
 import { CenterPanel } from "@/components/layout/center-panel"
 import { FilePreviewActionButtons } from "@/components/file/file-preview-action-buttons"
+import { toast } from "sonner";
+
+function formatApprovalStatus(status?: string | null) {
+  switch (status) {
+    case "pending":
+      return "等待审批"
+    case "approved":
+      return "已审批"
+    case "rejected":
+      return "已拒绝"
+    default:
+      return "未触发"
+  }
+}
+
+function formatRiskLevel(level?: string | null) {
+  switch (level) {
+    case "critical":
+      return "Critical"
+    case "high":
+      return "High"
+    case "medium":
+      return "Medium"
+    case "low":
+      return "Low"
+    default:
+      return level || "Unknown"
+  }
+}
+
+function getApprovalStatusVariant(status?: string | null): "secondary" | "outline" | "destructive" | "default" {
+  switch (status) {
+    case "approved":
+      return "default"
+    case "rejected":
+      return "destructive"
+    case "pending":
+      return "secondary"
+    default:
+      return "outline"
+  }
+}
+
+function getRiskVariant(level?: string | null): "secondary" | "outline" | "destructive" | "default" {
+  switch (level) {
+    case "critical":
+    case "high":
+      return "destructive"
+    case "medium":
+      return "secondary"
+    case "low":
+      return "default"
+    default:
+      return "outline"
+  }
+}
+
+function formatLocalTimestamp(value?: string | number | null) {
+  if (!value) return "未记录"
+  const timestamp = typeof value === "number" ? value : new Date(value).getTime()
+  if (!Number.isFinite(timestamp)) return String(value)
+  return new Date(timestamp).toLocaleString()
+}
+
+function TaskApprovalCard({
+  approval,
+  taskStatus,
+  onResume,
+  isResuming,
+}: {
+  approval?: TaskApprovalSummary
+  taskStatus?: string
+  onResume: () => Promise<void>
+  isResuming: boolean
+}) {
+  const activeRequest =
+    approval?.pending_request ||
+    approval?.approved_request ||
+    approval?.latest_request
+
+  if (
+    !approval ||
+    (
+      !approval.blocked_step_id &&
+      !approval.pending_request &&
+      !approval.approved_request &&
+      !approval.latest_request &&
+      !approval.last_resume_at
+    )
+  ) {
+    return null
+  }
+
+  const requestStatus = activeRequest?.status || (approval.can_resume ? "approved" : undefined)
+  const riskReasons = activeRequest?.risk_reasons || []
+  const sqlPreview = activeRequest?.sql_original?.trim()
+
+  let headline = "SQL 审批状态"
+  let description = "当前任务包含需要审批的 SQL 工具调用。"
+
+  if (taskStatus === "waiting_approval" && requestStatus === "pending") {
+    headline = "等待 SQL 审批"
+    description = "DAG 已在高风险 SQL 步骤处中断，等待审批人处理后才能继续。"
+  } else if (approval.can_resume) {
+    headline = "审批已通过，可继续执行"
+    description = "审批结果已落库。重新进入任务页后，仍可从当前快照继续向下恢复 DAG。"
+  } else if (requestStatus === "rejected" || taskStatus === "failed") {
+    headline = "审批被拒绝"
+    description = "本次高风险 SQL 调用未获批准，任务已停止在当前审批节点。"
+  } else if (approval.last_resume_at) {
+    description = "该任务曾在审批后恢复执行，以下保留的是最近一次审批快照。"
+  }
+
+  return (
+    <Card className="mb-4 border-amber-500/30 bg-amber-500/5">
+      <CardHeader className="gap-3">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="space-y-1">
+            <CardTitle className="flex items-center gap-2 text-base">
+              <ShieldAlert className="h-4 w-4 text-amber-600" />
+              {headline}
+            </CardTitle>
+            <CardDescription>{description}</CardDescription>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge variant={getApprovalStatusVariant(requestStatus)}>
+              {formatApprovalStatus(requestStatus)}
+            </Badge>
+            <Badge variant={getRiskVariant(activeRequest?.risk_level)}>
+              Risk {formatRiskLevel(activeRequest?.risk_level)}
+            </Badge>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="grid gap-3 text-sm md:grid-cols-2">
+          <div className="rounded-lg border bg-background/80 p-3">
+            <div className="text-xs text-muted-foreground">阻塞步骤</div>
+            <div className="mt-1 font-medium">{approval.blocked_step_id || "未记录"}</div>
+          </div>
+          <div className="rounded-lg border bg-background/80 p-3">
+            <div className="text-xs text-muted-foreground">动作类型</div>
+            <div className="mt-1 font-medium">{approval.blocked_action_type || activeRequest?.approval_type || "sql_execute"}</div>
+          </div>
+          <div className="rounded-lg border bg-background/80 p-3">
+            <div className="text-xs text-muted-foreground">数据源</div>
+            <div className="mt-1 font-medium">{activeRequest?.datasource_id || "未记录"}</div>
+          </div>
+          <div className="rounded-lg border bg-background/80 p-3">
+            <div className="text-xs text-muted-foreground">审批单号</div>
+            <div className="mt-1 font-medium">{approval.approval_request_id || "未生成"}</div>
+          </div>
+          <div className="rounded-lg border bg-background/80 p-3">
+            <div className="text-xs text-muted-foreground">最近审批时间</div>
+            <div className="mt-1 font-medium">
+              {formatLocalTimestamp(activeRequest?.approved_at || activeRequest?.updated_at)}
+            </div>
+          </div>
+          <div className="rounded-lg border bg-background/80 p-3">
+            <div className="text-xs text-muted-foreground">最近恢复时间</div>
+            <div className="mt-1 font-medium">{formatLocalTimestamp(approval.last_resume_at)}</div>
+          </div>
+        </div>
+
+        {riskReasons.length > 0 && (
+          <div className="rounded-lg border bg-background/80 p-3">
+            <div className="text-xs text-muted-foreground">风险原因</div>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {riskReasons.map((reason, index) => (
+                <Badge key={`${reason}-${index}`} variant="outline" className="max-w-full whitespace-normal py-1 text-left">
+                  {reason}
+                </Badge>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {sqlPreview && (
+          <div className="rounded-lg border bg-background/80 p-3">
+            <div className="text-xs text-muted-foreground">SQL 预览</div>
+            <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-md bg-muted/40 p-3 text-xs text-foreground/90">
+              {sqlPreview}
+            </pre>
+          </div>
+        )}
+
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="text-xs text-muted-foreground">
+            快照版本 {approval.snapshot_version ?? "-"} · 全局迭代 {approval.global_iteration ?? "-"}
+          </div>
+          {approval.can_resume && (
+            <Button onClick={onResume} disabled={isResuming} className="gap-2">
+              {isResuming ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Play className="h-4 w-4" />
+              )}
+              审批通过后继续执行
+            </Button>
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
 
 function TaskDetailContent() {
   const { state, sendMessage, setTaskId, openFilePreview, closeFilePreview, requestStatus, dispatch, pauseTask, resumeTask } = useApp();
   const { t } = useI18n();
   const [files, setFiles] = useState<File[]>([]);
+  const [isResumingApproval, setIsResumingApproval] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const params = useParams();
   const router = useRouter();
@@ -315,6 +522,35 @@ function TaskDetailContent() {
 
   const isPlanning = dagNodes.length === 0 && state.dagExecution?.phase === "planning";
   const hasError = dagNodes.length === 0 && (state.dagExecution?.phase === "failed" || state.currentTask?.status === "failed");
+  const approvalSummary = state.currentTask?.approval;
+
+  const handleResumeApproved = useCallback(async () => {
+    if (!state.taskId) return;
+
+    setIsResumingApproval(true);
+    try {
+      const response = await apiRequest(`${getApiUrl()}/api/chat/task/${state.taskId}/resume-approved`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload?.detail || response.statusText || "Resume failed");
+      }
+
+      if (payload?.resumed) {
+        toast.success("DAG 已恢复执行");
+      } else {
+        toast.error("当前审批状态还不能恢复执行");
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Resume failed";
+      toast.error(`恢复执行失败: ${message}`);
+    } finally {
+      setIsResumingApproval(false);
+    }
+  }, [state.taskId]);
 
   return (
     <div
@@ -377,7 +613,7 @@ function TaskDetailContent() {
                     />
                   ))}
 
-                  {(state.isProcessing || (state.traceEvents?.length || 0) > 0 || state.currentTask?.status === 'paused') && !hasFinalAssistantMessage && (
+                  {(state.isProcessing || (state.traceEvents?.length || 0) > 0 || state.currentTask?.status === 'paused' || state.currentTask?.status === 'waiting_approval') && !hasFinalAssistantMessage && (
                     <ChatMessage
                       role="assistant"
                       content={null}
@@ -397,6 +633,13 @@ function TaskDetailContent() {
         {/* Fixed input box at bottom */}
         <div className="flex-shrink-0 z-10 glass pb-6">
           <div className="container max-w-4xl mx-auto px-4">
+            <TaskApprovalCard
+              approval={approvalSummary}
+              taskStatus={state.currentTask?.status}
+              onResume={handleResumeApproved}
+              isResuming={isResumingApproval}
+            />
+
             <div className="mb-4 flex items-center">
               {state.currentTask?.isDag !== false && (
                 <div

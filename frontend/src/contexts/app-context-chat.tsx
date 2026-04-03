@@ -233,10 +233,82 @@ interface Message {
   interactions?: Interaction[]
 }
 
+export interface ApprovalRequestSummary {
+  id: number
+  task_id: number
+  plan_id: string
+  step_id: string
+  attempt_no: number
+  approval_type: string
+  status: "pending" | "approved" | "rejected" | string
+  datasource_id: string
+  environment: string
+  sql_original: string
+  sql_normalized: string
+  sql_fingerprint: string
+  operation_type: string
+  policy_version: string
+  risk_level: "low" | "medium" | "high" | "critical" | string
+  risk_reasons: string[]
+  tool_name: string
+  tool_payload: Record<string, unknown>
+  dag_snapshot_version: number
+  resume_token: string
+  requested_by: number
+  approved_by?: number | null
+  approved_at?: string | null
+  reason?: string | null
+  timeout_at?: string | null
+  created_at?: string | null
+  updated_at?: string | null
+}
+
+export interface ApprovalStepRunSummary {
+  id: number
+  task_id: number
+  plan_id: string
+  step_id: string
+  attempt_no: number
+  status: string
+  executor_type: string
+  input_payload?: unknown
+  resolved_context?: unknown
+  tool_name?: string | null
+  tool_args?: unknown
+  tool_result?: unknown
+  tool_error?: unknown
+  policy_decision?: unknown
+  approval_request_id?: number | null
+  trace_event_start_id?: string | null
+  trace_event_end_id?: string | null
+  started_at?: string | null
+  ended_at?: string | null
+  created_at?: string | null
+  updated_at?: string | null
+}
+
+export interface TaskApprovalSummary {
+  task_status?: string | null
+  dag_phase?: string | null
+  blocked_step_id?: string | null
+  blocked_action_type?: string | null
+  approval_request_id?: number | null
+  resume_token?: string | null
+  snapshot_version?: number | null
+  global_iteration?: number | null
+  pending_request?: ApprovalRequestSummary | null
+  approved_request?: ApprovalRequestSummary | null
+  latest_request?: ApprovalRequestSummary | null
+  blocked_step_run?: ApprovalStepRunSummary | null
+  can_resume: boolean
+  last_resume_at?: string | null
+  last_resume_by?: number | null
+}
+
 interface Task {
   id: string
   title: string
-  status: "pending" | "running" | "completed" | "failed" | "paused"
+  status: "pending" | "running" | "completed" | "failed" | "paused" | "waiting_approval"
   description: string
   createdAt: string | number
   updatedAt: string | number
@@ -252,13 +324,14 @@ interface Task {
   vibeMode?: "task" | "process"
   isDag?: boolean
   agentId?: number
+  approval?: TaskApprovalSummary
 }
 
 interface StepExecution {
   id: string
   name: string
   description: string
-  status: "pending" | "running" | "completed" | "failed" | "skipped"
+  status: "pending" | "running" | "completed" | "failed" | "skipped" | "waiting_approval" | "analyzed"
   tool_names?: string[]
   dependencies: string[]
   started_at?: string | number
@@ -280,7 +353,7 @@ interface TraceEvent {
 }
 
 interface DAGExecution {
-  phase: "planning" | "executing" | "completed" | "failed"
+  phase: "planning" | "executing" | "waiting_approval" | "checking" | "completed" | "failed"
   current_plan: Record<string, unknown>
   created_at: string | number
   updated_at: string | number
@@ -405,7 +478,13 @@ function appReducer(state: AppState, action: AppAction): AppState {
       return { ...state, isHistoryLoading: action.payload }
 
     case "SYNC_PROCESSING_STATUS":
-      if (state.currentTask?.status === 'completed' || state.currentTask?.status === 'failed') {
+      if (
+        state.currentTask?.status === 'pending' ||
+        state.currentTask?.status === 'paused' ||
+        state.currentTask?.status === 'waiting_approval' ||
+        state.currentTask?.status === 'completed' ||
+        state.currentTask?.status === 'failed'
+      ) {
         return { ...state, isProcessing: false }
       }
       return state
@@ -977,6 +1056,11 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
               console.log('💾 Stored pending task for auto-execution:', taskData.description)
             }
 
+            dispatch({
+              type: "SET_PROCESSING",
+              payload: taskData.status === "running",
+            })
+
             // Check if status changed and trigger update if so
             if (currentState.currentTask?.id === taskData.id.toString() && currentState.currentTask?.status !== taskData.status) {
                dispatch({ type: "TRIGGER_TASK_UPDATE" })
@@ -1002,6 +1086,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                 vibeMode: taskData.vibe_mode,
                 isDag: taskData.is_dag,
                 agentId: taskData.agent_id,
+                approval: taskData.approval,
               }
             })
 
@@ -1016,6 +1101,9 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
             // This prevents the empty state flash when task_info arrives before user_message.
           } else if (eventType === "dag_execution") {
             dispatch({ type: "SET_HISTORY_LOADING", payload: false })
+            if (eventData.phase === "waiting_approval") {
+              dispatch({ type: "SET_PROCESSING", payload: false })
+            }
             dispatch({ type: "SET_DAG_EXECUTION", payload: eventData })
           } else if (eventType === "dag_step_info") {
             dispatch({ type: "SET_HISTORY_LOADING", payload: false })
@@ -3052,7 +3140,16 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
           // Default: add as trace event
           else {
             console.trace('Original message:', JSON.stringify(message), 'Handler: handleMessage (unhandled event_type:', eventType, ')')
-            dispatch({ type: "ADD_TRACE_EVENT", payload: traceEventData })
+            dispatch({
+              type: "ADD_TRACE_EVENT",
+              payload: {
+                event_id: message.event_id || traceEventData.event_id || generateMessageId("trace"),
+                event_type: eventType,
+                step_id: message.step_id || traceEventData.step_id,
+                timestamp: String(message.timestamp),
+                data: eventData,
+              }
+            })
           }
         } else {
           console.trace('Original message:', JSON.stringify(message), 'Handler: handleMessage (no event_type, direct trace event)')
