@@ -31,6 +31,7 @@ __all__ = [
     "ensure_ingestion_runs_table",
     "ensure_collection_config_table",
     "ensure_collection_metadata_table",
+    "check_table_needs_migration",
 ]
 
 
@@ -114,6 +115,24 @@ def _create_table(
         _ensure_schema_fields(conn, name, schema)
 
 
+def _add_user_id_column(conn: DBConnection, table_name: str) -> None:
+    """Add missing `user_id` column with NULL default for migration correctness."""
+    if not _table_exists(conn, table_name):
+        return
+
+    try:
+        table = conn.open_table(table_name)
+        if "user_id" in table.schema.names:
+            return
+        logger.info("Migrating '%s' table: adding missing 'user_id' column", table_name)
+        # IMPORTANT: keep NULL default for migration correctness.
+        # Phase 1 backfill selects `user_id IS NULL`; using 0 or any sentinel
+        # here would make those legacy rows invisible to phase 1.
+        table.add_columns({"user_id": "cast(null as bigint)"})
+    except Exception as e:
+        logger.warning("Failed to check/migrate '%s' table schema: %s", table_name, e)
+
+
 def ensure_documents_table(conn: DBConnection) -> None:
     schema = pa.schema(
         [
@@ -130,19 +149,7 @@ def ensure_documents_table(conn: DBConnection) -> None:
         ]
     )
 
-    # Automatic migration for existing tables missing 'user_id'
-    if _table_exists(conn, "documents"):
-        try:
-            table = conn.open_table("documents")
-            if "user_id" not in table.schema.names:
-                logger.info(
-                    "Migrating 'documents' table: adding missing 'user_id' column"
-                )
-                # Add user_id column with null default, cast to bigint (int64)
-                table.add_columns({"user_id": "cast(null as bigint)"})
-        except Exception as e:
-            logger.warning(f"Failed to check/migrate 'documents' table schema: {e}")
-
+    _add_user_id_column(conn, "documents")
     _create_table(conn, "documents", schema=schema)
 
 
@@ -160,16 +167,7 @@ def ensure_parses_table(conn: DBConnection) -> None:
         ]
     )
 
-    # Automatic migration for existing tables missing 'user_id'
-    if _table_exists(conn, "parses"):
-        try:
-            table = conn.open_table("parses")
-            if "user_id" not in table.schema.names:
-                logger.info("Migrating 'parses' table: adding missing 'user_id' column")
-                table.add_columns({"user_id": "cast(null as bigint)"})
-        except Exception as e:
-            logger.warning(f"Failed to check/migrate 'parses' table schema: {e}")
-
+    _add_user_id_column(conn, "parses")
     _create_table(conn, "parses", schema=schema)
 
 
@@ -198,6 +196,8 @@ def ensure_chunks_table(conn: DBConnection) -> None:
             pa.field("user_id", pa.int64()),
         ]
     )
+
+    _add_user_id_column(conn, "chunks")
     _create_table(conn, "chunks", schema=schema)
 
 
@@ -233,6 +233,8 @@ def ensure_embeddings_table(
             pa.field("user_id", pa.int64()),
         ]
     )
+
+    _add_user_id_column(conn, table_name)
     _create_table(
         conn,
         table_name,
@@ -276,18 +278,7 @@ def ensure_prompt_templates_table(conn: DBConnection) -> None:
         ]
     )
 
-    # Automatic migration for existing tables missing 'user_id'
-    if _table_exists(conn, table_name):
-        try:
-            table = conn.open_table(table_name)
-            if "user_id" not in table.schema.names:
-                logger.info(
-                    f"Migrating '{table_name}' table: adding missing 'user_id' column"
-                )
-                table.add_columns({"user_id": "cast(null as bigint)"})
-        except Exception as e:
-            logger.warning(f"Failed to check/migrate '{table_name}' table schema: {e}")
-
+    _add_user_id_column(conn, table_name)
     _create_table(conn, table_name, schema=schema)
 
 
@@ -306,20 +297,7 @@ def ensure_ingestion_runs_table(conn: DBConnection) -> None:
         ]
     )
 
-    # Automatic migration for existing tables missing 'user_id'
-    if _table_exists(conn, "ingestion_runs"):
-        try:
-            table = conn.open_table("ingestion_runs")
-            if "user_id" not in table.schema.names:
-                logger.info(
-                    "Migrating 'ingestion_runs' table: adding missing 'user_id' column"
-                )
-                table.add_columns({"user_id": "cast(null as bigint)"})
-        except Exception as e:
-            logger.warning(
-                f"Failed to check/migrate 'ingestion_runs' table schema: {e}"
-            )
-
+    _add_user_id_column(conn, "ingestion_runs")
     _create_table(conn, "ingestion_runs", schema=schema)
 
 
@@ -376,3 +354,36 @@ def ensure_collection_metadata_table(conn: DBConnection) -> None:
         ]
     )
     _create_table(conn, "collection_metadata", schema=schema)
+
+
+def check_table_needs_migration(conn: DBConnection, table_name: str) -> bool:
+    """Check if a table exists and needs migration (missing user_id field).
+
+    This function checks if a table exists and is missing the 'user_id' field,
+    which indicates it needs migration for multi-tenancy support.
+
+    Args:
+        conn: LanceDB connection
+        table_name: Name of the table to check
+
+    Returns:
+        True if the table exists and is missing 'user_id' field, False otherwise
+    """
+    if not _table_exists(conn, table_name):
+        return False
+
+    try:
+        table = conn.open_table(table_name)
+        existing_schema = table.schema
+        existing_field_names = {field.name for field in existing_schema}
+
+        # Check if user_id field is missing
+        return "user_id" not in existing_field_names
+    except Exception as e:
+        # If we can't check the schema, assume no migration needed
+        logger.warning(
+            "Could not check schema for table '%s': %s. Assuming no migration needed.",
+            table_name,
+            e,
+        )
+        return False

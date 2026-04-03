@@ -1,5 +1,7 @@
+import asyncio
 import logging
 import os
+from contextlib import suppress
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -43,6 +45,9 @@ __all__ = ["app"]
 app = FastAPI(
     title="xagent", description="The Agent Operating System", redirect_slashes=False
 )
+
+# Track background migration task for graceful shutdown cleanup.
+_migration_task: asyncio.Task[None] | None = None
 
 
 @app.get("/health")
@@ -156,6 +161,7 @@ app.include_router(channel_router, prefix="/api/channels", tags=["Channels"])
 # 初始化数据库
 @app.on_event("startup")
 async def startup_event() -> None:
+    global _migration_task
     logger.info("Initializing database...")
     init_db()
     logger.info("Database initialized successfully")
@@ -196,6 +202,127 @@ async def startup_event() -> None:
         f"Memory store similarity threshold: {store_info['similarity_threshold']}"
     )
 
+    # Auto-migrate LanceDB tables if needed (for multi-tenancy support)
+    # Controlled by LANCEDB_AUTO_MIGRATE environment variable (default: false)
+    auto_migrate = os.getenv("LANCEDB_AUTO_MIGRATE", "false").lower() == "true"
+
+    try:
+        from ..core.tools.core.RAG_tools.LanceDB.schema_manager import (
+            check_table_needs_migration,
+        )
+        from ..providers.vector_store.lancedb import get_connection_from_env
+
+        conn = get_connection_from_env()
+
+        # Check if any tables need migration
+        needs_migration = False
+        tables_to_check = [
+            "chunks",
+            "documents",
+            "parses",
+            "ingestion_runs",
+            "prompt_templates",
+        ]
+        tables_need_migration_list = []
+
+        for table_name in tables_to_check:
+            if check_table_needs_migration(conn, table_name):
+                logger.warning(
+                    "Table '%s' needs migration (missing user_id field)",
+                    table_name,
+                )
+                tables_need_migration_list.append(table_name)
+                needs_migration = True
+
+        # Check embeddings tables (use shared compat helper)
+        if not needs_migration:
+            try:
+                from ..core.tools.core.RAG_tools.utils.lancedb_query_utils import (
+                    list_embeddings_table_names,
+                )
+
+                for table_name in list_embeddings_table_names(conn):
+                    if check_table_needs_migration(conn, table_name):
+                        logger.warning(
+                            "Table '%s' needs migration (missing user_id field)",
+                            table_name,
+                        )
+                        tables_need_migration_list.append(table_name)
+                        needs_migration = True
+            except Exception as e:
+                logger.warning("Could not check embeddings tables: %s", e)
+
+        if needs_migration:
+            if tables_need_migration_list:
+                logger.warning(
+                    "Tables requiring migration: %s",
+                    ", ".join(tables_need_migration_list),
+                )
+
+            if auto_migrate:
+                # Run migration in background to avoid blocking startup
+                logger.info("=" * 60)
+                logger.info("STARTING BACKGROUND LANCEDB MIGRATION")
+                logger.info("=" * 60)
+                logger.info(
+                    "Tables requiring migration: %s",
+                    ", ".join(tables_need_migration_list),
+                )
+
+                async def run_migration_background() -> None:
+                    from ..migrations.lancedb.backfill_user_id import backfill_all
+
+                    try:
+                        result = await asyncio.to_thread(backfill_all, dry_run=False)
+                        logger.info("=" * 60)
+                        logger.info("BACKGROUND LANCEDB MIGRATION COMPLETED")
+                        logger.info("=" * 60)
+                        logger.info(
+                            "Migration results: chunks=%s backfilled, embeddings=%s backfilled",
+                            result.get("chunks", {}).get("backfilled", 0),
+                            result.get("embeddings", {}).get("backfilled", 0),
+                        )
+
+                        # Log any skipped records
+                        chunks_skipped = result.get("chunks", {}).get("skipped", 0)
+                        embeddings_skipped = result.get("embeddings", {}).get(
+                            "skipped", 0
+                        )
+                        if chunks_skipped > 0 or embeddings_skipped > 0:
+                            logger.warning(
+                                "Some records were skipped (no matching document): chunks=%s, embeddings=%s",
+                                chunks_skipped,
+                                embeddings_skipped,
+                            )
+                    except Exception as e:
+                        logger.error("=" * 60)
+                        logger.error("BACKGROUND LANCEDB MIGRATION FAILED")
+                        logger.error("=" * 60)
+                        logger.error("Error: %s", e, exc_info=True)
+                        logger.warning(
+                            "Some features may not work correctly. "
+                            "Please run migration manually: python -m xagent.migrations.lancedb.backfill_user_id"
+                        )
+
+                # Start background task without awaiting, but keep a reference
+                # so shutdown can cancel/await it gracefully.
+                _migration_task = asyncio.create_task(run_migration_background())
+            else:
+                logger.warning(
+                    "LANCEDB_AUTO_MIGRATE is disabled. "
+                    "Migration will NOT run automatically. "
+                    "To enable automatic migration, set LANCEDB_AUTO_MIGRATE=true. "
+                    "To run migration manually: python -m xagent.migrations.lancedb.backfill_user_id"
+                )
+        else:
+            logger.info("LanceDB tables are up to date, no migration needed")
+    except Exception as e:
+        logger.warning(
+            "Could not check LanceDB migration status: %s. "
+            "Application will continue, but some features may not work correctly.",
+            e,
+        )
+
     # Warmup sandbox manager
     from .sandbox_manager import get_sandbox_manager
 
@@ -207,10 +334,8 @@ async def startup_event() -> None:
     else:
         logger.info("Sandbox manager not available (disabled or init failed)")
 
-    # Start Telegram channel if enabled
+    # Start Telegram and FeiShu channels if enabled
     try:
-        import asyncio
-
         from .channels.feishu.bot import get_feishu_channel
         from .channels.telegram.bot import get_telegram_channel
 
@@ -221,13 +346,25 @@ async def startup_event() -> None:
             logger.info("Telegram channel background task created successfully")
 
         feishu_channel = get_feishu_channel()
-        app.state.feishu_task = asyncio.create_task(feishu_channel.start())
+        if feishu_channel.enabled:
+            logger.info("Initializing Feishu channel manager...")
+            app.state.feishu_task = asyncio.create_task(feishu_channel.start())
+            logger.info("Feishu channel background task created successfully")
     except Exception as e:
         logger.error(f"Failed to start Telegram channel manager: {e}", exc_info=True)
 
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
+    global _migration_task
+
+    if _migration_task and not _migration_task.done():
+        logger.info("Cancelling background LanceDB migration task...")
+        _migration_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await _migration_task
+    _migration_task = None
+
     # Shutdown Telegram channel if enabled
     try:
         if hasattr(app.state, "telegram_task"):
@@ -245,7 +382,7 @@ async def shutdown_event() -> None:
         feishu_channel = get_feishu_channel()
         await feishu_channel.stop()
     except Exception as e:
-        logger.error(f"Failed to stop Telegram channel: {e}", exc_info=True)
+        logger.error("Failed to stop Telegram channel: %s", e, exc_info=True)
 
     # Shutdown all sandboxes
     from .sandbox_manager import get_sandbox_manager
