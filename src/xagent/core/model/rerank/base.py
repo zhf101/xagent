@@ -3,7 +3,7 @@ from collections.abc import Sequence
 
 
 class BaseRerank(ABC):
-    """Abstract base class for embedding models."""
+    """Abstract base class for rerank models."""
 
     @abstractmethod
     def compress(
@@ -12,15 +12,13 @@ class BaseRerank(ABC):
         query: str,
     ) -> Sequence[str]:
         """
-        Encode text into embedding vector(s).
+        Rerank documents based on relevance to query.
 
         Args:
-            text: Single text string or list of text strings
-            dimension: Override default embedding dimension
-            instruct: Override default instruction
+            documents: List of document texts to rerank
+            query: Query text for relevance scoring
 
         Returns:
-            Single embedding vector (list of floats) for single text,
-            or list of embedding vectors for list of texts
+            Reranked list of document texts
         """
         pass

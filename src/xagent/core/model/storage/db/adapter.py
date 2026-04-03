@@ -5,7 +5,6 @@ from sqlalchemy.orm import Session
 from xagent.core.model.model import (
     ChatModelConfig,
     EmbeddingModelConfig,
-    ImageModelConfig,
     ModelConfig,
     RerankModelConfig,
     VectorDBConfig,
@@ -74,14 +73,6 @@ class SQLAlchemyModelHub:
                     "temperature": model.default_temperature,
                     "max_tokens": model.default_max_tokens,
                     "category": "llm",
-                }
-            )
-        elif isinstance(model, ImageModelConfig):
-            db_data.update(
-                {
-                    "model_provider": model.model_provider,
-                    "max_tokens": model.default_max_tokens,
-                    "category": "image",
                 }
             )
         elif isinstance(model, EmbeddingModelConfig):
@@ -153,12 +144,6 @@ class SQLAlchemyModelHub:
                 default_temperature=db_model.temperature,
                 default_max_tokens=db_model.max_tokens,
             )
-        elif db_model.category == "image":
-            return ImageModelConfig(
-                **common,
-                model_provider=db_model.model_provider,
-                default_max_tokens=db_model.max_tokens,
-            )
         elif db_model.category == "embedding":
             return EmbeddingModelConfig(
                 **common,
@@ -198,11 +183,6 @@ class SQLAlchemyModelHub:
                     model_provider=db_model.model_provider,
                     default_temperature=db_model.temperature,
                     default_max_tokens=db_model.max_tokens,
-                )
-            elif db_model.category == "image":
-                config = ImageModelConfig(
-                    **common_fields,
-                    model_provider=db_model.model_provider,
                 )
             elif db_model.category == "embedding":
                 config = EmbeddingModelConfig(

@@ -8,10 +8,6 @@ from sqlalchemy.orm import Session
 
 from ...core.model.chat.basic.adapter import create_base_llm
 from ...core.model.chat.basic.base import BaseLLM
-from ...core.model.chat.basic.claude import ClaudeLLM
-from ...core.model.chat.basic.gemini import GeminiLLM
-from ...core.model.chat.basic.openai import OpenAILLM
-from ...core.model.chat.basic.zhipu import ZhipuLLM
 from ...core.model.model import (
     ChatModelConfig,
     EmbeddingModelConfig,

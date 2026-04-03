@@ -9,6 +9,11 @@ from openai import AsyncOpenAI
 
 from ....utils.security import redact_sensitive_text
 from ..exceptions import LLMRetryableError, LLMTimeoutError
+from ..logging_callback import (
+    log_llm_request_end,
+    log_llm_request_error,
+    log_llm_request_start,
+)
 from ..timeout_config import TimeoutConfig
 from ..token_context import add_token_usage
 from ..types import ChunkType, StreamChunk
@@ -73,6 +78,63 @@ class OpenAILLM(BaseLLM):
                 api_key=self.api_key,
                 timeout=self.timeout,
             )
+
+    def _start_llm_log(
+        self,
+        *,
+        call_type: str,
+        messages: List[Dict[str, Any]],
+        tools: Optional[List[Dict[str, Any]]],
+        tool_choice: Optional[Union[str, Dict[str, Any]]],
+        response_format: Optional[Dict[str, Any]],
+        thinking: Optional[Dict[str, Any]],
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> float:
+        return log_llm_request_start(
+            call_type=call_type,
+            model_name=self._model_name,
+            base_url=self.base_url,
+            messages=messages,
+            tools=tools,
+            tool_choice=tool_choice,
+            response_format=response_format,
+            thinking=thinking,
+            extra=extra,
+        )
+
+    def _finish_llm_log(
+        self,
+        *,
+        call_type: str,
+        started_at: float,
+        result: Dict[str, Any],
+        usage: Any = None,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        log_llm_request_end(
+            call_type=call_type,
+            model_name=self._model_name,
+            started_at=started_at,
+            result=result,
+            usage=usage,
+            extra=extra,
+        )
+
+    def _fail_llm_log(
+        self,
+        *,
+        call_type: str,
+        started_at: float,
+        error: Exception,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        log_llm_request_error(
+            call_type=call_type,
+            model_name=self._model_name,
+            started_at=started_at,
+            error=error,
+            extra=extra,
+        )
 
     async def chat(
         self,
@@ -194,6 +256,21 @@ class OpenAILLM(BaseLLM):
                 # For hybrid models, allow disabling thinking mode
                 extra_body["enable_thinking"] = False
 
+        llm_log_started_at = self._start_llm_log(
+            call_type="chat",
+            messages=completion_params["messages"],
+            tools=tools,
+            tool_choice=tool_choice,
+            response_format=completion_params.get("response_format"),
+            thinking=thinking,
+            extra={
+                "temperature": completion_params.get("temperature"),
+                "max_tokens": completion_params.get("max_tokens"),
+                "extra_body": extra_body or None,
+            },
+        )
+        retried_without_response_format = False
+
         # Helper function to process response
         async def _make_api_call() -> Any:
             """Make the API call with current completion_params"""
@@ -310,6 +387,15 @@ class OpenAILLM(BaseLLM):
                         response = await _make_api_call()
                         result = _process_response(response)
 
+            self._finish_llm_log(
+                call_type="chat",
+                started_at=llm_log_started_at,
+                result=result,
+                usage=getattr(response, "usage", None),
+                extra={
+                    "retried_without_response_format": retried_without_response_format,
+                },
+            )
             return result
 
         except openai.BadRequestError as e:
@@ -326,35 +412,82 @@ class OpenAILLM(BaseLLM):
                     f"API doesn't support response_format, retrying without it. Error: {error_msg}"
                 )
                 completion_params.pop("response_format")
+                retried_without_response_format = True
 
                 # Retry the API call without response_format
                 response = await _make_api_call()
-                return _process_response(response)
+                result = _process_response(response)
+                self._finish_llm_log(
+                    call_type="chat",
+                    started_at=llm_log_started_at,
+                    result=result,
+                    usage=getattr(response, "usage", None),
+                    extra={
+                        "retried_without_response_format": retried_without_response_format,
+                    },
+                )
+                return result
 
-            raise RuntimeError(f"OpenAI bad request: {error_msg}") from e
+            runtime_error = RuntimeError(f"OpenAI bad request: {error_msg}")
+            self._fail_llm_log(
+                call_type="chat",
+                started_at=llm_log_started_at,
+                error=runtime_error,
+            )
+            raise runtime_error from e
 
         except openai.APITimeoutError as e:
             # Handle timeout errors
-            raise RuntimeError(f"OpenAI API timeout: {str(e)}") from e
+            runtime_error = RuntimeError(f"OpenAI API timeout: {str(e)}")
+            self._fail_llm_log(
+                call_type="chat",
+                started_at=llm_log_started_at,
+                error=runtime_error,
+            )
+            raise runtime_error from e
 
         except openai.RateLimitError as e:
             # Handle rate limit errors
-            raise RuntimeError(f"OpenAI rate limit exceeded: {e.message}") from e
+            runtime_error = RuntimeError(f"OpenAI rate limit exceeded: {e.message}")
+            self._fail_llm_log(
+                call_type="chat",
+                started_at=llm_log_started_at,
+                error=runtime_error,
+            )
+            raise runtime_error from e
 
         except openai.AuthenticationError as e:
             # Handle authentication errors
-            raise RuntimeError(f"OpenAI authentication failed: {e.message}") from e
+            runtime_error = RuntimeError(f"OpenAI authentication failed: {e.message}")
+            self._fail_llm_log(
+                call_type="chat",
+                started_at=llm_log_started_at,
+                error=runtime_error,
+            )
+            raise runtime_error from e
 
         except openai.APIError as e:
             # Handle OpenAI API errors
             error_msg = f"OpenAI API error: {e.message}"
             if (status_code := getattr(e, "status_code", None)) is not None:
                 error_msg = f"OpenAI API error ({status_code}): {e.message}"
-            raise RuntimeError(error_msg) from e
+            runtime_error = RuntimeError(error_msg)
+            self._fail_llm_log(
+                call_type="chat",
+                started_at=llm_log_started_at,
+                error=runtime_error,
+            )
+            raise runtime_error from e
 
         except Exception as e:
             # Handle any other unexpected errors
-            raise RuntimeError(f"LLM chat failed: {str(e)}") from e
+            runtime_error = RuntimeError(f"LLM chat failed: {str(e)}")
+            self._fail_llm_log(
+                call_type="chat",
+                started_at=llm_log_started_at,
+                error=runtime_error,
+            )
+            raise runtime_error from e
 
     @property
     def supports_thinking_mode(self) -> bool:
@@ -503,6 +636,20 @@ class OpenAILLM(BaseLLM):
                 # For non-streaming calls, enable_thinking must be false
                 extra_body["enable_thinking"] = False
 
+        llm_log_started_at = self._start_llm_log(
+            call_type="vision_chat",
+            messages=completion_params["messages"],
+            tools=tools,
+            tool_choice=tool_choice,
+            response_format=completion_params.get("response_format"),
+            thinking=thinking,
+            extra={
+                "temperature": completion_params.get("temperature"),
+                "max_tokens": completion_params.get("max_tokens"),
+                "extra_body": extra_body or None,
+            },
+        )
+
         try:
             # Make the API call with extra_body if needed
             if extra_body:
@@ -562,11 +709,18 @@ class OpenAILLM(BaseLLM):
                             }
                         )
 
-                return {
+                result = {
                     "type": "tool_call",
                     "tool_calls": tool_calls,
                     "raw": response.model_dump(),
                 }
+                self._finish_llm_log(
+                    call_type="vision_chat",
+                    started_at=llm_log_started_at,
+                    result=result,
+                    usage=getattr(response, "usage", None),
+                )
+                return result
 
             # Handle text content
             content = message.content
@@ -578,23 +732,48 @@ class OpenAILLM(BaseLLM):
                     f"LLM returned {'empty' if content == '' else 'None'} content and no tool calls"
                 )
 
-            return {
+            result = {
                 "type": "text",
                 "content": content,
                 "raw": response.model_dump(),
             }
+            self._finish_llm_log(
+                call_type="vision_chat",
+                started_at=llm_log_started_at,
+                result=result,
+                usage=getattr(response, "usage", None),
+            )
+            return result
 
         except openai.APITimeoutError as e:
             # Handle timeout errors
-            raise RuntimeError(f"OpenAI API timeout: {str(e)}") from e
+            runtime_error = RuntimeError(f"OpenAI API timeout: {str(e)}")
+            self._fail_llm_log(
+                call_type="vision_chat",
+                started_at=llm_log_started_at,
+                error=runtime_error,
+            )
+            raise runtime_error from e
 
         except openai.RateLimitError as e:
             # Handle rate limit errors
-            raise RuntimeError(f"OpenAI rate limit exceeded: {e.message}") from e
+            runtime_error = RuntimeError(f"OpenAI rate limit exceeded: {e.message}")
+            self._fail_llm_log(
+                call_type="vision_chat",
+                started_at=llm_log_started_at,
+                error=runtime_error,
+            )
+            raise runtime_error from e
 
         except openai.AuthenticationError as e:
             # Handle authentication errors
-            raise RuntimeError(f"OpenAI authentication failed: {e.message}") from e
+            runtime_error = RuntimeError(f"OpenAI authentication failed: {e.message}")
+            self._fail_llm_log(
+                call_type="vision_chat",
+                started_at=llm_log_started_at,
+                error=runtime_error,
+            )
+            raise runtime_error from e
 
         except openai.BadRequestError as e:
             # Handle bad request errors
@@ -620,19 +799,90 @@ class OpenAILLM(BaseLLM):
                     response = await self._client.chat.completions.create(
                         **completion_params
                     )
+                # 重试成功后仍需走统一的返回投影，保证调用方和日志都拿到一致结果。
+                if not hasattr(response, "choices") or not response.choices:
+                    raise RuntimeError(
+                        f"Invalid API response: no choices in response. Response: {response}"
+                    )
+                choice = response.choices[0]
+                message = choice.message
+                if message.tool_calls:
+                    tool_calls = []
+                    for tool_call in message.tool_calls:
+                        if hasattr(tool_call, "function"):
+                            func = tool_call.function
+                            args = func.arguments if func.arguments else ""
+                            if not args or args.strip() == "":
+                                raise RuntimeError(
+                                    f"Tool '{func.name}' has empty arguments. "
+                                    f"This is a bug in the LLM provider's tool calling implementation. "
+                                    f"Model: {self._model_name}"
+                                )
+                            tool_calls.append(
+                                {
+                                    "id": tool_call.id,
+                                    "type": tool_call.type,
+                                    "function": {
+                                        "name": func.name,
+                                        "arguments": args,
+                                    },
+                                }
+                            )
+                    result = {
+                        "type": "tool_call",
+                        "tool_calls": tool_calls,
+                        "raw": response.model_dump(),
+                    }
+                else:
+                    content = message.content
+                    if not content or not content.strip():
+                        raise RuntimeError(
+                            f"LLM returned {'empty' if content == '' else 'None'} content and no tool calls"
+                        )
+                    result = {
+                        "type": "text",
+                        "content": content,
+                        "raw": response.model_dump(),
+                    }
+                self._finish_llm_log(
+                    call_type="vision_chat",
+                    started_at=llm_log_started_at,
+                    result=result,
+                    usage=getattr(response, "usage", None),
+                    extra={"retried_without_response_format": True},
+                )
+                return result
             else:
-                raise RuntimeError(f"OpenAI bad request: {error_msg}") from e
+                runtime_error = RuntimeError(f"OpenAI bad request: {error_msg}")
+                self._fail_llm_log(
+                    call_type="vision_chat",
+                    started_at=llm_log_started_at,
+                    error=runtime_error,
+                )
+                raise runtime_error from e
 
         except openai.APIError as e:
             # Handle OpenAI API errors
             error_msg = f"OpenAI API error: {e.message}"
             if (status_code := getattr(e, "status_code", None)) is not None:
                 error_msg = f"OpenAI API error ({status_code}): {e.message}"
-            raise RuntimeError(error_msg) from e
+            runtime_error = RuntimeError(error_msg)
+            self._fail_llm_log(
+                call_type="vision_chat",
+                started_at=llm_log_started_at,
+                error=runtime_error,
+            )
+            raise runtime_error from e
 
         except Exception as e:
             # Handle any other unexpected errors
-            raise RuntimeError(f"LLM vision chat failed: {str(e)}") from e
+            runtime_error = RuntimeError(f"LLM vision chat failed: {str(e)}")
+            self._fail_llm_log(
+                call_type="vision_chat",
+                started_at=llm_log_started_at,
+                error=runtime_error,
+            )
+            raise runtime_error from e
 
     async def stream_chat(
         self,
@@ -751,6 +1001,21 @@ class OpenAILLM(BaseLLM):
             else:
                 extra_body["enable_thinking"] = True
 
+        llm_log_started_at = self._start_llm_log(
+            call_type="stream_chat",
+            messages=completion_params["messages"],
+            tools=tools,
+            tool_choice=tool_choice,
+            response_format=completion_params.get("response_format"),
+            thinking=thinking,
+            extra={
+                "temperature": completion_params.get("temperature"),
+                "max_tokens": completion_params.get("max_tokens"),
+                "stream": True,
+                "extra_body": extra_body or None,
+            },
+        )
+
         try:
             # Create streaming response
             try:
@@ -795,6 +1060,9 @@ class OpenAILLM(BaseLLM):
             accumulated_tool_calls: Dict[str, Dict] = {}
             last_raw_chunk = None  # Track last raw chunk for usage extraction
             usage_received = False
+            usage_payload: Optional[Dict[str, Any]] = None
+            streamed_text_preview = ""
+            finish_reason = None
 
             async for raw_chunk in stream:
                 current_time = time.time()
@@ -829,6 +1097,12 @@ class OpenAILLM(BaseLLM):
                 if chunk:
                     if chunk.is_usage():
                         usage_received = True
+                        usage_payload = chunk.usage
+                    elif chunk.type == ChunkType.TOKEN and chunk.delta:
+                        if len(streamed_text_preview) < 800:
+                            streamed_text_preview += chunk.delta
+                    if chunk.finish_reason:
+                        finish_reason = chunk.finish_reason
                     yield chunk
 
             # Fallback: Ensure usage chunk is always sent
@@ -861,47 +1135,114 @@ class OpenAILLM(BaseLLM):
                             },
                             raw=last_raw_chunk,
                         )
+                        usage_payload = {
+                            "prompt_tokens": input_tokens,
+                            "completion_tokens": output_tokens,
+                            "total_tokens": input_tokens + output_tokens,
+                        }
                         logger.info(
                             f"Extracted usage from last chunk: {input_tokens} + {output_tokens} tokens"
                         )
 
+            stream_result: Dict[str, Any]
+            if accumulated_tool_calls:
+                stream_result = {
+                    "type": "tool_call",
+                    "tool_calls": list(accumulated_tool_calls.values()),
+                }
+            else:
+                stream_result = {
+                    "type": "text",
+                    "content": streamed_text_preview,
+                }
+            self._finish_llm_log(
+                call_type="stream_chat",
+                started_at=llm_log_started_at,
+                result=stream_result,
+                usage=usage_payload,
+                extra={"finish_reason": finish_reason},
+            )
+
         except LLMTimeoutError:
             # Re-raise timeout errors for retry
+            self._fail_llm_log(
+                call_type="stream_chat",
+                started_at=llm_log_started_at,
+                error=LLMTimeoutError("OpenAI stream timed out"),
+            )
             raise
 
         except openai.APITimeoutError as e:
             logger.error(f"OpenAI API timeout: {e}")
-            raise LLMRetryableError(f"OpenAI API timeout: {str(e)}") from e
+            retryable_error = LLMRetryableError(f"OpenAI API timeout: {str(e)}")
+            self._fail_llm_log(
+                call_type="stream_chat",
+                started_at=llm_log_started_at,
+                error=retryable_error,
+            )
+            raise retryable_error from e
 
         except openai.RateLimitError as e:
             logger.error(
                 "OpenAI rate limit exceeded: %s", redact_sensitive_text(str(e))
             )
-            raise LLMRetryableError(f"OpenAI rate limit exceeded: {e.message}") from e
+            retryable_error = LLMRetryableError(
+                f"OpenAI rate limit exceeded: {e.message}"
+            )
+            self._fail_llm_log(
+                call_type="stream_chat",
+                started_at=llm_log_started_at,
+                error=retryable_error,
+            )
+            raise retryable_error from e
 
         except openai.AuthenticationError as e:
             logger.error(
                 "OpenAI authentication failed: %s", redact_sensitive_text(str(e))
             )
-            raise RuntimeError(f"OpenAI authentication failed: {e.message}") from e
+            runtime_error = RuntimeError(f"OpenAI authentication failed: {e.message}")
+            self._fail_llm_log(
+                call_type="stream_chat",
+                started_at=llm_log_started_at,
+                error=runtime_error,
+            )
+            raise runtime_error from e
 
         except openai.BadRequestError as e:
             logger.error("OpenAI bad request: %s", redact_sensitive_text(str(e)))
-            raise RuntimeError(f"OpenAI bad request: {e.message}") from e
+            runtime_error = RuntimeError(f"OpenAI bad request: {e.message}")
+            self._fail_llm_log(
+                call_type="stream_chat",
+                started_at=llm_log_started_at,
+                error=runtime_error,
+            )
+            raise runtime_error from e
 
         except openai.APIError as e:
             logger.error("OpenAI API error: %s", redact_sensitive_text(str(e)))
             error_msg = f"OpenAI API error: {e.message}"
             if (status_code := getattr(e, "status_code", None)) is not None:
                 error_msg = f"OpenAI API error ({status_code}): {e.message}"
-            raise RuntimeError(error_msg) from e
+            runtime_error = RuntimeError(error_msg)
+            self._fail_llm_log(
+                call_type="stream_chat",
+                started_at=llm_log_started_at,
+                error=runtime_error,
+            )
+            raise runtime_error from e
 
         except TimeoutError:
             raise
 
         except Exception as e:
             logger.error("OpenAI stream chat failed: %s", redact_sensitive_text(str(e)))
-            raise RuntimeError(f"LLM stream chat failed: {str(e)}") from e
+            runtime_error = RuntimeError(f"LLM stream chat failed: {str(e)}")
+            self._fail_llm_log(
+                call_type="stream_chat",
+                started_at=llm_log_started_at,
+                error=runtime_error,
+            )
+            raise runtime_error from e
 
     def _parse_stream_chunk(
         self, raw_chunk: Any, accumulated_tool_calls: Dict

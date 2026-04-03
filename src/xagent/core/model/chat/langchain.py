@@ -12,6 +12,11 @@ from langchain_openai import AzureChatOpenAI, ChatOpenAI
 from ...model import ChatModelConfig, ModelConfig
 from ...retry import ExponentialBackoff, RetryStrategy, create_retry_wrapper
 from .error import retry_on
+from .logging_callback import (
+    enable_llm_request_logging,
+    is_llm_logging_enabled,
+    setup_llm_logging_from_env,
+)
 
 
 class ChatModelRetryWrapper(Runnable):
@@ -87,7 +92,9 @@ class ChatModelRetryWrapper(Runnable):
 
 
 def create_base_chat_model(
-    model: ModelConfig, temperature: float | None
+    model: ModelConfig,
+    temperature: float | None,
+    enable_request_logging: bool = False,
 ) -> BaseChatModel:
     """
     Adapts a custom LLM instance to its corresponding LangChain Chat Model class
@@ -97,6 +104,13 @@ def create_base_chat_model(
         raise TypeError(f"Unsupported Chat model type: {type(model).__name__}")
 
     temp = temperature if temperature is not None else model.default_temperature
+    if not enable_request_logging:
+        enable_request_logging = is_llm_logging_enabled()
+
+    callbacks = None
+    if enable_request_logging:
+        setup_llm_logging_from_env()
+        callbacks = [enable_llm_request_logging()]
 
     if model.model_provider == "openai":
         return ChatOpenAI(
@@ -106,6 +120,7 @@ def create_base_chat_model(
             api_key=model.api_key,
             base_url=model.base_url,
             timeout=model.timeout,
+            callbacks=callbacks,
         )
     elif model.model_provider in (
         "alibaba-coding-plan",
@@ -120,6 +135,7 @@ def create_base_chat_model(
             api_key=model.api_key,
             base_url=model.base_url,
             timeout=model.timeout,
+            callbacks=callbacks,
         )
     elif model.model_provider == "zhipu":
         return ChatZhipuAI(
@@ -128,6 +144,7 @@ def create_base_chat_model(
             max_tokens=model.default_max_tokens,
             api_key=model.api_key,
             api_base=model.base_url,
+            callbacks=callbacks,
         )
     elif model.model_provider == "azure_openai":
         api_version = os.getenv("OPENAI_API_VERSION", "2024-08-01-preview")
@@ -139,14 +156,21 @@ def create_base_chat_model(
             temperature=temp,
             max_tokens=model.default_max_tokens,
             timeout=model.timeout,
+            callbacks=callbacks,
         )
     else:
         raise TypeError(f"Unsupported LLM model provider: {model.model_provider}")
 
 
 def create_base_chat_model_with_retry(
-    model: ModelConfig, temperature: float | None
+    model: ModelConfig,
+    temperature: float | None,
+    enable_request_logging: bool = False,
 ) -> ChatModelRetryWrapper:
-    chat_model = create_base_chat_model(model, temperature)
+    chat_model = create_base_chat_model(
+        model,
+        temperature,
+        enable_request_logging=enable_request_logging,
+    )
     strategy = ExponentialBackoff()
     return ChatModelRetryWrapper(chat_model, strategy, max_retries=model.max_retries)
