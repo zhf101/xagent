@@ -55,6 +55,9 @@ export function HttpConfigDrawer({ open, onOpenChange, onSaved, assetId }: HttpC
   const [isSaving, setIsSaving] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
   const [isPreviewOpen, setIsPreviewOpen] = useState(false)
+  const [isRequestPreviewOpen, setIsRequestPreviewOpen] = useState(false)
+  const [requestPreviewData, setRequestPreviewData] = useState<any>(null)
+  const [isAssembling, setIsAssembling] = useState(false)
 
   const [inputEditMode, setInputEditMode] = useState<"visual" | "json">("visual")
   const [outputEditMode, setOutputEditMode] = useState<"visual" | "json">("visual")
@@ -180,6 +183,96 @@ export function HttpConfigDrawer({ open, onOpenChange, onSaved, assetId }: HttpC
   const updateAnnotations = (key: keyof GdpToolAnnotations, value: any) => setPayload(p => ({ ...p, tool_contract: { ...p.tool_contract, annotations_json: { ...p.tool_contract.annotations_json, [key]: value } } }))
   const updateProfile = (key: keyof GdpExecutionProfile, value: any) => setPayload(p => ({ ...p, execution_profile: { ...p.execution_profile, [key]: value } }))
   const updateAuth = (key: string, value: any) => setPayload(p => ({ ...p, execution_profile: { ...p.execution_profile, auth_json: { ...p.execution_profile.auth_json, [key]: value } } }))
+  const updateResponseTemplate = (key: string, value: any) =>
+    setPayload(p => ({
+      ...p,
+      execution_profile: {
+        ...p.execution_profile,
+        response_template_json: {
+          ...(p.execution_profile.response_template_json || {}),
+          [key]: value,
+        },
+      },
+    }))
+
+  const generateMockArgs = (nodes: SchemaNode[]): Record<string, any> => {
+    const args: Record<string, any> = {}
+    nodes.forEach(node => {
+      if (!node.name) return
+      if (node.type === "string") args[node.name] = node.defaultValue || "example_value"
+      else if (node.type === "number" || node.type === "integer") args[node.name] = Number(node.defaultValue) || 123
+      else if (node.type === "boolean") args[node.name] = node.defaultValue === "true"
+      else if (node.type === "object") args[node.name] = generateMockArgs(node.children || [])
+      else if (node.type === "array") args[node.name] = [generateMockArgs(node.children || [])]
+    })
+    return args
+  }
+
+  const handlePreviewRequest = async () => {
+    setIsAssembling(true)
+    try {
+      let finalInputSchema = payload.tool_contract.input_schema_json
+      let finalArgsPosition = payload.execution_profile.args_position_json
+      let mockArgs = {}
+
+      if (inputEditMode === "visual") {
+        const res = buildSchemaAndRoutesFromTree(inputTree)
+        finalInputSchema = res.inputSchema
+        finalArgsPosition = res.argsPosition
+        mockArgs = generateMockArgs(inputTree)
+      } else {
+        try { 
+          finalInputSchema = JSON.parse(rawInputJson)
+          // 简易从 JSON 提取 Mock Args
+          if (finalInputSchema.properties) {
+            Object.keys(finalInputSchema.properties).forEach(k => {
+              const p = finalInputSchema.properties[k]
+              if (p.type === "string") (mockArgs as any)[k] = "test"
+              else if (p.type === "number") (mockArgs as any)[k] = 1
+            })
+          }
+        } catch (e) { toast.error("输入参数 JSON 格式错误"); return }
+      }
+
+      const headersDict: Record<string, string> = {}
+      payload.execution_profile.headers_json.forEach(h => {
+        if (h.key && h.value) headersDict[h.key] = h.value
+      })
+
+      const finalPayload = {
+        ...payload,
+        tool_contract: {
+          ...payload.tool_contract,
+          input_schema_json: finalInputSchema,
+        },
+        execution_profile: {
+          ...payload.execution_profile,
+          args_position_json: finalArgsPosition,
+          headers_json: headersDict
+        }
+      }
+
+      const res = await apiRequest(`${getApiUrl()}/api/v1/gdp/http-assets/assemble`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          payload: finalPayload,
+          mock_args: mockArgs
+        })
+      })
+
+      if (res.ok) {
+        setRequestPreviewData(await res.json())
+        setIsRequestPreviewOpen(true)
+      } else {
+        toast.error("请求拼装失败")
+      }
+    } catch (err) {
+      toast.error("网络错误")
+    } finally {
+      setIsAssembling(false)
+    }
+  }
 
   if (isLoading) {
     return (
@@ -204,6 +297,9 @@ export function HttpConfigDrawer({ open, onOpenChange, onSaved, assetId }: HttpC
           <div className="flex items-center gap-2">
             <Button variant="outline" size="sm" className="rounded-full px-4 h-9" onClick={() => setIsPreviewOpen(true)}>
               <Eye className="w-4 h-4 mr-2" /> 预览 Payload
+            </Button>
+            <Button variant="outline" size="sm" className="rounded-full px-4 h-9 text-primary hover:text-primary hover:bg-primary/5" onClick={handlePreviewRequest} disabled={isAssembling}>
+              <Code className="w-4 h-4 mr-2" /> {isAssembling ? "组装中..." : "预览请求报文"}
             </Button>
             <Button onClick={handleSave} disabled={isSaving} className="rounded-full px-6 h-9 shadow-lg">
               <Save className="w-4 h-4 mr-2" />
@@ -403,7 +499,7 @@ export function HttpConfigDrawer({ open, onOpenChange, onSaved, assetId }: HttpC
           </div>
         </div>
 
-        {/* Preview Dialog */}
+        {/* Protocol Payload Preview Dialog */}
         <Dialog open={isPreviewOpen} onOpenChange={setIsPreviewOpen}>
           <DialogContent className="sm:max-w-4xl max-h-[85vh] flex flex-col p-0 overflow-hidden rounded-[2rem] bg-background text-foreground border shadow-2xl">
             <div className="p-8 border-b flex items-center justify-between">
@@ -413,6 +509,58 @@ export function HttpConfigDrawer({ open, onOpenChange, onSaved, assetId }: HttpC
             <div className="flex-1 overflow-y-auto p-8 font-mono text-xs bg-muted/5">
               <JSONSyntaxHighlighter data={payload} />
             </div>
+          </DialogContent>
+        </Dialog>
+
+        {/* Real HTTP Request Preview Dialog */}
+        <Dialog open={isRequestPreviewOpen} onOpenChange={setIsRequestPreviewOpen}>
+          <DialogContent className="sm:max-w-4xl max-h-[85vh] flex flex-col p-0 overflow-hidden rounded-[2rem] bg-background text-foreground border shadow-2xl">
+            <div className="p-8 border-b flex items-center justify-between">
+              <div>
+                <DialogTitle className="text-xl font-black">真实请求报文预览</DialogTitle>
+                <DialogDescription className="text-[10px] mt-1">基于当前配置与示例参数模拟组装出的物理请求内容</DialogDescription>
+              </div>
+              <Button variant="ghost" onClick={() => setIsRequestPreviewOpen(false)} className="rounded-full">关闭</Button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-8 space-y-8 bg-zinc-50/50 dark:bg-zinc-950/50">
+              <div className="space-y-3">
+                <Label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">URL & Method</Label>
+                <div className="p-4 rounded-xl bg-background border flex items-center gap-3 font-mono text-sm overflow-x-auto">
+                  <Badge className={cn("px-2 py-0.5", requestPreviewData?.method === "GET" ? "bg-blue-500/10 text-blue-600 border-blue-200" : "bg-green-500/10 text-green-600 border-green-200")}>
+                    {requestPreviewData?.method}
+                  </Badge>
+                  <span className="text-foreground break-all">{requestPreviewData?.url}</span>
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                <Label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Request Headers</Label>
+                <div className="rounded-xl overflow-hidden border">
+                  <JSONSyntaxHighlighter data={requestPreviewData?.headers} />
+                </div>
+              </div>
+
+              {requestPreviewData?.body && (
+                <div className="space-y-3">
+                  <Label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Request Body</Label>
+                  <div className="rounded-xl overflow-hidden border bg-background p-4">
+                    <pre className="text-xs font-mono whitespace-pre-wrap break-all leading-relaxed">
+                      {(() => {
+                        try {
+                          return JSON.stringify(JSON.parse(requestPreviewData.body), null, 2)
+                        } catch (e) {
+                          return requestPreviewData.body
+                        }
+                      })()}
+                    </pre>
+                  </div>
+                </div>
+              )}
+            </div>
+            <DialogFooter className="p-6 border-t bg-muted/20">
+              <p className="text-[10px] text-muted-foreground mr-auto italic flex items-center gap-1.5"><AlertCircle className="w-3 h-3" /> 提示：预览使用了自动生成的 Mock 参数，实际调用由 LLM 驱动。</p>
+              <Button onClick={() => setIsRequestPreviewOpen(false)} className="rounded-full px-8">完成核查</Button>
+            </DialogFooter>
           </DialogContent>
         </Dialog>
       </SheetContent>

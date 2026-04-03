@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from sqlalchemy import or_
@@ -9,7 +10,17 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ....web.models.gdp_http_resource import GdpHttpResource
-from ..http_asset_protocol import GdpHttpAssetStatus, GdpHttpAssetUpsertRequest
+from .http_runtime_service import (
+    HttpInvoker,
+    HttpRequestAssembler,
+    HttpRuntimeDefinitionAssembler,
+)
+from ..http_asset_protocol import (
+    GdpHttpAssetAssembleRequest,
+    GdpHttpAssetAssembleResponse,
+    GdpHttpAssetStatus,
+    GdpHttpAssetUpsertRequest,
+)
 from ..http_asset_validator import GdpHttpAssetValidationError, GdpHttpAssetValidator
 
 
@@ -19,6 +30,10 @@ class GdpHttpResourceService:
     def __init__(self, db: Session):
         self.db = db
         self.validator = GdpHttpAssetValidator()
+        # 这里让后台预览拼装复用运行时组件，确保 assemble 和 execute 看到的是同一套规则。
+        self.definition_assembler = HttpRuntimeDefinitionAssembler()
+        self.request_assembler = HttpRequestAssembler()
+        self.invoker = HttpInvoker()
 
     def list_assets(self, user_id: int) -> list[GdpHttpResource]:
         """列出当前用户可见且未删除的资产。"""
@@ -139,6 +154,50 @@ class GdpHttpResourceService:
         self.db.commit()
         self.db.refresh(resource)
         return resource
+
+    def assemble_request(
+        self,
+        *,
+        request: GdpHttpAssetAssembleRequest,
+    ) -> GdpHttpAssetAssembleResponse:
+        """根据资产配置和提供的 Mock 参数，组装真实的请求内容（预览用）。
+
+        这里显式复用 runtime definition + request assembler：
+        - 避免预览拼装和真实执行各走一套逻辑
+        - 让 `url_mode=tag`、query/body/path/header 路由规则天然保持一致
+        """
+        self.validator.validate(request.payload)
+        definition = self.definition_assembler.assemble_from_upsert_payload(
+            request.payload
+        )
+        request_snapshot = self.request_assembler.build(
+            definition=definition,
+            arguments=dict(request.mock_args or {}),
+        )
+        preview_headers = self.invoker.preview_headers(
+            definition=definition,
+            headers=request_snapshot.headers,
+        )
+        body_content = self._serialize_preview_body(request_snapshot)
+
+        return GdpHttpAssetAssembleResponse(
+            url=request_snapshot.url,
+            method=request_snapshot.method,
+            headers={str(k): str(v) for k, v in preview_headers.items()},
+            body=body_content,
+        )
+
+    def _serialize_preview_body(self, request_snapshot: Any) -> str | None:
+        """把运行时请求快照折叠成 assemble API 的响应形态。
+
+        assemble 接口当前历史协议只返回一个 `body: str | null`，
+        因此这里需要把 JSON body 重新序列化成字符串。
+        """
+        if getattr(request_snapshot, "text_body", None) is not None:
+            return str(request_snapshot.text_body)
+        if getattr(request_snapshot, "json_body", None) is not None:
+            return json.dumps(request_snapshot.json_body, ensure_ascii=False)
+        return None
 
     def _get_mutable_asset(self, *, asset_id: int, user_id: int) -> GdpHttpResource:
         """查询允许当前用户修改的资产。"""

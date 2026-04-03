@@ -8,7 +8,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from ...core.gdp.application.http_resource_service import GdpHttpResourceService
-from ...core.gdp.http_asset_protocol import GdpHttpAssetStatus, GdpHttpAssetUpsertRequest
+from ...core.gdp.http_asset_protocol import (
+    GdpHttpAssetAssembleRequest,
+    GdpHttpAssetAssembleResponse,
+    GdpHttpAssetStatus,
+    GdpHttpAssetUpsertRequest,
+)
 from ...core.gdp.http_asset_validator import GdpHttpAssetValidationError
 from ..auth_dependencies import get_current_user
 from ..models.database import get_db
@@ -28,6 +33,23 @@ def list_gdp_http_assets(
     service = GdpHttpResourceService(db)
     assets = service.list_assets(int(user.id))
     return {"data": [asset.to_list_dict() for asset in assets]}
+
+
+@router.post("/assemble", response_model=GdpHttpAssetAssembleResponse)
+def assemble_gdp_http_request(
+    request: GdpHttpAssetAssembleRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """预览组装后的 HTTP 请求（不实际发送）。"""
+    _ = user
+    service = GdpHttpResourceService(db)
+    try:
+        return service.assemble_request(request=request)
+    except GdpHttpAssetValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/{asset_id}")

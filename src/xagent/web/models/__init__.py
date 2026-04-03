@@ -23,6 +23,15 @@ from .uploaded_file import UploadedFile
 from .user import User, UserDefaultModel, UserModel
 from .user_channel import UserChannel
 from .user_oauth import UserOAuth
+from .vanna import (
+    VannaAskRun,
+    VannaEmbeddingChunk,
+    VannaKnowledgeBase,
+    VannaSchemaColumn,
+    VannaSchemaHarvestJob,
+    VannaSchemaTable,
+    VannaTrainingEntry,
+)
 
 __all__ = [
     "Base",
@@ -58,4 +67,11 @@ __all__ = [
     "TaskChatMessage",
     "UploadedFile",
     "SandboxInfo",
+    "VannaKnowledgeBase",
+    "VannaSchemaHarvestJob",
+    "VannaSchemaTable",
+    "VannaSchemaColumn",
+    "VannaTrainingEntry",
+    "VannaEmbeddingChunk",
+    "VannaAskRun",
 ]

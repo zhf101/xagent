@@ -48,6 +48,18 @@ class DatabaseCreateRequest(BaseModel):
     name: str = Field(
         ..., min_length=1, max_length=255, description="Database display name"
     )
+    system_short: str = Field(
+        ...,
+        min_length=1,
+        max_length=64,
+        description="Business system short name",
+    )
+    env: str = Field(
+        ...,
+        min_length=1,
+        max_length=32,
+        description="Environment name such as dev/test/uat/prod",
+    )
     type: str = Field(
         ...,
         description=(
@@ -74,6 +86,8 @@ class DatabaseResponse(BaseModel):
 
     id: int
     name: str
+    system_short: str
+    env: str
     type: str
     url: str
     read_only: bool
@@ -234,7 +248,11 @@ def _build_schema_digest(schema: Dict[str, Any]) -> Dict[str, Any]:
             if not isinstance(table, dict):
                 continue
             schema_name = table.get("schema")
-            if isinstance(schema_name, str) and schema_name and schema_name not in schema_names:
+            if (
+                isinstance(schema_name, str)
+                and schema_name
+                and schema_name not in schema_names
+            ):
                 schema_names.append(schema_name)
 
             foreign_keys = table.get("foreign_keys")
@@ -293,7 +311,10 @@ def _build_datasource_asset_summary_map(
     """
 
     try:
-        from ..models.datamake_sql_asset import DataMakeSqlAsset, DataMakeSqlAssetVersion
+        from ..models.datamake_sql_asset import (
+            DataMakeSqlAsset,
+            DataMakeSqlAssetVersion,
+        )
     except Exception:
         return {}
 
@@ -641,6 +662,8 @@ async def create_database(
         new_db = Text2SQLDatabase(
             user_id=user.id,
             name=db_config.name,
+            system_short=db_config.system_short.strip(),
+            env=db_config.env.strip(),
             type=db_type,
             url=resolved_url,
             read_only=db_config.read_only,
@@ -724,6 +747,8 @@ async def update_database(
 
         # Update database configuration
         existing_db.name = db_config.name
+        existing_db.system_short = db_config.system_short.strip()
+        existing_db.env = db_config.env.strip()
         existing_db.type = db_type
         existing_db.url = resolved_url
         existing_db.read_only = db_config.read_only

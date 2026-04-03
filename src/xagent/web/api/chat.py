@@ -73,67 +73,14 @@ def _build_task_approval_summary(db: Session, task_id: int) -> Dict[str, Any]:
 def create_default_llm() -> Optional[BaseLLM]:
     """Create a default LLM instance based on environment configuration"""
     try:
-        # For OpenAI: allow empty string API key (use is not None check)
-        # For Zhipu: don't allow empty string API key (use truthy check)
+        # 当前默认模型只支持 OpenAI 兼容接口。
         openai_api_key = os.getenv("OPENAI_API_KEY")
-        zhipu_api_key = os.getenv("ZHIPU_API_KEY")
 
-        # Similarly for base_url: prefer OPENAI_BASE_URL if it exists (even if empty string)
-        # Only fallback to ZHIPU_BASE_URL if OPENAI_BASE_URL is None
         openai_base_url = os.getenv("OPENAI_BASE_URL")
-        zhipu_base_url = os.getenv("ZHIPU_BASE_URL")
 
-        # For model_name: prefer OPENAI_MODEL if it exists (even if empty string)
-        # Only fallback to ZHIPU_MODEL_NAME if OPENAI_MODEL is None
         openai_model = os.getenv("OPENAI_MODEL")
-        zhipu_model = os.getenv("ZHIPU_MODEL_NAME")
 
-        # Check if Zhipu
-        zhipu_models = {
-            "glm-4.7",
-            "glm-4.7-flashx",
-            "glm-4.6",
-            "glm-4.5-air",
-            "glm-4.5-airx",
-            "glm-4-long",
-            "glm-4-flashx-250414",
-            "glm-4.7-flash",
-            "glm-4-Flash-250414",
-        }
-        is_zhipu = (
-            zhipu_base_url
-            and any(
-                domain in zhipu_base_url.lower()
-                for domain in {"zhipu", "bigmodel.cn", "api.z.ai"}
-            )
-        ) or (
-            zhipu_model
-            and any(zhipu_model.lower().strip() in x.lower() for x in zhipu_models)
-        )
-
-        if is_zhipu:
-            if zhipu_api_key:
-                logger.info(f"Using Zhipu LLM with model: {zhipu_model}")
-                # Use automatic thinking mode (None) by default
-                thinking_mode_env = os.getenv("ZHIPU_THINKING_MODE", "auto").lower()
-                thinking_mode = (
-                    None if thinking_mode_env == "auto" else thinking_mode_env == "true"
-                )
-                ensure_provider_enabled("zhipu")
-                from ...core.model.chat.basic.zhipu import ZhipuLLM
-
-                return ZhipuLLM(
-                    model_name=zhipu_model or "glm-4.7-flash",
-                    api_key=zhipu_api_key,
-                    base_url=zhipu_base_url,
-                    thinking_mode=thinking_mode,
-                )
-            else:
-                logger.error(
-                    "Zhipu API key not found in environment variables. Set ZHIPU_API_KEY to enable Zhipu LLM functionality."
-                )
-                return None
-        elif openai_api_key is not None:
+        if openai_api_key is not None:
             logger.info(f"Using OpenAI LLM with model: {openai_model}")
             return OpenAILLM(
                 model_name=openai_model or "gpt-4o-mini",
@@ -143,7 +90,7 @@ def create_default_llm() -> Optional[BaseLLM]:
 
         # No LLM available - AgentService will run without DAG pattern
         logger.error(
-            "No API key found in environment variables. Set OPENAI_API_KEY or ZHIPU_API_KEY to enable LLM functionality."
+            "No API key found in environment variables. Set OPENAI_API_KEY to enable LLM functionality."
         )
         return None
 

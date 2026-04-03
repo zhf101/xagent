@@ -5,10 +5,16 @@ import os
 from typing import Any, Dict, List, Optional, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from google.auth.transport.requests import Request  # type: ignore
-from google.oauth2.credentials import Credentials  # type: ignore
-from googleapiclient.discovery import build  # type: ignore
 from sqlalchemy.orm import Session
+
+try:
+    from google.auth.transport.requests import Request  # type: ignore
+    from google.oauth2.credentials import Credentials  # type: ignore
+    from googleapiclient.discovery import build  # type: ignore
+except ImportError:
+    Request = None  # type: ignore[assignment]
+    Credentials = None  # type: ignore[assignment]
+    build = None  # type: ignore[assignment]
 
 from ..auth_dependencies import get_current_user
 from ..models.database import get_db
@@ -21,12 +27,22 @@ cloud_router = APIRouter(prefix="/api/cloud", tags=["Cloud Storage"])
 
 # Google OAuth Constants
 GOOGLE_TOKEN_URI = "https://oauth2.googleapis.com/token"
+GOOGLE_DRIVE_DISABLED_MESSAGE = (
+    "Google Drive integration is disabled because google-auth-oauthlib/"
+    "google-api-python-client dependencies are commented out in pyproject.toml."
+)
+
+
+def _ensure_google_drive_enabled() -> None:
+    if Request is None or Credentials is None or build is None:
+        raise HTTPException(status_code=503, detail=GOOGLE_DRIVE_DISABLED_MESSAGE)
 
 
 def get_google_credentials(
     user_id: int, db: Session, account_id: Optional[int] = None
 ) -> Any:
     """Get Google Credentials for user, refreshing if necessary"""
+    _ensure_google_drive_enabled()
     query = db.query(UserOAuth).filter(
         UserOAuth.user_id == user_id, UserOAuth.provider == "google-drive"
     )
@@ -113,6 +129,7 @@ async def list_google_drives(
     user: User = Depends(get_current_user),
 ) -> List[Dict[str, Any]]:
     """List Google Drives (My Drive + Shared Drives)"""
+    _ensure_google_drive_enabled()
     try:
         creds = get_google_credentials(cast(int, user.id), db, account_id)
 
@@ -150,6 +167,7 @@ async def list_google_drive_files(
     user: User = Depends(get_current_user),
 ) -> List[Dict[str, Any]]:
     """List files in Google Drive folder"""
+    _ensure_google_drive_enabled()
     try:
         creds = get_google_credentials(cast(int, user.id), db, account_id)
 

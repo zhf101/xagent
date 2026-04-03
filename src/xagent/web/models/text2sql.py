@@ -42,6 +42,8 @@ class Text2SQLDatabase(Base):
 
     # Database configuration
     name = Column(String(255), nullable=False)
+    system_short = Column(String(64), nullable=False, index=True)
+    env = Column(String(32), nullable=False, index=True)
     type = Column(SQLEnum(DatabaseType), nullable=False)
     url = Column(Text, nullable=False)  # Database connection URL
     read_only = Column(Boolean, default=True, nullable=False)
@@ -69,6 +71,8 @@ class Text2SQLDatabase(Base):
             "id": self.id,
             "user_id": self.user_id,
             "name": self.name,
+            "system_short": self.system_short,
+            "env": self.env,
             "type": self.type.value,
             "url": self.url,
             "read_only": self.read_only,
@@ -91,6 +95,8 @@ class Text2SQLDatabase(Base):
         return cls(
             user_id=data.get("user_id"),
             name=data.get("name"),
+            system_short=data.get("system_short", "unknown"),
+            env=data.get("env", "unknown"),
             type=DatabaseType(normalize_database_type(data.get("type", "sqlite"))),
             url=data.get("url"),
             read_only=data.get("read_only", True),

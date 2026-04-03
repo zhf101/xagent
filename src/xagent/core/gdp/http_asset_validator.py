@@ -246,6 +246,64 @@ class GdpHttpAssetValidator:
                 "response_template_json.body 与 prependBody/appendBody 互斥"
             )
 
+        self._validate_response_template(response_template)
+
+    def _validate_response_template(
+        self,
+        response_template: dict[str, Any],
+    ) -> None:
+        """校验响应解释层扩展字段。
+
+        当前 GDP 运行时把响应解释扩展收敛在 `response_template_json` 下，
+        这样既不改表结构，也能让“文本模板 / 字段提取 / 业务成功判定”落在同一块配置里。
+        """
+
+        extraction_rules = response_template.get("extractionRules")
+        if extraction_rules is not None:
+            if not isinstance(extraction_rules, list):
+                raise GdpHttpAssetValidationError(
+                    "response_template_json.extractionRules 必须为数组"
+                )
+            for index, rule in enumerate(extraction_rules):
+                if not isinstance(rule, dict):
+                    raise GdpHttpAssetValidationError(
+                        f"response_template_json.extractionRules[{index}] 必须是对象"
+                    )
+                key = rule.get("key")
+                path = rule.get("path")
+                if not isinstance(key, str) or not key.strip():
+                    raise GdpHttpAssetValidationError(
+                        f"response_template_json.extractionRules[{index}].key 必填"
+                    )
+                if not isinstance(path, str) or not path.strip():
+                    raise GdpHttpAssetValidationError(
+                        f"response_template_json.extractionRules[{index}].path 必填"
+                    )
+                required = rule.get("required")
+                if required is not None and not isinstance(required, bool):
+                    raise GdpHttpAssetValidationError(
+                        f"response_template_json.extractionRules[{index}].required 必须为 boolean"
+                    )
+
+        success_rule = response_template.get("successRule")
+        if success_rule is not None:
+            if not isinstance(success_rule, dict):
+                raise GdpHttpAssetValidationError(
+                    "response_template_json.successRule 必须为对象"
+                )
+            path = success_rule.get("path")
+            if not isinstance(path, str) or not path.strip():
+                raise GdpHttpAssetValidationError(
+                    "response_template_json.successRule.path 必填"
+                )
+            error_path = success_rule.get("errorPath")
+            if error_path is not None and (
+                not isinstance(error_path, str) or not error_path.strip()
+            ):
+                raise GdpHttpAssetValidationError(
+                    "response_template_json.successRule.errorPath 必须为非空字符串"
+                )
+
     def _resolve_schema_for_path(
         self,
         schema: dict[str, Any],

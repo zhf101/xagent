@@ -95,3 +95,19 @@ class GdpHttpAssetUpsertRequest(BaseModel):
     resource: GdpHttpAssetResource
     tool_contract: GdpHttpToolContract
     execution_profile: GdpHttpExecutionProfile
+
+
+class GdpHttpAssetAssembleRequest(BaseModel):
+    """请求拼装预览请求。"""
+
+    payload: GdpHttpAssetUpsertRequest
+    mock_args: dict[str, Any] = Field(default_factory=dict)
+
+
+class GdpHttpAssetAssembleResponse(BaseModel):
+    """请求拼装预览响应。"""
+
+    url: str
+    method: str
+    headers: dict[str, str]
+    body: str | None = None
