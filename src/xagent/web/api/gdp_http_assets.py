@@ -11,6 +11,8 @@ from ...core.gdp.application.http_resource_service import GdpHttpResourceService
 from ...core.gdp.http_asset_protocol import (
     GdpHttpAssetAssembleRequest,
     GdpHttpAssetAssembleResponse,
+    GdpHttpAssetNormalizeRequest,
+    GdpHttpAssetNormalizeResponse,
     GdpHttpAssetStatus,
     GdpHttpAssetUpsertRequest,
 )
@@ -46,6 +48,23 @@ def assemble_gdp_http_request(
     service = GdpHttpResourceService(db)
     try:
         return service.assemble_request(request=request)
+    except GdpHttpAssetValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/normalize", response_model=GdpHttpAssetNormalizeResponse)
+def normalize_gdp_http_payload(
+    request: GdpHttpAssetNormalizeRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """把前端 draft/visual tree 归一化成最终 payload。"""
+    _ = user
+    service = GdpHttpResourceService(db)
+    try:
+        return service.normalize_payload(request=request)
     except GdpHttpAssetValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ValueError as exc:

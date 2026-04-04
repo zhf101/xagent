@@ -158,6 +158,7 @@ class HttpRequestSnapshot(BaseModel):
     method: str
     url: str
     headers: dict[str, str] = Field(default_factory=dict)
+    cookies: dict[str, str] = Field(default_factory=dict)
     query_params: dict[str, Any] = Field(default_factory=dict)
     json_body: Any | None = None
     text_body: str | None = None

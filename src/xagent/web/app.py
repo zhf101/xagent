@@ -29,6 +29,7 @@ from .api.system import system_router
 from .api.templates import router as templates_router
 from .api.text2sql import text2sql_router
 from .api.tools import tools_router
+from .api.vanna_assets import router as vanna_assets_router
 from .api.vanna_sql import vanna_router
 from .api.websocket import ws_router
 from .config import UPLOADS_DIR
@@ -165,6 +166,7 @@ app.include_router(templates_router)
 app.include_router(agents_router)
 app.include_router(gdp_http_assets_router)
 app.include_router(vanna_router)
+app.include_router(vanna_assets_router)
 app.include_router(channel_router, prefix="/api/channels", tags=["Channels"])
 
 

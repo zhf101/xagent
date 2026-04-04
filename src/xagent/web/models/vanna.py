@@ -791,3 +791,333 @@ class VannaAskRun(Base):
         nullable=False,
         comment="更新时间",
     )
+
+
+class VannaSqlAssetStatus(str, Enum):
+    DRAFT = "draft"
+    PUBLISHED = "published"
+    DEPRECATED = "deprecated"
+    ARCHIVED = "archived"
+
+
+class VannaSqlAssetQualityStatus(str, Enum):
+    UNVERIFIED = "unverified"
+    VERIFIED = "verified"
+    REJECTED = "rejected"
+
+
+class VannaSqlAssetRunStatus(str, Enum):
+    BOUND = "bound"
+    EXECUTED = "executed"
+    FAILED = "failed"
+    WAITING_APPROVAL = "waiting_approval"
+
+
+class VannaSqlAsset(Base):
+    """正式复用的 SQL 资产宿主。"""
+
+    __tablename__ = "vanna_sql_assets"
+    __table_args__ = (
+        Index("ix_vanna_sql_assets_kb_status", "kb_id", "status"),
+        Index("ix_vanna_sql_assets_datasource_status", "datasource_id", "status"),
+        Index(
+            "ix_vanna_sql_assets_system_env_status",
+            "system_short",
+            "env",
+            "status",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True, comment="SQL资产ID")
+    kb_id = Column(
+        Integer,
+        ForeignKey("vanna_knowledge_bases.id"),
+        nullable=False,
+        index=True,
+        comment="知识库ID",
+    )
+    datasource_id = Column(
+        Integer,
+        ForeignKey("text2sql_databases.id"),
+        nullable=False,
+        index=True,
+        comment="数据源ID",
+    )
+    asset_code = Column(
+        String(255),
+        nullable=False,
+        unique=True,
+        index=True,
+        comment="资产唯一编码",
+    )
+    name = Column(String(255), nullable=False, comment="资产名称")
+    description = Column(Text, nullable=True, comment="资产描述")
+    intent_summary = Column(Text, nullable=True, comment="用途摘要")
+    asset_kind = Column(
+        String(32), nullable=False, default="query", comment="资产类型"
+    )
+    status = Column(
+        String(32),
+        nullable=False,
+        default=VannaSqlAssetStatus.DRAFT.value,
+        index=True,
+        comment="资产状态",
+    )
+    system_short = Column(
+        String(64), nullable=False, index=True, comment="系统简称"
+    )
+    env = Column(
+        String(32), nullable=False, index=True, comment="环境"
+    )
+    match_keywords_json = Column(
+        JSON, nullable=True, default=list, comment="检索关键词"
+    )
+    match_examples_json = Column(
+        JSON, nullable=True, default=list, comment="检索示例"
+    )
+    owner_user_id = Column(
+        Integer, nullable=False, index=True, comment="所有者用户ID"
+    )
+    owner_user_name = Column(
+        String(255), nullable=True, comment="所有者用户名"
+    )
+    current_version_id = Column(
+        Integer, nullable=True, index=True, comment="当前发布版本ID"
+    )
+    origin_ask_run_id = Column(
+        Integer,
+        ForeignKey("vanna_ask_runs.id"),
+        nullable=True,
+        index=True,
+        comment="来源Ask运行ID",
+    )
+    origin_training_entry_id = Column(
+        Integer,
+        ForeignKey("vanna_training_entries.id"),
+        nullable=True,
+        index=True,
+        comment="来源训练条目ID",
+    )
+    created_at = Column(
+        DateTime, default=func.now(), nullable=False, comment="创建时间"
+    )
+    updated_at = Column(
+        DateTime,
+        default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+        comment="更新时间",
+    )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": int(self.id),
+            "kb_id": int(self.kb_id),
+            "datasource_id": int(self.datasource_id),
+            "asset_code": self.asset_code,
+            "name": self.name,
+            "description": self.description,
+            "intent_summary": self.intent_summary,
+            "asset_kind": self.asset_kind,
+            "status": self.status,
+            "system_short": self.system_short,
+            "env": self.env,
+            "match_keywords": list(self.match_keywords_json or []),
+            "match_examples": list(self.match_examples_json or []),
+            "owner_user_id": int(self.owner_user_id),
+            "owner_user_name": self.owner_user_name,
+            "current_version_id": self.current_version_id,
+            "origin_ask_run_id": self.origin_ask_run_id,
+            "origin_training_entry_id": self.origin_training_entry_id,
+            "created_at": _isoformat(self.created_at),
+            "updated_at": _isoformat(self.updated_at),
+        }
+
+
+class VannaSqlAssetVersion(Base):
+    """SQL 资产版本。"""
+
+    __tablename__ = "vanna_sql_asset_versions"
+    __table_args__ = (
+        Index(
+            "ix_vanna_sql_asset_versions_asset_published",
+            "asset_id",
+            "is_published",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True, comment="SQL资产版本ID")
+    asset_id = Column(
+        Integer,
+        ForeignKey("vanna_sql_assets.id"),
+        nullable=False,
+        index=True,
+        comment="资产ID",
+    )
+    version_no = Column(Integer, nullable=False, comment="版本号")
+    version_label = Column(
+        String(64), nullable=True, comment="版本标签"
+    )
+    template_sql = Column(Text, nullable=False, comment="SQL模板")
+    parameter_schema_json = Column(
+        JSON, nullable=False, default=list, comment="参数契约"
+    )
+    render_config_json = Column(
+        JSON, nullable=True, default=dict, comment="渲染配置"
+    )
+    statement_kind = Column(
+        String(32), nullable=False, default="SELECT", comment="语句类型"
+    )
+    tables_read_json = Column(
+        JSON, nullable=True, default=list, comment="读取表集合"
+    )
+    columns_read_json = Column(
+        JSON, nullable=True, default=list, comment="读取列集合"
+    )
+    output_fields_json = Column(
+        JSON, nullable=True, default=list, comment="输出字段集合"
+    )
+    verification_result_json = Column(
+        JSON, nullable=True, default=dict, comment="验证结果"
+    )
+    quality_status = Column(
+        String(32),
+        nullable=False,
+        default=VannaSqlAssetQualityStatus.UNVERIFIED.value,
+        index=True,
+        comment="质量状态",
+    )
+    is_published = Column(
+        Boolean, nullable=False, default=False, comment="是否已发布"
+    )
+    published_at = Column(
+        DateTime, nullable=True, comment="发布时间"
+    )
+    created_by = Column(
+        String(255), nullable=True, comment="创建人"
+    )
+    created_at = Column(
+        DateTime, default=func.now(), nullable=False, comment="创建时间"
+    )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": int(self.id),
+            "asset_id": int(self.asset_id),
+            "version_no": int(self.version_no),
+            "version_label": self.version_label,
+            "template_sql": self.template_sql,
+            "parameter_schema_json": list(self.parameter_schema_json or []),
+            "render_config_json": dict(self.render_config_json or {}),
+            "statement_kind": self.statement_kind,
+            "tables_read_json": list(self.tables_read_json or []),
+            "columns_read_json": list(self.columns_read_json or []),
+            "output_fields_json": list(self.output_fields_json or []),
+            "verification_result_json": dict(self.verification_result_json or {}),
+            "quality_status": self.quality_status,
+            "is_published": bool(self.is_published),
+            "published_at": _isoformat(self.published_at),
+            "created_by": self.created_by,
+            "created_at": _isoformat(self.created_at),
+        }
+
+
+class VannaSqlAssetRun(Base):
+    """SQL 资产执行事实。"""
+
+    __tablename__ = "vanna_sql_asset_runs"
+    __table_args__ = (
+        Index("ix_vanna_sql_asset_runs_asset_created", "asset_id", "created_at"),
+        Index(
+            "ix_vanna_sql_asset_runs_task_status",
+            "task_id",
+            "execution_status",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True, comment="SQL资产运行ID")
+    asset_id = Column(
+        Integer,
+        ForeignKey("vanna_sql_assets.id"),
+        nullable=False,
+        index=True,
+        comment="资产ID",
+    )
+    asset_version_id = Column(
+        Integer,
+        ForeignKey("vanna_sql_asset_versions.id"),
+        nullable=False,
+        index=True,
+        comment="资产版本ID",
+    )
+    kb_id = Column(
+        Integer,
+        ForeignKey("vanna_knowledge_bases.id"),
+        nullable=False,
+        index=True,
+        comment="知识库ID",
+    )
+    datasource_id = Column(
+        Integer,
+        ForeignKey("text2sql_databases.id"),
+        nullable=False,
+        index=True,
+        comment="数据源ID",
+    )
+    task_id = Column(
+        Integer, nullable=True, index=True, comment="任务ID"
+    )
+    question_text = Column(Text, nullable=True, comment="原始问题")
+    resolved_by = Column(
+        String(32), nullable=False, default="asset_search", comment="命中来源"
+    )
+    binding_plan_json = Column(
+        JSON, nullable=True, default=dict, comment="装配计划"
+    )
+    bound_params_json = Column(
+        JSON, nullable=True, default=dict, comment="绑定参数"
+    )
+    compiled_sql = Column(Text, nullable=False, comment="最终可执行SQL")
+    execution_status = Column(
+        String(32),
+        nullable=False,
+        default=VannaSqlAssetRunStatus.BOUND.value,
+        index=True,
+        comment="执行状态",
+    )
+    execution_result_json = Column(
+        JSON, nullable=True, default=dict, comment="执行结果"
+    )
+    approval_status = Column(
+        String(32), nullable=True, index=True, comment="审批状态"
+    )
+    create_user_id = Column(
+        Integer, nullable=False, index=True, comment="创建用户ID"
+    )
+    create_user_name = Column(
+        String(255), nullable=True, comment="创建用户名"
+    )
+    created_at = Column(
+        DateTime, default=func.now(), nullable=False, comment="创建时间"
+    )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": int(self.id),
+            "asset_id": int(self.asset_id),
+            "asset_version_id": int(self.asset_version_id),
+            "kb_id": int(self.kb_id),
+            "datasource_id": int(self.datasource_id),
+            "task_id": self.task_id,
+            "question_text": self.question_text,
+            "resolved_by": self.resolved_by,
+            "binding_plan_json": dict(self.binding_plan_json or {}),
+            "bound_params_json": dict(self.bound_params_json or {}),
+            "compiled_sql": self.compiled_sql,
+            "execution_status": self.execution_status,
+            "execution_result_json": dict(self.execution_result_json or {}),
+            "approval_status": self.approval_status,
+            "create_user_id": int(self.create_user_id),
+            "create_user_name": self.create_user_name,
+            "created_at": _isoformat(self.created_at),
+        }

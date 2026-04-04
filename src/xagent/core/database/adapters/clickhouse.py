@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from contextlib import contextmanager
 from typing import Any
 
 from .base import DatabaseAdapter, QueryExecutionResult
@@ -12,11 +13,7 @@ class ClickHouseAdapter(DatabaseAdapter):
     family = "clickhouse"
     supported_types = ("clickhouse",)
 
-    def __init__(self, config):
-        super().__init__(config)
-        self._client = None
-
-    def _get_client(self):
+    def _create_client(self):
         try:
             import clickhouse_connect
         except ImportError as exc:
@@ -25,27 +22,34 @@ class ClickHouseAdapter(DatabaseAdapter):
                 "Install it with: pip install clickhouse-connect"
             ) from exc
 
-        if self._client is None:
-            extra = dict(self.config.extra or {})
-            interface = extra.pop("interface", "http")
-            self._client = clickhouse_connect.get_client(
-                host=self.config.host or "localhost",
-                port=self.config.port or 8123,
-                username=self.config.user or "default",
-                password=self.config.password or "",
-                database=self.config.database or "default",
-                interface=interface,
-                **extra,
-            )
-        return self._client
+        extra = dict(self.config.extra or {})
+        interface = extra.pop("interface", "http")
+        return clickhouse_connect.get_client(
+            host=self.config.host or "localhost",
+            port=self.config.port or 8123,
+            username=self.config.user or "default",
+            password=self.config.password or "",
+            database=self.config.database or "default",
+            interface=interface,
+            **extra,
+        )
+
+    @contextmanager
+    def _client_scope(self):
+        client = self._create_client()
+        try:
+            yield client
+        finally:
+            try:
+                client.close()
+            except Exception:
+                return
 
     async def connect(self) -> None:
-        self._get_client()
+        self._create_client().close()
 
     async def disconnect(self) -> None:
-        if self._client is not None:
-            self._client.close()
-            self._client = None
+        return
 
     async def execute_query(
         self,
@@ -56,7 +60,11 @@ class ClickHouseAdapter(DatabaseAdapter):
             raise PermissionError("Database 'clickhouse' is configured as read-only.")
 
         started = time.perf_counter()
-        result = self._get_client().query(query, parameters=params or None)
+        try:
+            with self._client_scope() as client:
+                result = client.query(query, parameters=params or None)
+        except Exception as exc:
+            raise RuntimeError(f"ClickHouse query failed: {exc}") from exc
         elapsed = int((time.perf_counter() - started) * 1000)
         rows = [
             dict(zip(result.column_names, row, strict=False))
@@ -76,10 +84,14 @@ class ClickHouseAdapter(DatabaseAdapter):
         WHERE database = %(database)s
         ORDER BY database, table, position
         """
-        result = self._get_client().query(
-            schema_sql,
-            parameters={"database": self.config.database or "default"},
-        )
+        try:
+            with self._client_scope() as client:
+                result = client.query(
+                    schema_sql,
+                    parameters={"database": self.config.database or "default"},
+                )
+        except Exception as exc:
+            raise RuntimeError(f"ClickHouse schema inspection failed: {exc}") from exc
         tables: dict[tuple[str, str], list[dict[str, Any]]] = {}
         for database, table, name, col_type in result.result_rows:
             key = (database, table)

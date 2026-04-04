@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ....web.models.gdp_http_resource import GdpHttpResource
+from .http_schema_bridge import build_schema_and_routes_from_tree
 from .http_runtime_service import (
     HttpInvoker,
     HttpRequestAssembler,
@@ -18,6 +19,8 @@ from .http_runtime_service import (
 from ..http_asset_protocol import (
     GdpHttpAssetAssembleRequest,
     GdpHttpAssetAssembleResponse,
+    GdpHttpAssetNormalizeRequest,
+    GdpHttpAssetNormalizeResponse,
     GdpHttpAssetStatus,
     GdpHttpAssetUpsertRequest,
 )
@@ -186,6 +189,32 @@ class GdpHttpResourceService:
             headers={str(k): str(v) for k, v in preview_headers.items()},
             body=body_content,
         )
+
+    def normalize_payload(
+        self,
+        *,
+        request: GdpHttpAssetNormalizeRequest,
+    ) -> GdpHttpAssetNormalizeResponse:
+        """把前端 draft payload 归一化为最终落库/预览使用的 payload。
+
+        visual tree 的 schema/routes 产物由后端统一生成，并立即复用同一套
+        validator，避免前端保存前推导与后端运行时规则分叉。
+        """
+        payload = request.payload.model_copy(deep=True)
+
+        if request.input_tree is not None:
+            input_schema, args_position = build_schema_and_routes_from_tree(
+                request.input_tree
+            )
+            payload.tool_contract.input_schema_json = input_schema
+            payload.execution_profile.args_position_json = args_position
+
+        if request.output_tree is not None:
+            output_schema, _ = build_schema_and_routes_from_tree(request.output_tree)
+            payload.tool_contract.output_schema_json = output_schema
+
+        self.validator.validate(payload)
+        return GdpHttpAssetNormalizeResponse(payload=payload)
 
     def _serialize_preview_body(self, request_snapshot: Any) -> str | None:
         """把运行时请求快照折叠成 assemble API 的响应形态。

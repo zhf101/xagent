@@ -5,10 +5,9 @@ import {
   Sheet,
   SheetContent,
   SheetDescription,
-  SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet"
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog"
+import { Dialog, DialogContent, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -27,9 +26,15 @@ import {
   GdpExecutionProfile,
   GdpToolAnnotations
 } from "./gdp-types"
-import { Save, AlertCircle, Eye, ChevronRight, Globe, Lock, Users, Tag as TagIcon, Settings2, FileCode, Server, Database, Code, ListTree } from "lucide-react"
+import { Save, AlertCircle, Eye, ChevronRight, Tag as TagIcon, Settings2, FileCode, Server, Database, Code, ListTree } from "lucide-react"
 import { SchemaTreeEditor, SchemaNode } from "./schema-tree-editor"
-import { buildSchemaAndRoutesFromTree, parseTreeFromSchemaAndRoutes } from "./schema-bridge"
+import { parseTreeFromSchemaAndRoutes } from "./schema-bridge"
+import {
+  coerceHttpAssetPayloadFromApi,
+  normalizeVisualHttpAssetDraft,
+  previewHttpAssetRequest,
+  saveHttpAsset,
+} from "./http-config-runtime"
 import { Badge } from "@/components/ui/badge"
 import { cn } from "@/lib/utils"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -39,6 +44,13 @@ interface HttpConfigDrawerProps {
   onOpenChange: (open: boolean) => void
   onSaved: () => void
   assetId?: number
+}
+
+interface RequestPreviewData {
+  url: string
+  method: string
+  headers: Record<string, string>
+  body?: string | null
 }
 
 const STEPS = [
@@ -56,7 +68,7 @@ export function HttpConfigDrawer({ open, onOpenChange, onSaved, assetId }: HttpC
   const [isLoading, setIsLoading] = useState(false)
   const [isPreviewOpen, setIsPreviewOpen] = useState(false)
   const [isRequestPreviewOpen, setIsRequestPreviewOpen] = useState(false)
-  const [requestPreviewData, setRequestPreviewData] = useState<any>(null)
+  const [requestPreviewData, setRequestPreviewData] = useState<RequestPreviewData | null>(null)
   const [isAssembling, setIsAssembling] = useState(false)
 
   const [inputEditMode, setInputEditMode] = useState<"visual" | "json">("visual")
@@ -71,27 +83,16 @@ export function HttpConfigDrawer({ open, onOpenChange, onSaved, assetId }: HttpC
       if (assetId) {
         fetchAsset(assetId)
       } else {
-        setPayload(createDefaultGdpHttpPayload())
+        const nextPayload = createDefaultGdpHttpPayload()
+        setPayload(nextPayload)
         setInputTree([])
         setOutputTree([])
+        setRawInputJson(JSON.stringify(nextPayload.tool_contract.input_schema_json, null, 2))
+        setRawOutputJson(JSON.stringify(nextPayload.tool_contract.output_schema_json, null, 2))
         setActiveStep("basic")
       }
     }
   }, [open, assetId])
-
-  useEffect(() => {
-    if (inputEditMode === "json") {
-      const res = buildSchemaAndRoutesFromTree(inputTree)
-      setRawInputJson(JSON.stringify(res.inputSchema, null, 2))
-    }
-  }, [inputEditMode, inputTree])
-
-  useEffect(() => {
-    if (outputEditMode === "json") {
-      const res = buildSchemaAndRoutesFromTree(outputTree)
-      setRawOutputJson(JSON.stringify(res.inputSchema, null, 2))
-    }
-  }, [outputEditMode, outputTree])
 
   const fetchAsset = async (id: number) => {
     setIsLoading(true)
@@ -99,7 +100,7 @@ export function HttpConfigDrawer({ open, onOpenChange, onSaved, assetId }: HttpC
       const res = await apiRequest(`${getApiUrl()}/api/v1/gdp/http-assets/${id}`)
       if (res.ok) {
         const data = await res.json()
-        const asset = data.data
+        const asset = coerceHttpAssetPayloadFromApi(data.data)
         setPayload(asset)
         
         if (asset.tool_contract.input_schema_json) {
@@ -124,66 +125,38 @@ export function HttpConfigDrawer({ open, onOpenChange, onSaved, assetId }: HttpC
   const handleSave = async () => {
     setIsSaving(true)
     try {
-      let finalInputSchema = payload.tool_contract.input_schema_json
-      let finalArgsPosition = payload.execution_profile.args_position_json
-
-      if (inputEditMode === "visual") {
-        const res = buildSchemaAndRoutesFromTree(inputTree)
-        finalInputSchema = res.inputSchema
-        finalArgsPosition = res.argsPosition
-      } else {
-        try { finalInputSchema = JSON.parse(rawInputJson) } catch (e) { toast.error("输入参数 JSON 格式错误"); return }
-      }
-
-      let finalOutputSchema = payload.tool_contract.output_schema_json
-      if (outputEditMode === "visual") {
-        finalOutputSchema = buildSchemaAndRoutesFromTree(outputTree).inputSchema
-      } else {
-        try { finalOutputSchema = JSON.parse(rawOutputJson) } catch (e) { toast.error("输出参数 JSON 格式错误"); return }
-      }
-
-      // Headers 转换：List -> Dict
-      const headersDict: Record<string, string> = {}
-      payload.execution_profile.headers_json.forEach(h => {
-        if (h.key && h.value) headersDict[h.key] = h.value
-      })
-
-      const finalPayload = {
-        ...payload,
-        tool_contract: {
-          ...payload.tool_contract,
-          input_schema_json: finalInputSchema,
-          output_schema_json: finalOutputSchema,
-        },
-        execution_profile: {
-          ...payload.execution_profile,
-          args_position_json: finalArgsPosition,
-          headers_json: headersDict
-        }
-      }
-
-      const res = await apiRequest(`${getApiUrl()}/api/v1/gdp/http-assets${assetId ? `/${assetId}` : ""}`, {
-        method: assetId ? "PUT" : "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(finalPayload)
+      const res = await saveHttpAsset({
+        assetId,
+        payload,
+        inputEditMode,
+        outputEditMode,
+        inputTree,
+        outputTree,
+        rawInputJson,
+        rawOutputJson,
       })
 
       if (res.ok) {
         toast.success("资产保存成功")
         onSaved()
         onOpenChange(false)
+      } else {
+        const error = await res.json().catch(() => null)
+        toast.error(error?.detail || "资产保存失败")
       }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "资产保存失败")
     } finally {
       setIsSaving(false)
     }
   }
 
-  const updateResource = (key: keyof GdpHttpResource, value: any) => setPayload(p => ({ ...p, resource: { ...p.resource, [key]: value } }))
-  const updateContract = (key: keyof GdpToolContract, value: any) => setPayload(p => ({ ...p, tool_contract: { ...p.tool_contract, [key]: value } }))
-  const updateAnnotations = (key: keyof GdpToolAnnotations, value: any) => setPayload(p => ({ ...p, tool_contract: { ...p.tool_contract, annotations_json: { ...p.tool_contract.annotations_json, [key]: value } } }))
-  const updateProfile = (key: keyof GdpExecutionProfile, value: any) => setPayload(p => ({ ...p, execution_profile: { ...p.execution_profile, [key]: value } }))
-  const updateAuth = (key: string, value: any) => setPayload(p => ({ ...p, execution_profile: { ...p.execution_profile, auth_json: { ...p.execution_profile.auth_json, [key]: value } } }))
-  const updateResponseTemplate = (key: string, value: any) =>
+  const updateResource = (key: keyof GdpHttpResource, value: unknown) => setPayload(p => ({ ...p, resource: { ...p.resource, [key]: value } }))
+  const updateContract = (key: keyof GdpToolContract, value: unknown) => setPayload(p => ({ ...p, tool_contract: { ...p.tool_contract, [key]: value } }))
+  const updateAnnotations = (key: keyof GdpToolAnnotations, value: unknown) => setPayload(p => ({ ...p, tool_contract: { ...p.tool_contract, annotations_json: { ...p.tool_contract.annotations_json, [key]: value } } }))
+  const updateProfile = (key: keyof GdpExecutionProfile, value: unknown) => setPayload(p => ({ ...p, execution_profile: { ...p.execution_profile, [key]: value } }))
+  const updateAuth = (key: string, value: unknown) => setPayload(p => ({ ...p, execution_profile: { ...p.execution_profile, auth_json: { ...p.execution_profile.auth_json, [key]: value } } }))
+  const updateResponseTemplate = (key: string, value: unknown) =>
     setPayload(p => ({
       ...p,
       execution_profile: {
@@ -195,83 +168,89 @@ export function HttpConfigDrawer({ open, onOpenChange, onSaved, assetId }: HttpC
       },
     }))
 
-  const generateMockArgs = (nodes: SchemaNode[]): Record<string, any> => {
-    const args: Record<string, any> = {}
-    nodes.forEach(node => {
-      if (!node.name) return
-      if (node.type === "string") args[node.name] = node.defaultValue || "example_value"
-      else if (node.type === "number" || node.type === "integer") args[node.name] = Number(node.defaultValue) || 123
-      else if (node.type === "boolean") args[node.name] = node.defaultValue === "true"
-      else if (node.type === "object") args[node.name] = generateMockArgs(node.children || [])
-      else if (node.type === "array") args[node.name] = [generateMockArgs(node.children || [])]
-    })
-    return args
-  }
-
   const handlePreviewRequest = async () => {
     setIsAssembling(true)
     try {
-      let finalInputSchema = payload.tool_contract.input_schema_json
-      let finalArgsPosition = payload.execution_profile.args_position_json
-      let mockArgs = {}
-
-      if (inputEditMode === "visual") {
-        const res = buildSchemaAndRoutesFromTree(inputTree)
-        finalInputSchema = res.inputSchema
-        finalArgsPosition = res.argsPosition
-        mockArgs = generateMockArgs(inputTree)
-      } else {
-        try { 
-          finalInputSchema = JSON.parse(rawInputJson)
-          // 简易从 JSON 提取 Mock Args
-          if (finalInputSchema.properties) {
-            Object.keys(finalInputSchema.properties).forEach(k => {
-              const p = finalInputSchema.properties[k]
-              if (p.type === "string") (mockArgs as any)[k] = "test"
-              else if (p.type === "number") (mockArgs as any)[k] = 1
-            })
-          }
-        } catch (e) { toast.error("输入参数 JSON 格式错误"); return }
-      }
-
-      const headersDict: Record<string, string> = {}
-      payload.execution_profile.headers_json.forEach(h => {
-        if (h.key && h.value) headersDict[h.key] = h.value
+      const preview = await previewHttpAssetRequest({
+        payload,
+        inputEditMode,
+        outputEditMode,
+        inputTree,
+        outputTree,
+        rawInputJson,
+        rawOutputJson,
       })
-
-      const finalPayload = {
-        ...payload,
-        tool_contract: {
-          ...payload.tool_contract,
-          input_schema_json: finalInputSchema,
-        },
-        execution_profile: {
-          ...payload.execution_profile,
-          args_position_json: finalArgsPosition,
-          headers_json: headersDict
-        }
-      }
-
-      const res = await apiRequest(`${getApiUrl()}/api/v1/gdp/http-assets/assemble`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          payload: finalPayload,
-          mock_args: mockArgs
-        })
-      })
-
-      if (res.ok) {
-        setRequestPreviewData(await res.json())
-        setIsRequestPreviewOpen(true)
-      } else {
-        toast.error("请求拼装失败")
-      }
+      setRequestPreviewData(preview)
+      setIsRequestPreviewOpen(true)
     } catch (err) {
-      toast.error("网络错误")
+      toast.error(err instanceof Error ? err.message : "请求拼装失败")
     } finally {
       setIsAssembling(false)
     }
+  }
+
+  const syncVisualInputToJson = async () => {
+    const normalized = await normalizeVisualHttpAssetDraft({
+      payload,
+      inputTree,
+    })
+    setPayload(prev => ({
+      ...prev,
+      tool_contract: {
+        ...prev.tool_contract,
+        input_schema_json: normalized.tool_contract.input_schema_json,
+      },
+      execution_profile: {
+        ...prev.execution_profile,
+        args_position_json: normalized.execution_profile.args_position_json,
+      },
+    }))
+    setRawInputJson(
+      JSON.stringify(normalized.tool_contract.input_schema_json, null, 2)
+    )
+  }
+
+  const syncVisualOutputToJson = async () => {
+    const normalized = await normalizeVisualHttpAssetDraft({
+      payload,
+      outputTree,
+    })
+    setPayload(prev => ({
+      ...prev,
+      tool_contract: {
+        ...prev.tool_contract,
+        output_schema_json: normalized.tool_contract.output_schema_json,
+      },
+    }))
+    setRawOutputJson(
+      JSON.stringify(normalized.tool_contract.output_schema_json, null, 2)
+    )
+  }
+
+  const handleInputEditModeChange = async (nextMode: "visual" | "json") => {
+    if (nextMode === inputEditMode) return
+    if (nextMode === "json") {
+      try {
+        await syncVisualInputToJson()
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "入参结构同步失败")
+        return
+      }
+    }
+    setInputEditMode(nextMode)
+  }
+
+  const handleOutputEditModeChange = async (nextMode: "visual" | "json") => {
+    if (nextMode === outputEditMode) return
+    if (nextMode === "json") {
+      try {
+        await syncVisualOutputToJson()
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "出参结构同步失败")
+        return
+      }
+    }
+    setOutputEditMode(nextMode)
   }
 
   if (isLoading) {
@@ -382,10 +361,10 @@ export function HttpConfigDrawer({ open, onOpenChange, onSaved, assetId }: HttpC
                           { key: "destructiveHint", label: "高风险/破坏性", desc: "必须强确认" },
                           { key: "idempotentHint", label: "幂等性接口", desc: "支持重试" },
                           { key: "openWorldHint", label: "外部强时效性", desc: "不建议缓存" },
-                        ].map(hint => (
+                        ].map((hint: { key: keyof GdpToolAnnotations; label: string; desc: string }) => (
                           <div key={hint.key} className="flex items-center justify-between p-5 rounded-[1.5rem] border bg-background hover:border-primary/40 transition-all shadow-sm">
                             <div className="space-y-1"><Label className="text-sm font-bold">{hint.label}</Label><p className="text-[10px] text-muted-foreground leading-tight">{hint.desc}</p></div>
-                            <Switch checked={!!(payload.tool_contract.annotations_json as any)[hint.key]} onCheckedChange={v => updateAnnotations(hint.key as any, v)} />
+                            <Switch checked={!!payload.tool_contract.annotations_json[hint.key]} onCheckedChange={v => updateAnnotations(hint.key, v)} />
                           </div>
                         ))}
                       </div>
@@ -399,8 +378,8 @@ export function HttpConfigDrawer({ open, onOpenChange, onSaved, assetId }: HttpC
                   <div className="flex items-center justify-between">
                     <div className="space-y-1"><h2 className="text-2xl font-black tracking-tight">入参映射配置</h2><p className="text-muted-foreground text-sm">定义 Schema 结构与路由</p></div>
                     <div className="flex bg-muted p-1 rounded-xl">
-                      <Button variant={inputEditMode === "visual" ? "secondary" : "ghost"} size="sm" className="h-8 rounded-lg text-xs gap-1.5" onClick={() => setInputEditMode("visual")}><ListTree className="w-3.5 h-3.5" /> 可视化</Button>
-                      <Button variant={inputEditMode === "json" ? "secondary" : "ghost"} size="sm" className="h-8 rounded-lg text-xs gap-1.5" onClick={() => setInputEditMode("json")}><Code className="w-3.5 h-3.5" /> 源码</Button>
+                      <Button variant={inputEditMode === "visual" ? "secondary" : "ghost"} size="sm" className="h-8 rounded-lg text-xs gap-1.5" onClick={() => handleInputEditModeChange("visual")}><ListTree className="w-3.5 h-3.5" /> 可视化</Button>
+                      <Button variant={inputEditMode === "json" ? "secondary" : "ghost"} size="sm" className="h-8 rounded-lg text-xs gap-1.5" onClick={() => handleInputEditModeChange("json")}><Code className="w-3.5 h-3.5" /> 源码</Button>
                     </div>
                   </div>
                   {inputEditMode === "visual" ? (
@@ -416,8 +395,8 @@ export function HttpConfigDrawer({ open, onOpenChange, onSaved, assetId }: HttpC
                   <div className="flex items-center justify-between">
                     <div className="space-y-1"><h2 className="text-2xl font-black tracking-tight">出参响应定义</h2><p className="text-muted-foreground text-sm">声明返回数据结构</p></div>
                     <div className="flex bg-muted p-1 rounded-xl">
-                      <Button variant={outputEditMode === "visual" ? "secondary" : "ghost"} size="sm" className="h-8 rounded-lg text-xs" onClick={() => setOutputEditMode("visual")}>可视化</Button>
-                      <Button variant={outputEditMode === "json" ? "secondary" : "ghost"} size="sm" className="h-8 rounded-lg text-xs" onClick={() => setOutputEditMode("json")}>源码</Button>
+                      <Button variant={outputEditMode === "visual" ? "secondary" : "ghost"} size="sm" className="h-8 rounded-lg text-xs" onClick={() => handleOutputEditModeChange("visual")}>可视化</Button>
+                      <Button variant={outputEditMode === "json" ? "secondary" : "ghost"} size="sm" className="h-8 rounded-lg text-xs" onClick={() => handleOutputEditModeChange("json")}>源码</Button>
                     </div>
                   </div>
                   {outputEditMode === "visual" ? (
@@ -548,7 +527,7 @@ export function HttpConfigDrawer({ open, onOpenChange, onSaved, assetId }: HttpC
                       {(() => {
                         try {
                           return JSON.stringify(JSON.parse(requestPreviewData.body), null, 2)
-                        } catch (e) {
+                        } catch {
                           return requestPreviewData.body
                         }
                       })()}

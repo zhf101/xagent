@@ -12,7 +12,9 @@ from sqlalchemy.orm import Session
 from ...core.vanna.ask_service import AskService
 from ...core.vanna.index_service import IndexService
 from ...core.vanna.knowledge_base_service import KnowledgeBaseService
+from ...core.vanna.query_service import QueryService
 from ...core.vanna.schema_harvest_service import SchemaHarvestService
+from ...core.vanna.sql_assets import SqlAssetService
 from ...core.vanna.train_service import TrainService
 from ..auth_dependencies import get_current_user
 from ..models.database import get_db
@@ -21,6 +23,8 @@ from ..models.vanna import (
     VannaAskRun,
     VannaEmbeddingChunk,
     VannaKnowledgeBase,
+    VannaSqlAsset,
+    VannaSqlAssetVersion,
     VannaSchemaColumn,
     VannaSchemaHarvestJob,
     VannaSchemaTable,
@@ -75,6 +79,39 @@ class AskRequest(BaseModel):
     top_k_sql: int | None = Field(default=None, ge=1, le=50)
     top_k_schema: int | None = Field(default=None, ge=1, le=50)
     top_k_doc: int | None = Field(default=None, ge=1, le=50)
+
+
+class QueryRequest(BaseModel):
+    """统一 query 请求。"""
+
+    datasource_id: int = Field(..., ge=1)
+    kb_id: int | None = Field(default=None, ge=1)
+    task_id: int | None = Field(default=None, ge=1)
+    question: str = Field(..., min_length=1)
+    explicit_params: dict[str, Any] = Field(default_factory=dict)
+    context: dict[str, Any] = Field(default_factory=dict)
+    auto_run: bool = False
+    auto_train_on_success: bool = False
+    auto_infer: bool = True
+    top_k_assets: int = Field(default=5, ge=1, le=20)
+    asset_match_min_score: float | None = Field(default=None, ge=0.0, le=10.0)
+    asset_match_min_margin: float | None = Field(default=None, ge=0.0, le=10.0)
+    top_k_sql: int | None = Field(default=None, ge=1, le=50)
+    top_k_schema: int | None = Field(default=None, ge=1, le=50)
+    top_k_doc: int | None = Field(default=None, ge=1, le=50)
+
+
+class PromoteSqlAssetRequest(BaseModel):
+    asset_code: str = Field(..., min_length=1, max_length=255)
+    name: str = Field(..., min_length=1, max_length=255)
+    description: str | None = None
+    intent_summary: str | None = None
+    asset_kind: str = Field(default="query", max_length=32)
+    match_keywords: list[str] = Field(default_factory=list)
+    match_examples: list[str] = Field(default_factory=list)
+    parameter_schema_json: list[dict[str, Any]] = Field(default_factory=list)
+    render_config_json: dict[str, Any] = Field(default_factory=dict)
+    version_label: str | None = Field(default=None, max_length=64)
 
 
 def _serialize_kb(row: VannaKnowledgeBase) -> dict[str, Any]:
@@ -607,6 +644,53 @@ async def ask_vanna_sql(
     }
 
 
+def _serialize_asset(row: VannaSqlAsset) -> dict[str, Any]:
+    return row.to_dict()
+
+
+def _serialize_asset_version(row: VannaSqlAssetVersion) -> dict[str, Any]:
+    return row.to_dict()
+
+
+def _raise_vanna_bad_request(message: str) -> None:
+    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message)
+
+
+def _raise_from_value_error(message: str) -> None:
+    if "was not found" in message:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=message)
+    _raise_vanna_bad_request(message)
+
+
+@vanna_router.post("/query")
+async def query_vanna_sql(
+    payload: QueryRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """统一 query：先 asset-first，未命中再 ask-fallback。"""
+    result = await QueryService(db).query(
+        datasource_id=int(payload.datasource_id),
+        owner_user_id=int(user.id),
+        create_user_name=getattr(user, "username", None),
+        question=payload.question,
+        kb_id=payload.kb_id,
+        task_id=payload.task_id,
+        explicit_params=dict(payload.explicit_params or {}),
+        context=dict(payload.context or {}),
+        auto_run=bool(payload.auto_run),
+        auto_train_on_success=bool(payload.auto_train_on_success),
+        auto_infer=bool(payload.auto_infer),
+        top_k_assets=int(payload.top_k_assets),
+        asset_match_min_score=payload.asset_match_min_score,
+        asset_match_min_margin=payload.asset_match_min_margin,
+        top_k_sql=payload.top_k_sql,
+        top_k_schema=payload.top_k_schema,
+        top_k_doc=payload.top_k_doc,
+    )
+    return {"data": asdict(result)}
+
+
 @vanna_router.get("/ask-runs")
 async def list_ask_runs(
     kb_id: Optional[int] = Query(default=None),
@@ -630,3 +714,69 @@ async def list_ask_runs(
 
     rows = query.order_by(VannaAskRun.created_at.desc(), VannaAskRun.id.desc()).all()
     return {"data": [_serialize_ask_run(row) for row in rows]}
+
+
+@vanna_router.post("/ask-runs/{ask_run_id}/promote")
+async def promote_ask_run_to_asset(
+    ask_run_id: int,
+    payload: PromoteSqlAssetRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    try:
+        asset, version = SqlAssetService(db).promote_ask_run(
+            ask_run_id=int(ask_run_id),
+            owner_user_id=int(user.id),
+            owner_user_name=getattr(user, "username", None),
+            asset_code=payload.asset_code,
+            name=payload.name,
+            description=payload.description,
+            intent_summary=payload.intent_summary,
+            asset_kind=payload.asset_kind,
+            match_keywords=list(payload.match_keywords or []),
+            match_examples=list(payload.match_examples or []),
+            parameter_schema_json=list(payload.parameter_schema_json or []),
+            render_config_json=dict(payload.render_config_json or {}),
+            version_label=payload.version_label,
+        )
+    except ValueError as exc:
+        _raise_from_value_error(str(exc))
+    return {
+        "data": {
+            "asset": _serialize_asset(asset),
+            "version": _serialize_asset_version(version),
+        }
+    }
+
+
+@vanna_router.post("/entries/{entry_id}/promote")
+async def promote_training_entry_to_asset(
+    entry_id: int,
+    payload: PromoteSqlAssetRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    try:
+        asset, version = SqlAssetService(db).promote_training_entry(
+            entry_id=int(entry_id),
+            owner_user_id=int(user.id),
+            owner_user_name=getattr(user, "username", None),
+            asset_code=payload.asset_code,
+            name=payload.name,
+            description=payload.description,
+            intent_summary=payload.intent_summary,
+            asset_kind=payload.asset_kind,
+            match_keywords=list(payload.match_keywords or []),
+            match_examples=list(payload.match_examples or []),
+            parameter_schema_json=list(payload.parameter_schema_json or []),
+            render_config_json=dict(payload.render_config_json or {}),
+            version_label=payload.version_label,
+        )
+    except ValueError as exc:
+        _raise_from_value_error(str(exc))
+    return {
+        "data": {
+            "asset": _serialize_asset(asset),
+            "version": _serialize_asset_version(version),
+        }
+    }

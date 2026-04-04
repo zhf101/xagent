@@ -15,6 +15,8 @@
     run_server(host="0.0.0.0", port=8000)
 """
 
+from __future__ import annotations
+
 from importlib.metadata import version
 from typing import Any
 
@@ -22,9 +24,6 @@ try:
     __version__ = version("xagent")
 except Exception:
     __version__ = "0.0.0+unknown"
-
-from .app import app
-
 
 def run_server(
     host: str = "127.0.0.1", port: int = 8000, reload: bool = False, **kwargs: Any
@@ -43,3 +42,12 @@ def run_server(
 
 
 __all__ = ["app", "run_server", "__version__"]
+
+
+def __getattr__(name: str):
+    if name != "app":
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    from .app import app
+
+    globals()["app"] = app
+    return app

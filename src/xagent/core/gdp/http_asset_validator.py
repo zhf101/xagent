@@ -16,6 +16,7 @@ _ALLOWED_ANNOTATION_KEYS = {
     "openWorldHint",
 }
 _URL_PLACEHOLDER_PATTERN = re.compile(r"\{\{\s*([a-zA-Z0-9_.-]+)\s*\}\}|\{([a-zA-Z0-9_.-]+)\}")
+_TOKEN_RE = re.compile(r"([^\.\[\]]+)|\[(\d+)\]")
 
 
 class GdpHttpAssetValidationError(ValueError):
@@ -117,10 +118,13 @@ class GdpHttpAssetValidator:
                     f"args_position_json 引用了不存在的 source path: {source_path}"
                 )
 
-        normalized_paths = sorted(source_paths)
-        for index, path in enumerate(normalized_paths):
-            for other in normalized_paths[index + 1 :]:
-                if other.startswith(f"{path}.") or other.startswith(f"{path}["):
+        tokenized_paths = sorted(
+            ((path, self._parse_source_path_tokens(path)) for path in source_paths),
+            key=lambda item: (len(item[1]), item[0]),
+        )
+        for index, (path, tokens) in enumerate(tokenized_paths):
+            for other, other_tokens in tokenized_paths[index + 1 :]:
+                if self._is_prefix_tokens(tokens, other_tokens):
                     raise GdpHttpAssetValidationError(
                         f"不允许父子路径同时路由: {path} 与 {other}"
                     )
@@ -131,6 +135,7 @@ class GdpHttpAssetValidator:
         input_schema: dict[str, Any],
     ) -> None:
         # 这里只做注册期静态校验，不负责真正把参数写进 HTTP 请求。
+        seen_targets: dict[tuple[str, str], str] = {}
         for source_path, route in args_position.items():
             if not isinstance(route, dict):
                 raise GdpHttpAssetValidationError(
@@ -138,15 +143,23 @@ class GdpHttpAssetValidator:
                 )
 
             route_in = route.get("in")
-            if route_in not in {"path", "query", "header", "body"}:
+            if route_in not in {"path", "query", "header", "body", "cookie"}:
                 raise GdpHttpAssetValidationError(
                     f"args_position_json.{source_path}.in 非法: {route_in}"
+                )
+
+            if "name" in route and (
+                not isinstance(route.get("name"), str) or not str(route.get("name")).strip()
+            ):
+                raise GdpHttpAssetValidationError(
+                    f"args_position_json.{source_path}.name 必须为非空字符串"
                 )
 
             schema_node = self._resolve_schema_for_path(input_schema, source_path) or {}
             schema_type = schema_node.get("type")
             array_style = route.get("arrayStyle", route.get("array_style"))
             object_style = route.get("objectStyle", route.get("object_style"))
+            target_name = str(route.get("name") or self._default_target_name(source_path))
 
             if array_style is not None:
                 if route_in != "query":
@@ -173,6 +186,15 @@ class GdpHttpAssetValidator:
                     f"args_position_json.{source_path} 的 path 映射不能接 object/array"
                 )
 
+            target_key = (str(route_in), target_name)
+            duplicate_source = seen_targets.get(target_key)
+            if duplicate_source is not None:
+                raise GdpHttpAssetValidationError(
+                    "args_position_json 存在重复目标投递: "
+                    f"{duplicate_source} 与 {source_path} 都映射到 {route_in}.{target_name}"
+                )
+            seen_targets[target_key] = source_path
+
     def _validate_url_path_mappings(
         self,
         execution: Any,
@@ -197,6 +219,13 @@ class GdpHttpAssetValidator:
                 f"URL 占位符缺少 path 路由: {', '.join(missing)}"
             )
 
+        if placeholders:
+            extras = sorted(path_routes - placeholders)
+            if extras:
+                raise GdpHttpAssetValidationError(
+                    f"path 映射目标未出现在 URL 占位符中: {', '.join(extras)}"
+                )
+
         if not placeholders and path_routes:
             raise GdpHttpAssetValidationError("URL 无占位符时不能配置 path 路由")
 
@@ -212,8 +241,36 @@ class GdpHttpAssetValidator:
         body_template = request_template.get("body")
         args_to_json_body = bool(request_template.get("argsToJsonBody"))
         args_to_url_param = bool(request_template.get("argsToUrlParam"))
+        template_method = request_template.get("method")
+        effective_method = str(execution.method).upper()
 
-        if execution.method == "GET":
+        if template_method is not None:
+            if not isinstance(template_method, str) or not template_method.strip():
+                raise GdpHttpAssetValidationError(
+                    "request_template_json.method 必须为非空字符串"
+                )
+            effective_method = template_method.strip().upper()
+            if effective_method not in {"GET", "POST"}:
+                raise GdpHttpAssetValidationError(
+                    "request_template_json.method 仅允许 GET 或 POST"
+                )
+
+        template_url = request_template.get("url")
+        if template_url is not None and (
+            not isinstance(template_url, str) or not template_url.strip()
+        ):
+            raise GdpHttpAssetValidationError(
+                "request_template_json.url 必须为非空字符串"
+            )
+
+        if body_template is not None and not isinstance(body_template, str):
+            raise GdpHttpAssetValidationError(
+                "request_template_json.body 必须为字符串"
+            )
+
+        self._validate_request_template_headers(request_template)
+
+        if effective_method == "GET":
             if body_routed:
                 raise GdpHttpAssetValidationError("GET 禁止 body 路由")
             if body_template is not None:
@@ -247,6 +304,45 @@ class GdpHttpAssetValidator:
             )
 
         self._validate_response_template(response_template)
+
+    def _validate_request_template_headers(
+        self,
+        request_template: dict[str, Any],
+    ) -> None:
+        headers = request_template.get("headers")
+        if headers is None:
+            return
+        if isinstance(headers, dict):
+            for key, value in headers.items():
+                if not isinstance(key, str) or not key.strip():
+                    raise GdpHttpAssetValidationError(
+                        "request_template_json.headers 的 key 必须为非空字符串"
+                    )
+                if not isinstance(value, str):
+                    raise GdpHttpAssetValidationError(
+                        "request_template_json.headers 的 value 必须为字符串"
+                    )
+            return
+        if isinstance(headers, list):
+            for index, item in enumerate(headers):
+                if not isinstance(item, dict):
+                    raise GdpHttpAssetValidationError(
+                        f"request_template_json.headers[{index}] 必须是对象"
+                    )
+                key = item.get("key")
+                value = item.get("value")
+                if not isinstance(key, str) or not key.strip():
+                    raise GdpHttpAssetValidationError(
+                        f"request_template_json.headers[{index}].key 必须为非空字符串"
+                    )
+                if not isinstance(value, str):
+                    raise GdpHttpAssetValidationError(
+                        f"request_template_json.headers[{index}].value 必须为字符串"
+                    )
+            return
+        raise GdpHttpAssetValidationError(
+            "request_template_json.headers 必须为对象或数组"
+        )
 
     def _validate_response_template(
         self,
@@ -304,23 +400,95 @@ class GdpHttpAssetValidator:
                     "response_template_json.successRule.errorPath 必须为非空字符串"
                 )
 
+        for field_name in ("body", "prependBody", "appendBody"):
+            value = response_template.get(field_name)
+            if value is not None and not isinstance(value, str):
+                raise GdpHttpAssetValidationError(
+                    f"response_template_json.{field_name} 必须为字符串"
+                )
+
     def _resolve_schema_for_path(
         self,
         schema: dict[str, Any],
         source_path: str,
     ) -> dict[str, Any] | None:
-        """按 `a.b.c` 形式解析 input schema 中的字段定义。"""
-        current: dict[str, Any] | None = schema
-        normalized_path = source_path.replace("[*]", "").replace("[]", "")
+        """按 `a.b[0].c` 形式解析 input schema 中的字段定义。"""
+        current: Any = schema
+        tokens = self._parse_source_path_tokens(source_path)
+        if not tokens:
+            return None
 
-        for segment in normalized_path.split("."):
-            if not segment:
+        for token in tokens:
+            if not isinstance(current, dict):
                 return None
-            if current is None:
+
+            schema_type = current.get("type")
+            if isinstance(schema_type, list):
+                schema_types = {str(item) for item in schema_type}
+            else:
+                schema_types = {str(schema_type)} if schema_type is not None else set()
+
+            if isinstance(token, int):
+                if "array" not in schema_types:
+                    return None
+                items = current.get("items")
+                if not isinstance(items, dict):
+                    return None
+                current = items
+                continue
+
+            if "array" in schema_types:
+                items = current.get("items")
+                if not isinstance(items, dict):
+                    return None
+                current = items
+                schema_type = current.get("type")
+                if isinstance(schema_type, list):
+                    schema_types = {str(item) for item in schema_type}
+                else:
+                    schema_types = (
+                        {str(schema_type)} if schema_type is not None else set()
+                    )
+
+            if "object" not in schema_types:
                 return None
             properties = current.get("properties")
-            if not isinstance(properties, dict):
-                return None
-            current = properties.get(segment)
+            if isinstance(properties, dict) and token in properties:
+                current = properties[token]
+                continue
+            additional = current.get("additionalProperties")
+            if isinstance(additional, dict):
+                current = additional
+                continue
+            return None
 
-        return current
+        return current if isinstance(current, dict) else None
+
+    def _parse_source_path_tokens(self, source_path: str) -> list[str | int]:
+        tokens: list[str | int] = []
+        text = str(source_path or "").strip()
+        if not text:
+            return tokens
+        for match in _TOKEN_RE.finditer(text):
+            key = match.group(1)
+            index = match.group(2)
+            if key is not None:
+                tokens.append(key)
+            elif index is not None:
+                tokens.append(int(index))
+        return tokens
+
+    def _default_target_name(self, source_path: str) -> str:
+        for token in reversed(self._parse_source_path_tokens(source_path)):
+            if isinstance(token, str):
+                return token
+        return str(source_path)
+
+    def _is_prefix_tokens(
+        self,
+        prefix: list[str | int],
+        target: list[str | int],
+    ) -> bool:
+        if len(prefix) >= len(target):
+            return False
+        return target[: len(prefix)] == prefix

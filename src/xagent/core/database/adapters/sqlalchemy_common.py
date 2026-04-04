@@ -8,6 +8,7 @@ from typing import Any
 
 from sqlalchemy import URL, create_engine, inspect, text
 from sqlalchemy.engine import Engine
+from sqlalchemy.pool import NullPool
 
 from .base import DatabaseAdapter, QueryExecutionResult
 
@@ -35,9 +36,52 @@ class SqlAlchemySyncAdapter(DatabaseAdapter):
     def build_sqlalchemy_url(self) -> URL:
         """由子类提供最终 driver URL。"""
 
+    def _get_extra_value(self, key: str) -> Any | None:
+        if not self.config.extra:
+            return None
+        return self.config.extra.get(key)
+
+    def _get_extra_int(self, key: str, default: int) -> int:
+        value = self._get_extra_value(key)
+        if value in (None, ""):
+            return default
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    def _get_extra_bool(self, key: str, default: bool) -> bool:
+        value = self._get_extra_value(key)
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        normalized = str(value).strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+        return default
+
+    def _build_engine_connect_args(self) -> dict[str, Any]:
+        return {}
+
+    def _build_engine_kwargs(self) -> dict[str, Any]:
+        engine_kwargs: dict[str, Any] = {
+            "future": True,
+            "poolclass": NullPool,
+        }
+        connect_args = self._build_engine_connect_args()
+        if connect_args:
+            engine_kwargs["connect_args"] = connect_args
+        return engine_kwargs
+
     def _get_engine(self) -> Engine:
         if self._engine is None:
-            self._engine = create_engine(self.build_sqlalchemy_url(), future=True)
+            self._engine = create_engine(
+                self.build_sqlalchemy_url(),
+                **self._build_engine_kwargs(),
+            )
         return self._engine
 
     async def connect(self) -> None:

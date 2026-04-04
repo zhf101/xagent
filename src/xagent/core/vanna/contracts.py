@@ -113,3 +113,28 @@ class AskResult:
     sql_confidence: float | None = None
     execution_result: dict[str, Any] = field(default_factory=dict)
     auto_train_entry_id: int | None = None
+
+
+@dataclass(slots=True)
+class QueryResult:
+    """统一 query 编排结果。"""
+
+    mode: str
+    route: str
+    execution_status: str
+    asset_id: int | None = None
+    asset_version_id: int | None = None
+    asset_run_id: int | None = None
+    asset_code: str | None = None
+    asset_match_score: float | None = None
+    asset_match_reason: str | None = None
+    ask_run_id: int | None = None
+    generated_sql: str | None = None
+    compiled_sql: str | None = None
+    sql_confidence: float | None = None
+    bound_params: dict[str, Any] = field(default_factory=dict)
+    missing_params: list[str] = field(default_factory=list)
+    assumptions: list[str] = field(default_factory=list)
+    execution_result: dict[str, Any] = field(default_factory=dict)
+    auto_train_entry_id: int | None = None
+    llm_inference: dict[str, Any] | None = None

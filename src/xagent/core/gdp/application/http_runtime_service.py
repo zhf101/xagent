@@ -17,12 +17,14 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
 from typing import Any
 from urllib.parse import quote, urlencode
 
+from jinja2 import BaseLoader, Environment, StrictUndefined, TemplateSyntaxError
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
@@ -53,6 +55,110 @@ _SECRET_HEADER_NAMES = {
     "cookie",
     "set-cookie",
 }
+
+
+class _TemplateObject:
+    """Jinja 上下文代理，优先把点号访问解释成 JSON key。"""
+
+    def __init__(self, data: dict[str, Any]) -> None:
+        self._data = data
+
+    def __getitem__(self, key: str) -> Any:
+        return _wrap_template_value(self._data[key])
+
+    def get(self, key: str, default: Any = None) -> Any:
+        if key not in self._data:
+            return default
+        return _wrap_template_value(self._data[key])
+
+    def __contains__(self, key: object) -> bool:
+        return key in self._data
+
+    def __iter__(self):
+        return iter(self._data)
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+    def __getattr__(self, key: str) -> Any:
+        if key in self._data:
+            return _wrap_template_value(self._data[key])
+        raise AttributeError(key)
+
+    def to_plain_data(self) -> dict[str, Any]:
+        return {key: _unwrap_template_value(value) for key, value in self._data.items()}
+
+
+def _wrap_template_value(value: Any) -> Any:
+    if isinstance(value, _TemplateObject):
+        return value
+    if isinstance(value, dict):
+        return _TemplateObject(value)
+    if isinstance(value, list):
+        return [_wrap_template_value(item) for item in value]
+    return value
+
+
+def _unwrap_template_value(value: Any) -> Any:
+    if isinstance(value, _TemplateObject):
+        return value.to_plain_data()
+    if isinstance(value, list):
+        return [_unwrap_template_value(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _unwrap_template_value(item) for key, item in value.items()}
+    return value
+
+
+def _tojson_filter(value: Any) -> str:
+    return json.dumps(_unwrap_template_value(value), ensure_ascii=False, default=str)
+
+
+def _fromjson_filter(value: str) -> Any:
+    return json.loads(value)
+
+
+def _urlencode_filter(value: Any) -> str:
+    return quote(str(value), safe="")
+
+
+def _b64encode_filter(value: Any) -> str:
+    return base64.b64encode(str(value).encode("utf-8")).decode("ascii")
+
+
+def _dig(value: Any, path: str, default: Any = None) -> Any:
+    current = value
+    for match in _TOKEN_RE.finditer(str(path or "")):
+        key = match.group(1)
+        index = match.group(2)
+        if key is not None:
+            if isinstance(current, _TemplateObject):
+                if key not in current:
+                    return default
+                current = current[key]
+                continue
+            if not isinstance(current, dict) or key not in current:
+                return default
+            current = current[key]
+            continue
+        if index is not None:
+            idx = int(index)
+            if not isinstance(current, list) or idx >= len(current):
+                return default
+            current = current[idx]
+    return current
+
+
+_JINJA_ENV = Environment(
+    loader=BaseLoader(),
+    autoescape=False,
+    keep_trailing_newline=False,
+    undefined=StrictUndefined,
+)
+_JINJA_ENV.filters["tojson"] = _tojson_filter
+_JINJA_ENV.filters["fromjson"] = _fromjson_filter
+_JINJA_ENV.filters["urlencode"] = _urlencode_filter
+_JINJA_ENV.filters["b64encode"] = _b64encode_filter
+_JINJA_ENV.globals["dig"] = _dig
 
 
 class HttpRuntimeDefinitionAssembler:
@@ -433,16 +539,23 @@ class HttpRequestAssembler:
         """组装最终请求快照。"""
 
         url = self._build_base_url(definition)
+        method = str(definition.method or "GET").upper()
         headers = self._normalize_headers(definition.headers_json)
+        cookies: dict[str, str] = {}
         query_params: dict[str, Any] = {}
         body_params: dict[str, Any] = {}
+        consumed_roots: set[str] = set()
 
         for source_path, route in (definition.args_position_json or {}).items():
             found, value = self._extract_path_value(arguments, source_path)
             if not found:
                 continue
 
-            route_in = str(route.get("in") or "body").lower()
+            root_name = self._root_name(source_path)
+            if root_name:
+                consumed_roots.add(root_name)
+
+            route_in = str(route.get("in") or "query").lower()
             target_name = str(route.get("name") or self._last_segment(source_path))
 
             if route_in == "path":
@@ -466,6 +579,10 @@ class HttpRequestAssembler:
                 headers[target_name] = self._stringify_http_value(value)
                 continue
 
+            if route_in == "cookie":
+                cookies[target_name] = self._stringify_http_value(value)
+                continue
+
             if route_in == "body":
                 body_params[target_name] = value
                 continue
@@ -473,31 +590,89 @@ class HttpRequestAssembler:
             raise ValueError(f"不支持的参数落点: {route_in}")
 
         request_template = definition.request_template_json or {}
+        template_context = self._build_template_context(
+            arguments=arguments,
+            response_body=None,
+            status_code=None,
+            content_type=None,
+            ok=None,
+            response_headers=None,
+            endpoint={
+                "name": definition.tool_contract.tool_name,
+                "url": url,
+                "method": method,
+            },
+            runtime_context={},
+        )
+
+        if isinstance(request_template.get("url"), str) and str(
+            request_template.get("url") or ""
+        ).strip():
+            url = self._render_template(str(request_template["url"]), template_context)
+
+        if isinstance(request_template.get("method"), str) and str(
+            request_template.get("method") or ""
+        ).strip():
+            method = str(request_template["method"]).upper()
+
+        template_context = self._build_template_context(
+            arguments=arguments,
+            response_body=None,
+            status_code=None,
+            content_type=None,
+            ok=None,
+            response_headers=None,
+            endpoint={
+                "name": definition.tool_contract.tool_name,
+                "url": url,
+                "method": method,
+            },
+            runtime_context={},
+        )
+
+        self._apply_template_headers(
+            headers=headers,
+            request_template=request_template,
+            context=template_context,
+        )
+
+        unmatched_arguments = {
+            key: value for key, value in arguments.items() if key not in consumed_roots
+        }
+
         json_body: Any | None = None
         text_body: str | None = None
 
         if request_template.get("argsToUrlParam"):
-            self._merge_query_object(query_params, arguments)
+            self._merge_query_object(query_params, unmatched_arguments)
         elif request_template.get("argsToJsonBody"):
-            json_body = dict(arguments)
-        elif isinstance(request_template.get("body"), str):
-            text_body = self._render_template(
-                str(request_template["body"]),
-                self._build_template_context(
-                    arguments=arguments,
-                    response_body=None,
-                    status_code=None,
-                    content_type=None,
-                    ok=None,
-                ),
+            merged_body = dict(body_params)
+            merged_body.update(unmatched_arguments)
+            json_body = merged_body or None
+        elif request_template.get("body") is None and unmatched_arguments and consumed_roots:
+            raise ValueError(
+                "存在未映射顶层参数，但未配置 argsToUrlParam/argsToJsonBody/body 模板: "
+                f"{sorted(unmatched_arguments.keys())}"
             )
-        elif body_params:
+        elif not request_template and unmatched_arguments:
+            self._merge_query_object(query_params, unmatched_arguments)
+
+        if isinstance(request_template.get("body"), str):
+            rendered_body = self._render_template(
+                str(request_template["body"]),
+                template_context,
+            )
+            try:
+                json_body = json.loads(rendered_body)
+            except json.JSONDecodeError:
+                text_body = rendered_body
+        elif json_body is None and body_params:
             json_body = body_params
 
-        if definition.method == "GET" and (
-            json_body is not None or text_body is not None
-        ):
+        if method == "GET" and (json_body is not None or text_body is not None):
             raise ValueError("GET 请求不允许携带 body")
+        if method == "POST" and json_body is not None:
+            headers.setdefault("Content-Type", "application/json")
 
         full_url = self._append_query_params(url, query_params)
         unresolved = re.findall(r"\{([a-zA-Z0-9_.-]+)\}", full_url)
@@ -505,9 +680,10 @@ class HttpRequestAssembler:
             raise ValueError(f"URL 仍存在未替换占位符: {sorted(unresolved)}")
 
         return HttpRequestSnapshot(
-            method=definition.method,
+            method=method,
             url=full_url,
             headers=headers,
+            cookies=cookies,
             query_params=query_params,
             json_body=json_body,
             text_body=text_body,
@@ -580,6 +756,13 @@ class HttpRequestAssembler:
                 return token
         return path
 
+    def _root_name(self, path: str) -> str:
+        tokens = self._parse_tokens(path)
+        if not tokens:
+            return ""
+        first = tokens[0]
+        return first if isinstance(first, str) else ""
+
     def _apply_query_value(
         self,
         *,
@@ -633,7 +816,7 @@ class HttpRequestAssembler:
         query_params: dict[str, Any],
         arguments: dict[str, Any],
     ) -> None:
-        """把全部 arguments 作为 query 参数并入。"""
+        """把指定 arguments 作为 query 参数并入。"""
 
         for key, value in arguments.items():
             if isinstance(value, dict):
@@ -664,6 +847,9 @@ class HttpRequestAssembler:
         status_code: int | None,
         content_type: str | None,
         ok: bool | None,
+        response_headers: dict[str, Any] | None,
+        endpoint: dict[str, Any] | None,
+        runtime_context: dict[str, Any] | None,
     ) -> dict[str, Any]:
         """统一模板上下文。"""
 
@@ -675,38 +861,60 @@ class HttpRequestAssembler:
             else ""
         )
         return {
-            "arguments": arguments,
-            "args": arguments,
-            "response_body": response_body,
-            "resp_json": response_body
+            "arguments": _wrap_template_value(arguments),
+            "args": _wrap_template_value(arguments),
+            "response_body": _wrap_template_value(response_body),
+            "resp_json": _wrap_template_value(response_body)
             if isinstance(response_body, (dict, list))
             else None,
             "resp_text": response_text,
+            "headers": _wrap_template_value(dict(response_headers or {})),
             "status_code": status_code,
             "content_type": content_type,
             "ok": ok,
+            "endpoint": _wrap_template_value(dict(endpoint or {})),
+            "context": _wrap_template_value(dict(runtime_context or {})),
         }
 
-    def _resolve_placeholder(self, context: dict[str, Any], expression: str) -> Any:
-        current: Any = context
-        for segment in expression.split("."):
-            if isinstance(current, dict) and segment in current:
-                current = current[segment]
-                continue
-            return ""
-        return current
-
     def _render_template(self, template: str, context: dict[str, Any]) -> str:
-        """做最小模板替换。"""
+        """按 http2mcp 兼容语义渲染 Jinja2 模板。"""
 
-        def _replace(match: re.Match[str]) -> str:
-            expression = (match.group(1) or "").strip()
-            value = self._resolve_placeholder(context, expression)
-            if isinstance(value, (dict, list)):
-                return json.dumps(value, ensure_ascii=False, default=str)
-            return "" if value is None else str(value)
+        try:
+            return _JINJA_ENV.from_string(template).render(**context)
+        except TemplateSyntaxError as exc:
+            raise ValueError(f"模板语法错误: {exc}") from exc
+        except Exception as exc:
+            raise ValueError(f"模板渲染失败: {exc}") from exc
 
-        return re.sub(r"\{\{\s*([a-zA-Z0-9_.-]+)\s*\}\}", _replace, template)
+    def _apply_template_headers(
+        self,
+        *,
+        headers: dict[str, str],
+        request_template: dict[str, Any],
+        context: dict[str, Any],
+    ) -> None:
+        raw_headers = request_template.get("headers")
+        if isinstance(raw_headers, list):
+            for item in raw_headers:
+                if not isinstance(item, dict):
+                    continue
+                rendered_key = self._render_template(
+                    str(item.get("key") or ""),
+                    context,
+                ).strip()
+                rendered_value = self._render_template(
+                    str(item.get("value") or ""),
+                    context,
+                )
+                if rendered_key:
+                    headers[rendered_key] = rendered_value
+            return
+        if isinstance(raw_headers, dict):
+            for key, value in raw_headers.items():
+                rendered_key = self._render_template(str(key), context).strip()
+                rendered_value = self._render_template(str(value), context)
+                if rendered_key:
+                    headers[rendered_key] = rendered_value
 
 
 class HttpInvoker:
@@ -724,6 +932,14 @@ class HttpInvoker:
         """把请求快照转换成真实 HTTP 调用。"""
 
         headers = dict(request.headers or {})
+        cookies = dict(request.cookies or {})
+        if cookies:
+            cookie_header = "; ".join(f"{key}={value}" for key, value in cookies.items())
+            if headers.get("Cookie"):
+                headers["Cookie"] = f"{headers['Cookie']}; {cookie_header}"
+            else:
+                headers["Cookie"] = cookie_header
+
         auth_type, auth_token, api_key_param = self._prepare_auth(
             definition=definition,
             headers=headers,
@@ -862,6 +1078,7 @@ class HttpResponseInterpreter:
             status_code=status_code,
             content_type=content_type,
             body=body,
+            headers=headers,
             raw_error=str(raw_result.get("error") or "").strip() or None,
             business_error_message=business_error_message,
             extracted=extracted,
@@ -887,6 +1104,7 @@ class HttpResponseInterpreter:
         status_code: int,
         content_type: str | None,
         body: Any,
+        headers: dict[str, Any],
         raw_error: str | None,
         business_error_message: str | None,
         extracted: dict[str, Any],
@@ -899,10 +1117,17 @@ class HttpResponseInterpreter:
             status_code=status_code,
             content_type=content_type,
             ok=protocol_ok and business_ok is not False,
+            response_headers=headers,
+            endpoint={
+                "name": definition.tool_contract.tool_name,
+                "url": "",
+                "method": definition.method,
+            },
+            runtime_context={},
         )
         template_context["protocol_ok"] = protocol_ok
         template_context["business_ok"] = business_ok
-        template_context["extracted"] = extracted
+        template_context["extracted"] = _wrap_template_value(extracted)
         template_context["error_message"] = business_error_message or raw_error or ""
 
         if protocol_ok and business_ok is not False and isinstance(
@@ -1096,18 +1321,23 @@ class HttpResponseInterpreter:
         return bool(value)
 
     def _simple_json_path_get(self, payload: Any, path: str) -> Any:
-        """首版只支持 `$.a.b` 或 `a.b` 这种简单路径。"""
+        """支持 `$.a.b[0].c` 形式的简单 JSON path。"""
 
-        if not isinstance(payload, dict):
-            return None
-
-        current = payload
-        for part in path.lstrip("$.").split("."):
-            if not part:
+        current: Any = payload
+        normalized = str(path or "").strip()
+        if normalized.startswith("$."):
+            normalized = normalized[2:]
+        elif normalized == "$":
+            normalized = ""
+        for token in self.request_assembler._parse_tokens(normalized):
+            if isinstance(token, int):
+                if not isinstance(current, list) or token >= len(current):
+                    return None
+                current = current[token]
                 continue
-            if not isinstance(current, dict) or part not in current:
+            if not isinstance(current, dict) or token not in current:
                 return None
-            current = current[part]
+            current = current[token]
         return current
 
 
@@ -2050,7 +2280,13 @@ class HttpResourceRuntimeService:
             else:
                 redacted_headers[key] = value
 
-        return request.model_copy(update={"headers": redacted_headers})
+        redacted_cookies = {
+            key: "***" for key in (request.cookies or {}).keys()
+        }
+
+        return request.model_copy(
+            update={"headers": redacted_headers, "cookies": redacted_cookies}
+        )
 
     def _merge_error_details_with_resolution(
         self,

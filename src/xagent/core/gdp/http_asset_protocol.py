@@ -97,6 +97,39 @@ class GdpHttpAssetUpsertRequest(BaseModel):
     execution_profile: GdpHttpExecutionProfile
 
 
+class GdpHttpVisualSchemaNode(BaseModel):
+    """前端可视化 Schema 树节点。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str | None = None
+    name: str = ""
+    type: str = "string"
+    description: str = ""
+    required: bool = False
+    defaultValue: str | None = None
+    enum: list[str] | None = None
+    pattern: str | None = None
+    children: list["GdpHttpVisualSchemaNode"] = Field(default_factory=list)
+    route: dict[str, Any] | None = None
+
+
+class GdpHttpAssetNormalizeRequest(BaseModel):
+    """把前端 draft/visual tree 归一化成最终资产 payload。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    payload: GdpHttpAssetUpsertRequest
+    input_tree: list[GdpHttpVisualSchemaNode] | None = None
+    output_tree: list[GdpHttpVisualSchemaNode] | None = None
+
+
+class GdpHttpAssetNormalizeResponse(BaseModel):
+    """前端归一化后的资产 payload。"""
+
+    payload: GdpHttpAssetUpsertRequest
+
+
 class GdpHttpAssetAssembleRequest(BaseModel):
     """请求拼装预览请求。"""
 
@@ -111,3 +144,6 @@ class GdpHttpAssetAssembleResponse(BaseModel):
     method: str
     headers: dict[str, str]
     body: str | None = None
+
+
+GdpHttpVisualSchemaNode.model_rebuild()

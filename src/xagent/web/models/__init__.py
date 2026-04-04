@@ -19,6 +19,9 @@ from .vanna import (
     VannaAskRun,
     VannaEmbeddingChunk,
     VannaKnowledgeBase,
+    VannaSqlAsset,
+    VannaSqlAssetRun,
+    VannaSqlAssetVersion,
     VannaSchemaColumn,
     VannaSchemaHarvestJob,
     VannaSchemaTable,
@@ -60,4 +63,7 @@ __all__ = [
     "VannaTrainingEntry",
     "VannaEmbeddingChunk",
     "VannaAskRun",
+    "VannaSqlAsset",
+    "VannaSqlAssetVersion",
+    "VannaSqlAssetRun",
 ]

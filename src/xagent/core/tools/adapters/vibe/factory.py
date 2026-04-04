@@ -64,6 +64,7 @@ class ToolRegistry:
                 audio_tool,
                 basic_tools,
                 browser_tools,
+                gdp_http_tools,
                 image_tool,
                 knowledge_tools,
                 mcp_tools,
