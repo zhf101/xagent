@@ -10,18 +10,40 @@ class TaskChatMessage(Base):  # type: ignore
 
     __tablename__ = "task_chat_messages"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True, index=True, comment="聊天消息ID")
     task_id = Column(
-        Integer, ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False, index=True
+        Integer,
+        ForeignKey("tasks.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+        comment="任务ID",
     )
     user_id = Column(
-        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+        comment="用户ID",
     )
-    role = Column(String(32), nullable=False)
-    content = Column(Text, nullable=False)
-    message_type = Column(String(64), nullable=False)
-    interactions = Column(JSON, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    role = Column(
+        String(32),
+        nullable=False,
+        comment="角色（user/assistant/system）",
+    )
+    content = Column(Text, nullable=False, comment="消息内容")
+    message_type = Column(
+        String(64),
+        nullable=False,
+        comment="消息类型（text/image/file等）",
+    )
+    interactions = Column(
+        JSON, nullable=True, comment="交互信息（JSON格式）"
+    )
+    created_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        comment="创建时间",
+    )
 
     task = relationship("Task", back_populates="chat_messages")
     user = relationship("User", back_populates="chat_messages")

@@ -27,10 +27,9 @@ from .api.skills import router as skills_router
 from .api.sql_approval import approval_router
 from .api.system import system_router
 from .api.templates import router as templates_router
-from .api.datamake_http_assets import router as datamake_http_assets_router
-from .api.datamake_sql_assets import router as datamake_sql_assets_router
 from .api.text2sql import text2sql_router
 from .api.tools import tools_router
+from .api.vanna_sql import vanna_router
 from .api.websocket import ws_router
 from .config import UPLOADS_DIR
 from .dynamic_memory_store import get_memory_store
@@ -165,8 +164,7 @@ app.include_router(system_router)
 app.include_router(templates_router)
 app.include_router(agents_router)
 app.include_router(gdp_http_assets_router)
-app.include_router(datamake_http_assets_router)
-app.include_router(datamake_sql_assets_router)
+app.include_router(vanna_router)
 app.include_router(channel_router, prefix="/api/channels", tags=["Channels"])
 
 

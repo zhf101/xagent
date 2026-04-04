@@ -23,41 +23,98 @@ def create_mcp_server_table(Base: Type[Any]) -> Type[Any]:
 
         __tablename__ = "mcp_servers"
 
-        id = Column(Integer, primary_key=True, index=True)
-        name = Column(String(100), nullable=False, unique=True)
-        description = Column(Text, nullable=True)
+        id = Column(Integer, primary_key=True, index=True, comment="MCP服务器ID")
+        name = Column(
+            String(100),
+            nullable=False,
+            unique=True,
+            comment="服务器名称（唯一）",
+        )
+        description = Column(Text, nullable=True, comment="服务器描述")
 
         # Management type: 'internal' or 'external'
-        managed = Column(String(20), nullable=False)
+        managed = Column(
+            String(20),
+            nullable=False,
+            comment="管理类型（internal/external）",
+        )
 
         # Connection parameters
-        transport = Column(String(50), nullable=False)
-        command = Column(String(500), nullable=True)
-        args = Column(JSON, nullable=True)  # List[str]
-        url = Column(String(500), nullable=True)
-        env = Column(JSON, nullable=True)  # Dict[str, str]
-        cwd = Column(String(500), nullable=True)
-        headers = Column(JSON, nullable=True)  # Dict[str, Any]
+        transport = Column(
+            String(50),
+            nullable=False,
+            comment="传输方式（stdio/sse/websocket/streamable_http）",
+        )
+        command = Column(
+            String(500), nullable=True, comment="启动命令"
+        )
+        args = Column(
+            JSON, nullable=True, comment="命令参数列表（JSON格式）"
+        )
+        url = Column(
+            String(500), nullable=True, comment="服务URL"
+        )
+        env = Column(
+            JSON, nullable=True, comment="环境变量字典（JSON格式）"
+        )
+        cwd = Column(
+            String(500), nullable=True, comment="工作目录"
+        )
+        headers = Column(
+            JSON, nullable=True, comment="请求头字典（JSON格式）"
+        )
 
         # Container management parameters (internal only)
-        docker_url = Column(String(500), nullable=True)
-        docker_image = Column(String(200), nullable=True)
-        docker_environment = Column(JSON, nullable=True)  # Dict[str, str]
-        docker_working_dir = Column(String(500), nullable=True)
-        volumes = Column(JSON, nullable=True)  # List[str]
-        bind_ports = Column(JSON, nullable=True)  # Dict[str, Union[int, str]]
-        restart_policy = Column(String(50), nullable=False, default="no")
-        auto_start = Column(Boolean, nullable=True)
+        docker_url = Column(
+            String(500), nullable=True, comment="Docker URL"
+        )
+        docker_image = Column(
+            String(200), nullable=True, comment="Docker镜像"
+        )
+        docker_environment = Column(
+            JSON, nullable=True, comment="Docker环境变量（JSON格式）"
+        )
+        docker_working_dir = Column(
+            String(500), nullable=True, comment="Docker工作目录"
+        )
+        volumes = Column(
+            JSON, nullable=True, comment="卷挂载列表（JSON格式）"
+        )
+        bind_ports = Column(
+            JSON, nullable=True, comment="端口绑定字典（JSON格式）"
+        )
+        restart_policy = Column(
+            String(50),
+            nullable=False,
+            default="no",
+            comment="重启策略（no/always/on-failure/unless-stopped）",
+        )
+        auto_start = Column(
+            Boolean, nullable=True, comment="是否自动启动"
+        )
 
         # Container runtime info (populated when container is running)
-        container_id = Column(String(100), nullable=True)
-        container_name = Column(String(200), nullable=True)
-        container_logs = Column(JSON, nullable=True)  # List[str]
+        container_id = Column(
+            String(100), nullable=True, comment="容器ID"
+        )
+        container_name = Column(
+            String(200), nullable=True, comment="容器名称"
+        )
+        container_logs = Column(
+            JSON, nullable=True, comment="容器日志列表（JSON格式）"
+        )
 
         # Timestamps
-        created_at = Column(DateTime(timezone=True), server_default=func.now())
+        created_at = Column(
+            DateTime(timezone=True),
+            server_default=func.now(),
+            comment="创建时间",
+        )
         updated_at = Column(
-            DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+            DateTime(timezone=True),
+            server_default=func.now(),
+            onupdate=func.now(),
+            comment="更新时间",
         )
 
         def __repr__(self) -> str:

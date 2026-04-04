@@ -304,7 +304,7 @@ export function KnowledgeBaseListView() {
                       <Badge variant="outline">{item.status}</Badge>
                     </div>
                     <div className="mb-4 text-xs text-muted-foreground">
-                      识别表数 {item.table_count ?? 0}，已关联 SQL 资产 {item.linked_asset_count ?? 0}
+                      识别表数 {item.table_count ?? 0}
                     </div>
                     <Button
                       className="w-full"

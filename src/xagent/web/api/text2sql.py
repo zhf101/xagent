@@ -5,7 +5,7 @@
 - 提供数据库类型模板、连接表单与 URL 编解码能力
 - 做真实连通性测试
 
-它不负责决定 datamake / SQL Brain 的业务主循环。
+它不负责决定上层业务主循环。
 """
 
 import logging
@@ -95,8 +95,6 @@ class DatabaseResponse(BaseModel):
     table_count: Optional[int] = None
     last_connected_at: Optional[str] = None
     error_message: Optional[str] = None
-    linked_asset_count: Optional[int] = None
-    asset_summary: Optional[Dict[str, Any]] = None
     created_at: str
     updated_at: str
 
@@ -298,100 +296,6 @@ def _build_schema_digest(schema: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _build_datasource_asset_summary_map(
-    *,
-    db: Session,
-    owner_user_id: int,
-    datasource_ids: list[int] | None = None,
-) -> Dict[int, Dict[str, Any]]:
-    """
-    聚合“某些数据源已关联哪些 SQL 资产”的摘要。
-
-    这层只返回治理侧事实，用于数据源列表/详情页展示，不参与 SQL Brain 排序。
-    """
-
-    try:
-        from ..models.datamake_sql_asset import (
-            DataMakeSqlAsset,
-            DataMakeSqlAssetVersion,
-        )
-    except Exception:
-        return {}
-
-    query = (
-        db.query(DataMakeSqlAssetVersion, DataMakeSqlAsset)
-        .join(DataMakeSqlAsset, DataMakeSqlAssetVersion.asset_id == DataMakeSqlAsset.id)
-        .filter(
-            DataMakeSqlAsset.owner_user_id == int(owner_user_id),
-            DataMakeSqlAssetVersion.datasource_id.isnot(None),
-            DataMakeSqlAsset.status != "archived",
-        )
-    )
-    normalized_ids = [int(item) for item in datasource_ids or []]
-    if normalized_ids:
-        query = query.filter(DataMakeSqlAssetVersion.datasource_id.in_(normalized_ids))
-
-    rows = query.all()
-    summary_map: Dict[int, Dict[str, Any]] = {}
-    for version_row, asset_row in rows:
-        datasource_id = getattr(version_row, "datasource_id", None)
-        if datasource_id is None:
-            continue
-        summary = summary_map.setdefault(
-            int(datasource_id),
-            {
-                "_asset_ids": set(),
-                "_published_asset_ids": set(),
-                "linked_asset_count": 0,
-                "total_version_count": 0,
-                "draft_version_count": 0,
-                "published_version_count": 0,
-                "archived_version_count": 0,
-                "asset_type_counts": {},
-                "latest_harvest_at": None,
-            },
-        )
-        summary["_asset_ids"].add(int(asset_row.id))
-        summary["total_version_count"] += 1
-        if getattr(version_row, "publish_status", None) == "published":
-            summary["_published_asset_ids"].add(int(asset_row.id))
-            summary["published_version_count"] += 1
-        elif getattr(version_row, "publish_status", None) == "archived":
-            summary["archived_version_count"] += 1
-        else:
-            summary["draft_version_count"] += 1
-
-        asset_type = getattr(version_row, "asset_type", None)
-        if isinstance(asset_type, str) and asset_type.strip():
-            normalized_type = asset_type.strip()
-            summary["asset_type_counts"][normalized_type] = (
-                summary["asset_type_counts"].get(normalized_type, 0) + 1
-            )
-
-        content_snapshot = getattr(version_row, "content_snapshot_json", None)
-        if (
-            isinstance(content_snapshot, dict)
-            and content_snapshot.get("source_kind") == "datasource_harvest"
-            and getattr(version_row, "created_at", None) is not None
-        ):
-            latest_harvest_at = summary.get("latest_harvest_at")
-            created_at = version_row.created_at
-            if latest_harvest_at is None or created_at > latest_harvest_at:
-                summary["latest_harvest_at"] = created_at
-
-    for datasource_id, summary in summary_map.items():
-        linked_asset_ids = summary.pop("_asset_ids")
-        published_asset_ids = summary.pop("_published_asset_ids")
-        summary["linked_asset_count"] = len(linked_asset_ids)
-        summary["published_asset_count"] = len(published_asset_ids)
-        latest_harvest_at = summary.get("latest_harvest_at")
-        summary["latest_harvest_at"] = (
-            latest_harvest_at.isoformat() if latest_harvest_at else None
-        )
-        summary_map[datasource_id] = summary
-    return summary_map
-
-
 class DataMapping(BaseModel):
     """Data mapping for chart axes"""
 
@@ -570,23 +474,7 @@ async def get_databases(
             .order_by(Text2SQLDatabase.created_at.desc())
             .all()
         )
-        summary_map = _build_datasource_asset_summary_map(
-            db=db,
-            owner_user_id=int(user.id),
-            datasource_ids=[int(item.id) for item in databases],
-        )
-
-        return [
-            DatabaseResponse(
-                **{
-                    **database.to_dict(),
-                    "linked_asset_count": summary_map.get(int(database.id), {}).get(
-                        "linked_asset_count", 0
-                    ),
-                }
-            )
-            for database in databases
-        ]
+        return [DatabaseResponse(**database.to_dict()) for database in databases]
     except Exception as e:
         logger.error(f"Failed to get databases for user {user.id}: {e}")
         raise HTTPException(
@@ -608,19 +496,7 @@ async def get_database_detail(
         user=user,
         database_id=database_id,
     )
-    summary_map = _build_datasource_asset_summary_map(
-        db=db,
-        owner_user_id=int(user.id),
-        datasource_ids=[int(database_id)],
-    )
-    summary = summary_map.get(int(database_id), {})
-    return DatabaseResponse(
-        **{
-            **row.to_dict(),
-            "linked_asset_count": summary.get("linked_asset_count", 0),
-            "asset_summary": summary or None,
-        }
-    )
+    return DatabaseResponse(**row.to_dict())
 
 
 @text2sql_router.post("/databases", response_model=DatabaseResponse)
@@ -929,22 +805,9 @@ async def get_database_schema(
             detail=f"Database schema loading failed: {exc}",
         ) from exc
 
-    summary_map = _build_datasource_asset_summary_map(
-        db=db,
-        owner_user_id=int(user.id),
-        datasource_ids=[int(database_id)],
-    )
-    summary = summary_map.get(int(database_id), {})
-
     return {
         "data": {
-            "database": DatabaseResponse(
-                **{
-                    **existing_db.to_dict(),
-                    "linked_asset_count": summary.get("linked_asset_count", 0),
-                    "asset_summary": summary or None,
-                }
-            ).model_dump(),
+            "database": DatabaseResponse(**existing_db.to_dict()).model_dump(),
             "schema": schema_digest,
         }
     }

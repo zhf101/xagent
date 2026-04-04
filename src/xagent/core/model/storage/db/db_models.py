@@ -24,30 +24,78 @@ def create_model_table(Base: Type[Any]) -> Type[Any]:
 
         __tablename__ = "models"
 
-        id = Column(Integer, primary_key=True, index=True)
-        model_id = Column(String(100), unique=True, index=True, nullable=False)
+        id = Column(Integer, primary_key=True, index=True, comment="模型配置ID")
+        model_id = Column(
+            String(100),
+            unique=True,
+            index=True,
+            nullable=False,
+            comment="模型唯一标识",
+        )
         category = Column(
-            String(20), nullable=False, default="llm"
-        )  # llm, image, embedding, etc.
+            String(20),
+            nullable=False,
+            default="llm",
+            comment="模型类别（llm/image/embedding等）",
+        )
         model_provider = Column(
-            String(50), nullable=False
-        )  # openai, zhipu, dashscope, etc.
-        model_name = Column(String(100), nullable=False)  # gpt-4, glm-4, etc.
-        base_url = Column(String(500), nullable=True)
-        temperature = Column(Float, nullable=True)
-        max_tokens = Column(Integer, nullable=True)
+            String(50),
+            nullable=False,
+            comment="模型提供商（openai/zhipu/dashscope等）",
+        )
+        model_name = Column(
+            String(100),
+            nullable=False,
+            comment="模型名称（如gpt-4/glm-4等）",
+        )
+        base_url = Column(
+            String(500),
+            nullable=True,
+            comment="API基础URL",
+        )
+        temperature = Column(
+            Float, nullable=True, comment="温度参数"
+        )
+        max_tokens = Column(
+            Integer, nullable=True, comment="最大Token数"
+        )
         dimension = Column(
-            Integer, nullable=True
-        )  # Vector dimension for embedding models
+            Integer,
+            nullable=True,
+            comment="向量维度（用于嵌入模型）",
+        )
         abilities = Column(
-            JSON, nullable=True
-        )  # Model abilities: ["chat", "vision", etc.]
-        description = Column(Text, nullable=True)
-        max_retries = Column(Integer, nullable=True, default=10)
-        created_at = Column(DateTime(timezone=True), server_default=func.now())
-        updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-        is_active = Column(Boolean, default=True)
-        _api_key_encrypted = Column(String(500), nullable=False)
+            JSON,
+            nullable=True,
+            comment="模型能力列表（如['chat', 'vision']）",
+        )
+        description = Column(
+            Text, nullable=True, comment="模型描述"
+        )
+        max_retries = Column(
+            Integer,
+            nullable=True,
+            default=10,
+            comment="最大重试次数",
+        )
+        created_at = Column(
+            DateTime(timezone=True),
+            server_default=func.now(),
+            comment="创建时间",
+        )
+        updated_at = Column(
+            DateTime(timezone=True),
+            onupdate=func.now(),
+            comment="更新时间",
+        )
+        is_active = Column(
+            Boolean, default=True, comment="是否激活"
+        )
+        _api_key_encrypted = Column(
+            String(500),
+            nullable=False,
+            comment="加密的API密钥",
+        )
 
         # Properties
         @property

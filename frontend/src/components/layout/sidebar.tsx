@@ -1,5 +1,6 @@
 "use client"
 
+import React from "react"
 import Link from "next/link"
 import { usePathname, useRouter } from "next/navigation"
 import { cn } from "@/lib/utils"
@@ -27,6 +28,7 @@ import {
   Wrench,
   Users,
   Brain,
+  Database,
   Server,
   HardDrive,
   Layers,
@@ -137,6 +139,27 @@ const navigationGroups: NavigationGroup[] = [
         nameKey: "nav.knowledgeBase",
         href: "/kb",
         icon: BookOpen,
+        color: "text-gray-500"
+      },
+      {
+        name: "SQL Assets",
+        nameKey: "nav.sqlAssets",
+        href: "/knowledge-bases",
+        icon: Database,
+        color: "text-gray-500"
+      },
+      {
+        name: "SQL Data Sources",
+        nameKey: "nav.sqlDataSources",
+        href: "/sql/datasources",
+        icon: Server,
+        color: "text-gray-500"
+      },
+      {
+        name: "HTTP Assets",
+        nameKey: "nav.httpAssets",
+        href: "/gdp/http-assets",
+        icon: Layers,
         color: "text-gray-500"
       },
       {
@@ -364,6 +387,7 @@ export function Sidebar({ className }: SidebarProps) {
   const [page, setPage] = useState(1)
   const [hasMore, setHasMore] = useState(true)
   const [isLoadingMore, setIsLoadingMore] = useState(false)
+  const [isTaskListUnavailable, setIsTaskListUnavailable] = useState(false)
   const navRef = useRef<HTMLElement | null>(null)
   const pathnameRef = useRef(pathname)
   pathnameRef.current = pathname // Synchronous update during render
@@ -382,6 +406,8 @@ export function Sidebar({ className }: SidebarProps) {
   // Loading state ref for polling interval
   const loadingRef = useRef({ isLoadingTasks, isLoadingMore })
   loadingRef.current = { isLoadingTasks, isLoadingMore }
+  const taskListUnavailableRef = useRef(isTaskListUnavailable)
+  taskListUnavailableRef.current = isTaskListUnavailable
 
   useEffect(() => {
     let isCancelled = false
@@ -470,6 +496,10 @@ export function Sidebar({ className }: SidebarProps) {
 
   // Load task list
   const loadTasks = useCallback(async (pageNum = 1, isAppending = false, isPolling = false) => {
+    if (taskListUnavailableRef.current) {
+      return
+    }
+
     if (isAppending) {
       setIsLoadingMore(true)
     } else if (!isPolling) {
@@ -533,6 +563,13 @@ export function Sidebar({ className }: SidebarProps) {
         const totalPages = data.pagination?.total_pages || 1
         setHasMore(pageNum < totalPages)
         setPage(pageNum)
+        if (taskListUnavailableRef.current) {
+          setIsTaskListUnavailable(false)
+        }
+      } else if (response.status === 404) {
+        // Stop retrying when the task history endpoint is unavailable in the current backend.
+        setHasMore(false)
+        setIsTaskListUnavailable(true)
       }
     } catch (error) {
       console.error('Failed to load tasks:', error)
@@ -546,7 +583,12 @@ export function Sidebar({ className }: SidebarProps) {
   useEffect(() => {
     const interval = setInterval(() => {
       // Only poll if window is visible and not already loading
-      if (document.visibilityState === 'visible' && !loadingRef.current.isLoadingTasks && !loadingRef.current.isLoadingMore) {
+      if (
+        document.visibilityState === 'visible' &&
+        !taskListUnavailableRef.current &&
+        !loadingRef.current.isLoadingTasks &&
+        !loadingRef.current.isLoadingMore
+      ) {
         loadTasks(1, false, true)
       }
     }, 30000) // Poll every 30 seconds
@@ -570,7 +612,7 @@ export function Sidebar({ className }: SidebarProps) {
 
   // Monitor task list changes, if content is not enough to fill the container and there is more data, automatically load the next page
   useEffect(() => {
-    if (!navRef.current || !isHistoryExpanded) return
+    if (!navRef.current || !isHistoryExpanded || isTaskListUnavailable) return
 
     const { scrollHeight, clientHeight } = navRef.current
     // If content height is less than or equal to container height (plus a buffer), and there is more data, and not loading
@@ -581,13 +623,13 @@ export function Sidebar({ className }: SidebarProps) {
       }, 100)
       return () => clearTimeout(timer)
     }
-  }, [tasks, hasMore, isLoadingMore, isLoadingTasks, page, loadTasks, isHistoryExpanded])
+  }, [tasks, hasMore, isLoadingMore, isLoadingTasks, page, loadTasks, isHistoryExpanded, isTaskListUnavailable])
 
   useEffect(() => {
-    if (isHistoryExpanded) {
+    if (isHistoryExpanded && !isTaskListUnavailable) {
       loadTasks(1, false)
     }
-  }, [isHistoryExpanded, loadTasks, state.lastTaskUpdate])
+  }, [isHistoryExpanded, isTaskListUnavailable, loadTasks, state.lastTaskUpdate])
 
   // Debounce search query
   useEffect(() => {
@@ -598,17 +640,24 @@ export function Sidebar({ className }: SidebarProps) {
         // Auto-expand when searching
         if (searchQuery && !isHistoryExpanded) {
           setIsHistoryExpanded(true)
-        } else if (isHistoryExpanded) {
+        } else if (isHistoryExpanded && !isTaskListUnavailable) {
           loadTasks(1, false)
         }
       }
     }, 500)
     return () => clearTimeout(timer)
-  }, [searchQuery, loadTasks, isHistoryExpanded])
+  }, [searchQuery, loadTasks, isHistoryExpanded, isTaskListUnavailable])
 
   const handleScroll = (e: React.UIEvent<HTMLElement>) => {
     const { scrollTop, scrollHeight, clientHeight } = e.currentTarget
-    if (isHistoryExpanded && scrollHeight - scrollTop <= clientHeight + 20 && hasMore && !isLoadingMore && !isLoadingTasks) {
+    if (
+      isHistoryExpanded &&
+      !isTaskListUnavailable &&
+      scrollHeight - scrollTop <= clientHeight + 20 &&
+      hasMore &&
+      !isLoadingMore &&
+      !isLoadingTasks
+    ) {
       loadTasks(page + 1, true)
     }
   }

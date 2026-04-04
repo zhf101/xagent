@@ -1,14 +1,6 @@
 from .agent import Agent
 from .chat_message import TaskChatMessage
 from .database import Base, get_db, get_engine, get_session_local
-from .datamake_sql_asset import (
-    DataMakeSqlAsset,
-    DataMakeSqlAssetChunk,
-    DataMakeSqlAssetHarvestJob,
-    DataMakeSqlAssetRun,
-    DataMakeSqlAssetVersion,
-)
-from .datamake_http_resource import DataMakeHttpResource
 from .gdp_http_resource import GdpHttpResource
 from .mcp import MCPServer, UserMCPServer
 from .model import Model
@@ -53,13 +45,7 @@ __all__ = [
     "DAGStepRun",
     "TemplateStats",
     "Text2SQLDatabase",
-    "DataMakeHttpResource",
     "GdpHttpResource",
-    "DataMakeSqlAsset",
-    "DataMakeSqlAssetVersion",
-    "DataMakeSqlAssetRun",
-    "DataMakeSqlAssetChunk",
-    "DataMakeSqlAssetHarvestJob",
     "ToolConfig",
     "ToolUsage",
     "SystemSetting",

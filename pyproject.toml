@@ -1,308 +1,351 @@
+# ==============================================================================
+# 项目基本信息
+# ==============================================================================
 [project]
+# 项目作者列表
 authors = [
   { name = "Jicheng Shi", email = "rogershijicheng@gmail.com" },
   { name = "Xuye Qin", email = "qinxuye@gmail.com" },
 ]
+
+# 项目名称
 name = "xagent"
+
+# 动态版本号配置（从 Git 获取）
 dynamic = ["version"]
+
+# 项目描述
 description = "a powerful agent os with great compatibility"
+
+# 项目许可证
 license = { text = "Xagent Source License" }
+
+# 项目 README 文件
 readme = "README.md"
+
+# Python 版本要求
 requires-python = ">=3.11"
+
+# PyPI 分类器（用于包索引）
 classifiers = [
-  "Development Status :: 1 - Planning",
-  "Operating System :: OS Independent",
-  "Programming Language :: Python :: 3.11",
+  "Development Status :: 1 - Planning",  # 开发状态：规划阶段
+  "Operating System :: OS Independent",  # 操作系统：跨平台
+  "Programming Language :: Python :: 3.11",  # 编程语言：Python 3.11
 ]
+
+# ==============================================================================
+# 必须依赖 (Core Dependencies)
+# ==============================================================================
+# 这些依赖是项目核心功能必需的，pip install -e . 时会自动安装
 dependencies = [
-  "pydantic >= 2.11.7",
-  "langchain-openai >= 0.3.27",
-  "langchain >= 0.3.26",
-  "langchain-community >= 0.3.21",
-  "openai >= 1.50.0",
-#  "anthropic >= 0.84.0",
-#  "google-genai >= 1.65.0",
-#  "xinference-client >= 2.3.0",
-#  "zai-sdk>=0.0.3.2",
-  "numexpr >= 2.11.0",
-  "aiohttp >= 3.12.14",
-  "tqdm >= 4.66.0",
-  "beautifulsoup4 >= 4.12.3",
-  "html2text >= 2025.4.15",
-  "PyYAML >= 6.0.2",
-  "fastapi >= 0.35.0",
-  "uvicorn >= 0.35.0",
-  "websockets>=15.0.1",
-  "httpx >= 0.27.2",
-  "rich >= 14.0.0",
-  "prompt_toolkit >= 3.0.0",
-  "langfuse >= 3.2.1, < 5.0.0",  # Compatible with both v3 and v4
-  "python-dotenv >= 1.0.1",
-  "mcp>=1.12.4",
-  "requests >= 2.32.0",
-  "pillow >= 10.0.0",
-  "lancedb>=0.13.0",
-  "pyarrow>=16.1.0",
-  # Basic document processing (keep pypdf for basic PDF support)
-  "pypdf>=4.0.0",
-  "tiktoken>=0.8.0",
-  # Database ORM and migrations (core for web interface)
-  "sqlalchemy>=2.0.0",
-  "alembic>=1.13.0",
-  "python-jose[cryptography]>=3.3.0",
-  # Utilities
-  "docker>=7.1.0",
-  "json-repair==0.35.0",
-  "jsonschema>=4.25.1",
-  "beartype>=0.18.5",
-  "matplotlib>=3.5.0",
-#  "google-auth-oauthlib>=1.2.0",
-#  "google-api-python-client>=2.111.0",
-  "boxlite>=0.6.0; (sys_platform == 'linux' and platform_machine == 'x86_64') or (sys_platform == 'darwin' and platform_machine == 'arm64')",
-  "filelock>=3.0.0",
-  "cloudpickle>=3.0.0",
-  # Data science libraries (core for RAG and analysis)
-  "pandas>=1.3.0",
-  # Special handling - AI-enhanced document processing
-#  "deepdoc-lib==0.2.0",
-  "aiogram>=3.4.1",
-  "aiohttp-socks>=0.8.4",
-  "lark-oapi>=1.5.3",
+  # ========================================
+  # 核心框架和 LLM 支持
+  # ========================================
+  "pydantic >= 2.11.7",  # 数据验证和设置管理
+  "langchain >= 0.3.26",  # LLM 应用开发框架核心
+  "langchain-community >= 0.3.21",  # LangChain 社区集成
+  "langchain-openai >= 0.3.27",  # OpenAI 模型集成
+  "openai >= 1.50.0",  # OpenAI API 客户端
+  "tiktoken >= 0.8.0",  # OpenAI 的分词器，用于计算 token 数量
+
+  # ========================================
+  # Web 框架和 API
+  # ========================================
+  "fastapi >= 0.35.0",  # 现代 Web 框架，用于构建 API
+  "uvicorn >= 0.35.0",  # ASGI 服务器，用于运行 FastAPI
+  "websockets >= 15.0.1",  # WebSocket 支持，用于实时通信
+  "python-jose[cryptography] >= 3.3.0",  # JWT 令牌处理，用于身份验证
+
+  # ========================================
+  # HTTP 客户端和异步支持
+  # ========================================
+  "httpx >= 0.27.2",  # 现代 HTTP 客户端，支持同步和异步
+  "aiohttp >= 3.12.14",  # 异步 HTTP 客户端/服务器
+  "aiohttp-socks >= 0.8.4",  # aiohttp 的 SOCKS 代理支持
+  "requests >= 2.32.0",  # 流行的 HTTP 库（同步）
+
+  # ========================================
+  # 向量数据库和数据存储
+  # ========================================
+  "lancedb >= 0.13.0",  # 向量数据库，用于 RAG 和语义搜索
+  "pyarrow >= 16.1.0",  # Apache Arrow，用于高效数据处理
+  "sqlalchemy >= 2.0.0",  # SQL ORM 框架，用于数据库操作
+  "alembic >= 1.13.0",  # 数据库迁移工具，配合 SQLAlchemy 使用
+
+  # ========================================
+  # 文档处理（基础）
+  # ========================================
+  "pypdf >= 4.0.0",  # PDF 解析库，基础功能
+  "pillow >= 10.0.0",  # Python 图像处理库
+  "beautifulsoup4 >= 4.12.3",  # HTML/XML 解析库
+  "html2text >= 2025.4.15",  # HTML 转 Markdown 文本
+
+  # ========================================
+  # 工具库
+  # ========================================
+  "python-dotenv >= 1.0.1",  # 从 .env 文件加载环境变量
+  "PyYAML >= 6.0.2",  # YAML 配置文件解析
+  "tqdm >= 4.66.0",  # 进度条显示库
+  "rich >= 14.0.0",  # 终端富文本输出，用于美化日志
+  "prompt_toolkit >= 3.0.0",  # 命令行交互工具
+  "mcp >= 1.12.4",  # Model Context Protocol 协议支持
+
+  # ========================================
+  # JSON 处理和验证
+  # ========================================
+  "json-repair == 0.35.0",  # JSON 修复工具，用于处理格式错误的 JSON
+  "jsonschema >= 4.25.1",  # JSON Schema 验证
+
+  # ========================================
+  # 数学和数据科学基础
+  # ========================================
+  "pandas >= 1.3.0",  # 数据分析和处理库
+  "numexpr >= 2.11.0",  # 快速数值表达式计算
+
+  # ========================================
+  # 代码质量和类型检查
+  # ========================================
+  "beartype >= 0.18.5",  # 快速运行时类型检查
+
+  # ========================================
+  # 日志和监控
+  # ========================================
+  "langfuse >= 3.2.1, < 5.0.0",  # LLM 应用可观测性平台，用于追踪和监控
+
+  # ========================================
+  # 进程和并发
+  # ========================================
+  "filelock >= 3.0.0",  # 文件锁，用于进程间同步
+  "cloudpickle >= 3.0.0",  # Python 对象序列化，用于分布式计算
+
+  # ========================================
+  # Docker 支持
+  # ========================================
+  "docker >= 7.1.0",  # Docker SDK for Python，用于容器管理
+
+  # ========================================
+  # 可视化
+  # ========================================
+  "matplotlib >= 3.5.0",  # 数据可视化库
+
+  # ========================================
+  # 第三方集成
+  # ========================================
+  "aiogram >= 3.4.1",  # Telegram Bot API 封装
+  "lark-oapi >= 1.5.3",  # 飞书（Lark）开放平台 SDK
+
+  # ========================================
+  # 沙箱环境（仅特定平台）
+  # ========================================
+  # 条件依赖：仅在 Linux x86_64 或 macOS ARM64 平台安装
+  "boxlite >= 0.6.0; (sys_platform == 'linux' and platform_machine == 'x86_64') or (sys_platform == 'darwin' and platform_machine == 'arm64')",
+
+  # ========================================
+  # 数据库驱动（支持多种数据库）
+  # ========================================
+  # MySQL 驱动
+  "pymysql >= 1.1.0",  # 纯 Python MySQL 客户端
+  "mysql-connector-python >= 8.0.0",  # 官方 MySQL Connector/Python
+
+  # PostgreSQL 驱动
+  "psycopg2-binary >= 2.9.0",  # PostgreSQL 适配器（预编译版本）
+  "pg8000 >= 1.30.0",  # 纯 Python PostgreSQL 客户端
+
+  # NoSQL 数据库驱动
+  "pymongo >= 4.0.0",  # MongoDB 官方驱动
+  "redis >= 5.0.0",  # Redis 客户端
+
+  # 商业数据库驱动
+  "oracledb >= 2.0.0",  # Oracle 数据库驱动（cx_Oracle 的现代替代）
+  "pymssql >= 2.2.0",  # SQL Server 数据库驱动
+
+  # OLAP/分析型数据库驱动
+  "clickhouse-connect >= 0.7.0",  # ClickHouse 客户端
+  "duckdb >= 1.0.0, < 2.0",  # DuckDB 嵌入式分析数据库
+  "duckdb-engine >= 0.10.0, < 1.0",  # DuckDB 的 SQLAlchemy 引擎
+
+  # 国产数据库驱动
+  "dmPython >= 2.0.0",  # 达梦数据库驱动
 ]
 
+# ==============================================================================
+# 可选依赖 (Optional Dependencies)
+# ==============================================================================
+# 这些依赖用于扩展功能，按需安装
+# 安装方式：pip install -e ".[group_name]"
 [project.optional-dependencies]
-# ==============================================================================
-# 文档处理
-# ==============================================================================
+# ========================================
+# 文档处理扩展
+# ========================================
 document-processing = [
-  "pdfplumber>=0.10.0",
-  "unstructured>=0.15.0",
-  "pymupdf>=1.23.0,<1.27.0",
-  "python-docx>=1.1.0",
-  "openpyxl>=3.1.0",
-  "python-pptx>=0.6.0",
-  "pypdf2>=3.0.1",
+  "pdfplumber >= 0.10.0",  # PDF 解析，支持表格和布局分析
+  "unstructured >= 0.15.0",  # 非结构化文档解析（PDF、DOCX、HTML 等）
+  "pymupdf >= 1.23.0, < 1.27.0",  # MuPDF 绑定，高性能 PDF 处理
+  "python-docx >= 1.1.0",  # Microsoft Word 文档处理
+  "openpyxl >= 3.1.0",  # Microsoft Excel 文档处理
+  "python-pptx >= 0.6.0",  # Microsoft PowerPoint 文档处理
+  "pypdf2 >= 3.0.1",  # PDF2 库，PDF 解析的另一种选择
 ]
 
-# AI-related document processing
-ai-document = ["docling>=2.68.0"]
-
-# ==============================================================================
-# 数据库驱动 - 按类型分组
-# ==============================================================================
-
-# 开源数据库
-database-mysql = [
-  "pymysql>=1.1.0",
-  "mysql-connector-python>=8.0.0",
-]
-database-postgresql = [
-  "psycopg2-binary>=2.9.0",
-  "pg8000>=1.30.0",  # Pure Python PostgreSQL driver
-]
-database-sqlite = []  # 内置，无需额外依赖
-
-# NoSQL 数据库
-database-mongodb = ["pymongo>=4.0.0"]
-database-redis = ["redis>=5.0.0"]
-
-# 商业数据库
-database-oracle = [
-  "oracledb>=2.0.0",  # 推荐使用 oracledb (cx_Oracle 的现代替代)
-]
-database-sqlserver = [
-  "pymssql>=2.2.0",
+# ========================================
+# AI 文档处理
+# ========================================
+ai-document = [
+  "docling >= 2.68.0",  # Adobe 的 AI 文档理解工具包
 ]
 
-# OLAP / 分布式数据库
-database-clickhouse = ["clickhouse-connect>=0.7.0"]
-database-tidb = []  # 兼容 MySQL，使用 pymysql
-
-# 国产数据库
-database-dameng = ["dmPython>=2.0.0"]  # 达梦
-database-kingbase = [
-  "psycopg2-binary>=2.9.0",  # 人大金仓兼容 PostgreSQL
-]
-database-gaussdb = [
-  "psycopg2-binary>=2.9.0",  # 华为 GaussDB 兼容 PostgreSQL
-]
-database-oceanbase = [
-  "pymysql>=1.1.0",  # 蚂蚁 OceanBase 兼容 MySQL
-]
-database-vastbase = [
-  "psycopg2-binary>=2.9.0",  # 海量 Vastbase 兼容 PostgreSQL
-]
-database-highgo = [
-  "psycopg2-binary>=2.9.0",  # 瀚高 HighGo 兼容 PostgreSQL
-]
-database-goldendb = [
-  "pymysql>=1.1.0",  # 中兴 GoldenDB 兼容 MySQL
-]
-database-polardb = [
-  "pymysql>=1.1.0",  # 阿里云 PolarDB 兼容 MySQL
+# ========================================
+# 浏览器自动化
+# ========================================
+browser = [
+  "playwright >= 1.40.0",  # 浏览器自动化工具，用于 Web 浏览和抓取
 ]
 
-# 国产数据库合集
-database-domestic = [
-  "dmPython>=2.0.0",  # 达梦
-  "psycopg2-binary>=2.9.0",  # 金仓/GaussDB/Vastbase/HighGo
-  "pymysql>=1.1.0",  # OceanBase/GoldenDB/PolarDB
+# ========================================
+# 替代向量数据库
+# ========================================
+vector-alternatives = [
+  "chromadb",  # 开源向量数据库，替代 LanceDB
+  "pymilvus >= 2.6.9, < 3.0.0",  # Milvus 向量数据库客户端
 ]
 
-# 所有数据库驱动
-database-all = [
-  # 开源数据库
-  "pymysql>=1.1.0",
-  "mysql-connector-python>=8.0.0",
-  "psycopg2-binary>=2.9.0",
-  "pg8000>=1.30.0",
-  # NoSQL
-  "pymongo>=4.0.0",
-  "redis>=5.0.0",
-  # 商业数据库
-  "oracledb>=2.0.0",
-  "pymssql>=2.2.0",
-  # OLAP
-  "clickhouse-connect>=0.7.0",
-  # 国产数据库
-  "dmPython>=2.0.0",
-]
-
-# 分析型数据库
-duckdb = ["duckdb>=1.0.0,<2.0", "duckdb-engine>=0.10.0,<1.0"]
-
-# ==============================================================================
-# 其他可选功能
-# ==============================================================================
-
-# Browser automation
-browser = ["playwright>=1.40.0"]
-
-# Alternative vector databases (optional alternatives to LanceDB)
-chromadb = ["chromadb"]
-milvus = ["pymilvus>=2.6.9,<3.0.0"]
-
-# ==============================================================================
-# 完整安装 - 一套命令安装所有依赖
-# pip install -e ".[all]"
-# ==============================================================================
+# ========================================
+# 完整安装（包含所有可选依赖）
+# ========================================
 all = [
-  # 文档处理
-  "pdfplumber>=0.10.0",
-  "unstructured>=0.15.0",
-  "pymupdf>=1.23.0,<1.27.0",
-  "python-docx>=1.1.0",
-  "openpyxl>=3.1.0",
-  "python-pptx>=0.6.0",
-  "pypdf2>=3.0.1",
-  "docling>=2.68.0",
-  # 开源数据库
-  "pymysql>=1.1.0",
-  "mysql-connector-python>=8.0.0",
-  "psycopg2-binary>=2.9.0",
-  "pg8000>=1.30.0",
-  # NoSQL
-  "pymongo>=4.0.0",
-  "redis>=5.0.0",
-  # 商业数据库
-  "oracledb>=2.0.0",
-  "pymssql>=2.2.0",
-  # OLAP
-  "clickhouse-connect>=0.7.0",
-  "duckdb>=1.0.0,<2.0",
-  "duckdb-engine>=0.10.0,<1.0",
-  # 国产数据库
-  "dmPython>=2.0.0",
-  # 向量数据库
+  "pdfplumber >= 0.10.0",
+  "unstructured >= 0.15.0",
+  "pymupdf >= 1.23.0, < 1.27.0",
+  "python-docx >= 1.1.0",
+  "openpyxl >= 3.1.0",
+  "python-pptx >= 0.6.0",
+  "pypdf2 >= 3.0.1",
+  "docling >= 2.68.0",
   "chromadb",
-  "pymilvus>=2.6.9,<3.0.0",
-  # 浏览器自动化
-  "playwright>=1.40.0",
+  "pymilvus >= 2.6.9, < 3.0.0",
+  "playwright >= 1.40.0",
 ]
 
+# ==============================================================================
+# 测试依赖 (Testing Dependencies)
+# ==============================================================================
+# 测试依赖分组，使用 uv 或 pip >= 23.2 安装：uv add --group test <package>
 [dependency-groups]
-# Development tools (linting, formatting)
-dev = [
-  "pre-commit>=4.2.0",
-  "ruff>=0.12.3",
-  "flake8>=7.3.0",
-  "mypy>=1.16.1",
-  { include-group = "test" },
-  { include-group = "static-type-check" },
-]
-
-# Testing dependencies
 test = [
-  "pytest>=8.0",
-  "pytest-mock>=3.14.1",
-  "pytest-cov>=6.2.1",
-  "pytest-asyncio>=0.24.0",
-  "pytest-xdist>=3.0",
-  "pytest-dotenv>=0.5.2",
-  "pytest-timeout>=2.4.0",
-  "pytest-socket>=0.7.0",
-  "chromadb",
-  "pymilvus>=2.6.9,<3.0.0",
-  "copilotkit==0.1.69",
-  "openpyxl>=3.1.5",
+  # ========================================
+  # 核心测试框架
+  # ========================================
+  "pytest >= 8.0",  # Python 测试框架
+  "pytest-mock >= 3.14.1",  # pytest 的 mock 对象支持
+  "pytest-asyncio >= 0.24.0",  # 异步测试支持
+  "pytest-cov >= 6.2.1",  # 测试覆盖率工具
+  "pytest-xdist >= 3.0",  # 并行测试执行
+  "pytest-dotenv >= 0.5.2",  # 从 .env 加载测试环境变量
+  "pytest-timeout >= 2.4.0",  # 测试超时控制
+  "pytest-socket >= 0.7.0",  # 网络套接字测试控制
+
+  # ========================================
+  # 测试用到的可选功能
+  # ========================================
+  "copilotkit == 0.1.69",  # AI Copilot 集成测试
 ]
 
-# Static type checking
-static-type-check = [
-  "types-PyYAML>=6.0",
-  "types-requests>=2.0.0",
-  "types-openpyxl>=3.1.5",
-  "types-setuptools>=69.0.0",
-  "types-docker>=7.1.0.20251009",
-  "types-redis>=4.0.0",
-  "types-pymysql>=1.0.0",
+# ==============================================================================
+# 开发依赖 (Development Dependencies)
+# ==============================================================================
+# 开发依赖分组，用于代码质量检查和格式化
+dev = [
+  # ========================================
+  # 代码格式化和检查
+  # ========================================
+  "pre-commit >= 4.2.0",  # Git 钩子管理，在提交前自动运行检查
+  "ruff >= 0.12.3",  # 快速 Python linter 和 formatter
+  "flake8 >= 7.3.0",  # Python 代码风格检查工具
+
+  # ========================================
+  # 类型检查
+  # ========================================
+  "mypy >= 1.16.1",  # Python 静态类型检查器
+  "types-PyYAML >= 6.0",  # PyYAML 的类型存根
+  "types-requests >= 2.0.0",  # requests 的类型存根
+  "types-openpyxl >= 3.1.5",  # openpyxl 的类型存根
+  "types-setuptools >= 69.0.0",  # setuptools 的类型存根
+  "types-docker >= 7.1.0.20251009",  # docker 的类型存根
+  "types-redis >= 4.0.0",  # redis 的类型存根
+  "types-pymysql >= 1.0.0",  # pymysql 的类型存根
+
+  # ========================================
+  # 包含测试依赖
+  # ========================================
+  { include-group = "test" },  # 自动包含 test 分组的所有依赖
 ]
 
+# ==============================================================================
+# 命令行脚本
+# ==============================================================================
 [project.scripts]
-xagent-web = "xagent.web.__main__:main"
+# 定义可执行的命令行脚本
+xagent-web = "xagent.web.__main__:main"  # xagent-web 命令调用 web 模块的主函数
 
-
+# ==============================================================================
+# 构建系统配置
+# ==============================================================================
 [build-system]
-requires = ["hatchling", "hatch-vcs"]
-build-backend = "hatchling.build"
+# 构建系统要求
+requires = ["hatchling", "hatch-vcs"]  # 使用 hatchling 作为构建后端，hatch-vcs 用于版本管理
+build-backend = "hatchling.build"  # 构建后端
 
+# ==============================================================================
+# Hatch 版本配置
+# ==============================================================================
 [tool.hatch.version]
-source = "vcs"
+source = "vcs"  # 版本号从版本控制系统（Git）自动获取
 
+# ==============================================================================
+# pytest 配置
+# ==============================================================================
 [tool.pytest.ini_options]
+# pytest 运行选项
+addopts = "-ra -q"  # -ra: 显示测试摘要，-q: 安静模式
+testpaths = ["tests"]  # 测试文件搜索路径
+asyncio_mode = "auto"  # 异步测试模式：自动检测
 
-
-addopts = "-ra -q"
-testpaths = ["tests"]
-asyncio_mode = "auto"
+# pytest 标记（markers）
 markers = [
-  "integration: marks tests as integration tests",
-  "slow: marks tests as slow running tests",
-  "postgresql: marks tests that require PostgreSQL database",
+  "integration: marks tests as integration tests",  # 集成测试标记
+  "slow: marks tests as slow running tests",  # 慢速测试标记
+  "postgresql: marks tests that require PostgreSQL database",  # PostgreSQL 测试标记
 ]
 
+# ==============================================================================
+# mypy 类型检查配置
+# ==============================================================================
 [tool.mypy]
-mypy_path = "src:stubs"
-disallow_any_unimported = true
-no_implicit_optional = true
-check_untyped_defs = true
-exclude = ["src/xagent/web/uploads/", "src/xagent/migrations/"]
-warn_return_any = true
-show_error_codes = true
-warn_unused_ignores = true
-python_version = "3.11"
-disallow_untyped_defs = true
-plugins = ["pydantic.mypy"]
-namespace_packages = true
-explicit_package_bases = true
+# mypy 基本配置
+mypy_path = "src:stubs"  # 类型搜索路径
+disallow_any_unimported = true  # 不允许导入时使用 any
+no_implicit_optional = true  # 不允许隐式 Optional
+check_untyped_defs = true  # 检查无类型标注的函数定义
+exclude = ["src/xagent/web/uploads/", "src/xagent/migrations/"]  # 排除的类型检查路径
+warn_return_any = true  # 警告返回 any 类型
+show_error_codes = true  # 显示错误代码
+warn_unused_ignores = true  # 警告未使用的忽略注释
+python_version = "3.11"  # 目标 Python 版本
+disallow_untyped_defs = true  # 不允许无类型标注的函数定义
+plugins = ["pydantic.mypy"]  # 启用 pydantic 插件
+namespace_packages = true  # 支持命名空间包
+explicit_package_bases = true  # 显式指定包基础路径
+
+# mypy 模块覆盖配置：忽略缺失导入
 [[tool.mypy.overrides]]
 module = [
+  # 第三方库（没有类型存根）
   "docx",
   "pptx",
   "pptx.*",
   "pdfplumber",
   "unstructured.*",
-  "fitz",
+  "fitz",  # PyMuPDF
   "pandas",
   "matplotlib",
   "matplotlib.pyplot",
@@ -311,7 +354,7 @@ module = [
   "json_repair",
   "langchain_core.*",
   "langchain.*",
-  "jose",
+  "jose",  # python-jose
   "alembic",
   "alembic.*",
   "xinference",
@@ -321,7 +364,7 @@ module = [
   "aiogram.*",
   "lark_oapi",
   "lark_oapi.*",
-  # 数据库驱动
+  # 数据库驱动（没有类型存根）
   "pymysql",
   "mysql.*",
   "psycopg2",
@@ -339,16 +382,18 @@ module = [
   "duckdb",
   "duckdb.*",
 ]
-ignore_missing_imports = true
+ignore_missing_imports = true  # 忽略缺失的导入错误
 
+# mypy 模块覆盖配置：忽略特定模块的错误
 [[tool.mypy.overrides]]
 module = ["core.tools.file_tool"]
-ignore_errors = true
+ignore_errors = true  # 完全忽略此模块的类型检查错误
 
 [[tool.mypy.overrides]]
 module = ["xagent.core.tools.core.vision_tool"]
-disable_error_code = ["assignment"]
+disable_error_code = ["assignment"]  # 禁用赋值错误代码
 
+# mypy 模块覆盖配置：宽松类型检查
 [[tool.mypy.overrides]]
 module = [
   "xagent.core.model.chat.basic.xinference",
@@ -359,18 +404,23 @@ module = [
   "xagent.web.channels.telegram.bot",
   "xagent.web.channels.telegram.handler",
 ]
-disallow_any_unimported = false
-warn_unused_ignores = false
+disallow_any_unimported = false  # 允许导入时使用 any
+warn_unused_ignores = false  # 不警告未使用的忽略注释
 
+# ==============================================================================
+# Hatch 构建配置
+# ==============================================================================
 [tool.hatch.build.targets.wheel]
-packages = ["src/xagent"]
-include = [
-  "src/xagent/skills/builtin/**",
-  "src/xagent/templates/built_in/**",
-  "src/xagent/web/README.md",
+# Wheel 包构建配置
+packages = ["src/xagent"]  # 包含的包目录
+include = [  # 包含的额外文件
+  "src/xagent/skills/builtin/**",  # 内置技能目录
+  "src/xagent/templates/built_in/**",  # 内置模板目录
+  "src/xagent/web/README.md",  # Web 模块 README
 ]
 
 [tool.hatch.build.targets.sdist]
+# 源码分发包配置
 include = [
   "src/xagent/skills/builtin/**",
   "src/xagent/templates/built_in/**",
@@ -378,10 +428,13 @@ include = [
 ]
 
 [tool.hatch.metadata]
-allow-direct-references = true
+allow-direct-references = true  # 允许直接引用 Git 仓库等
 
+# ==============================================================================
+# isort 导入排序配置
+# ==============================================================================
 [tool.isort]
-profile = "black"
-line_length = 88
-multi_line_output = 3
-include_trailing_comma = true
+profile = "black"  # 使用 Black 兼容的配置
+line_length = 88  # 行长度限制
+multi_line_output = 3  # 多行导入样式
+include_trailing_comma = true  # 多行导入末尾添加逗号

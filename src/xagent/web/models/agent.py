@@ -32,46 +32,88 @@ class Agent(Base):  # type: ignore
 
     __tablename__ = "agents"
 
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-    name = Column(String(200), nullable=False)
-    description = Column(Text, nullable=True)
-    instructions = Column(Text, nullable=True)  # System prompt/instructions
+    id = Column(Integer, primary_key=True, index=True, comment="代理ID")
+    user_id = Column(
+        Integer,
+        ForeignKey("users.id"),
+        nullable=False,
+        index=True,
+        comment="创建用户ID",
+    )
+    name = Column(
+        String(200), nullable=False, comment="代理名称"
+    )
+    description = Column(Text, nullable=True, comment="代理描述")
+    instructions = Column(
+        Text, nullable=True, comment="系统提示词/指令"
+    )
 
     # Configuration
     execution_mode = Column(
-        String(20), nullable=False, default="react"
-    )  # Execution mode: simple, react, graph
+        String(20),
+        nullable=False,
+        default="react",
+        comment="执行模式（simple/react/graph）",
+    )
     models = Column(
-        JSON, nullable=True
-    )  # Model config: {general: id, small_fast: id, visual: id, compact: id}
-    knowledge_bases = Column(JSON, nullable=True, default=list)  # List of KB names
-    skills = Column(JSON, nullable=True, default=list)  # List of skill names
+        JSON,
+        nullable=True,
+        comment="模型配置（JSON格式）：{general: id, small_fast: id, visual: id, compact: id}",
+    )
+    knowledge_bases = Column(
+        JSON,
+        nullable=True,
+        default=list,
+        comment="知识库名称列表（JSON格式）",
+    )
+    skills = Column(
+        JSON,
+        nullable=True,
+        default=list,
+        comment="技能名称列表（JSON格式）",
+    )
     tool_categories = Column(
-        JSON, nullable=True, default=list
-    )  # List of tool categories
+        JSON,
+        nullable=True,
+        default=list,
+        comment="工具类别列表（JSON格式）",
+    )
     suggested_prompts = Column(
-        JSON, nullable=True, default=list
-    )  # List of suggested prompt examples for users
+        JSON,
+        nullable=True,
+        default=list,
+        comment="建议提示词示例列表（JSON格式）",
+    )
 
     # Visual
-    logo_url = Column(String(500), nullable=True)
+    logo_url = Column(
+        String(500), nullable=True, comment="Logo URL"
+    )
 
     # Status
     status: AgentStatus = Column(
         SQLEnum(AgentStatus, values_callable=lambda obj: [e.value for e in obj]),
         default=AgentStatus.DRAFT,
         nullable=False,
+        comment="代理状态（draft/published/archived）",
     )  # type: ignore[assignment]
-    published_at = Column(DateTime(timezone=True), nullable=True)
+    published_at = Column(
+        DateTime(timezone=True), nullable=True, comment="发布时间"
+    )
 
     # Timestamps
-    created_at = Column(DateTime(timezone=True), default=datetime.now, nullable=False)
+    created_at = Column(
+        DateTime(timezone=True),
+        default=datetime.now,
+        nullable=False,
+        comment="创建时间",
+    )
     updated_at = Column(
         DateTime(timezone=True),
         default=datetime.now,
         onupdate=datetime.now,
         nullable=False,
+        comment="更新时间",
     )
 
     # Relationships

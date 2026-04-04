@@ -287,7 +287,10 @@ export const themes: Record<string, Theme> = {
 };
 
 export function getThemeFromEnv(): string {
-  return process.env.NEXT_PUBLIC_THEME || 'light';
+  if (typeof process !== 'undefined' && process.env && process.env.NEXT_PUBLIC_THEME) {
+    return process.env.NEXT_PUBLIC_THEME;
+  }
+  return 'light';
 }
 
 export function applyTheme(themeName: string): void {

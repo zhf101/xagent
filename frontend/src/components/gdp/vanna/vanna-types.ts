@@ -26,7 +26,6 @@ export interface Text2SqlDatabaseRecord {
   table_count?: number | null
   last_connected_at?: string | null
   error_message?: string | null
-  linked_asset_count?: number | null
   created_at: string
   updated_at: string
 }

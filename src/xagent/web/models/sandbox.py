@@ -15,22 +15,37 @@ class SandboxInfo(Base):  # type: ignore[no-any-unimported]
         UniqueConstraint("name", "sandbox_type", name="uix_name_sandbox_type"),
     )
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
+    id = Column(
+        Integer, primary_key=True, autoincrement=True, comment="沙箱ID"
+    )
     sandbox_type = Column(
-        String(50), nullable=False, index=True
-    )  # boxlite, docker, etc.
-    name = Column(String(255), nullable=False, index=True)
-    state = Column(String(50), nullable=False)
+        String(50),
+        nullable=False,
+        index=True,
+        comment="沙箱类型（boxlite/docker等）",
+    )
+    name = Column(
+        String(255), nullable=False, index=True, comment="沙箱名称"
+    )
+    state = Column(
+        String(50), nullable=False, comment="沙箱状态"
+    )
 
     # Template stored as JSON
     template = Column(
-        Text
-    )  # JSON string: {"type": "...", "image": "...", "snapshot_id": "..."}
+        Text,
+        comment="模板配置（JSON字符串）：{type, image, snapshot_id}",
+    )
 
     # Config stored as JSON
     config = Column(
-        Text
-    )  # JSON string: {"cpus": ..., "memory": ..., "env": {...}, "volumes": [...], ...}
+        Text,
+        comment="配置信息（JSON字符串）：{cpus, memory, env, volumes, ...}",
+    )
 
-    created_at = Column(DateTime, default=func.now())
-    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+    created_at = Column(
+        DateTime, default=func.now(), comment="创建时间"
+    )
+    updated_at = Column(
+        DateTime, default=func.now(), onupdate=func.now(), comment="更新时间"
+    )

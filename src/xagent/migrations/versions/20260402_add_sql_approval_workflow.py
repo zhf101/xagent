@@ -5,7 +5,7 @@ from alembic import op
 from sqlalchemy.engine.reflection import Inspector
 
 revision: str = "20260402_add_sql_approval_workflow"
-down_revision: Union[str, None] = "20260404_add_datamake_http_resources"
+down_revision: Union[str, None] = "20260401_expand_text2sql_database_types"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

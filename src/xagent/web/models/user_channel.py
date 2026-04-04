@@ -25,17 +25,43 @@ class UserChannel(Base):  # type: ignore[no-any-unimported]
 
     __tablename__ = "user_channels"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True, index=True, comment="用户渠道ID")
     user_id = Column(
-        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        comment="用户ID",
     )
-    channel_type = Column(String(50), nullable=False)  # e.g. "telegram"
-    channel_name = Column(String(100), nullable=False)  # User-friendly name
-    _config = Column("config", JSON, nullable=False)  # e.g. {"bot_token": "..."}
-    is_active = Column(Boolean, default=True, nullable=False)
+    channel_type = Column(
+        String(50),
+        nullable=False,
+        comment="渠道类型（如telegram）",
+    )
+    channel_name = Column(
+        String(100),
+        nullable=False,
+        comment="渠道名称（用户友好）",
+    )
+    _config = Column(
+        "config",
+        JSON,
+        nullable=False,
+        comment="渠道配置（JSON格式，如{bot_token: ...}）",
+    )
+    is_active = Column(
+        Boolean, default=True, nullable=False, comment="是否激活"
+    )
 
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        comment="创建时间",
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        onupdate=func.now(),
+        comment="更新时间",
+    )
 
     # Relationships
     user = relationship("User", back_populates="channels")

@@ -300,7 +300,7 @@ export function GdpHttpConfigDrawer({ open, onOpenChange, onSaved, assetId }: Gd
                           <div className="space-y-2">
                             <Label>归属系统 (System Short)</Label>
                             <Input 
-                              placeholder="e.g. datamake" 
+                              placeholder="e.g. crm" 
                               value={payload.resource.system_short}
                               onChange={e => updateField('resource', 'system_short', e.target.value)}
                             />

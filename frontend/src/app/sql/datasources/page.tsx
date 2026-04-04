@@ -94,7 +94,7 @@ export default function SqlDataSourcesPage() {
           <div className="p-2 bg-indigo-500 rounded-lg shadow-sm">
             <Database className="w-5 h-5 text-white" />
           </div>
-          <h1 className="text-xl font-bold tracking-tight">SQL 数据源资产</h1>
+          <h1 className="text-xl font-bold tracking-tight">SQL 数据源</h1>
         </div>
         <div className="flex items-center gap-4">
           <Button variant="outline" onClick={loadDatabases}>
@@ -113,7 +113,7 @@ export default function SqlDataSourcesPage() {
           <div className="mb-6 flex items-center justify-between">
             <div>
               <h2 className="text-lg font-bold text-foreground">数据源管理</h2>
-              <p className="text-muted-foreground text-sm">统一管理结构化数据库连接，为上层智能引擎提供可查询的受控资产。</p>
+              <p className="text-muted-foreground text-sm">统一管理结构化数据库连接并查看基础连通状态。</p>
             </div>
             <div className="w-72">
               <SearchInput 
@@ -204,7 +204,7 @@ export default function SqlDataSourcesPage() {
         </div>
       </main>
 
-      <DatabaseFormDialog 
+      <DatabaseFormDialog
         open={isFormOpen}
         onOpenChange={setIsFormOpen}
         databaseId={editingId}

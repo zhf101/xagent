@@ -14,20 +14,46 @@ from .database import Base
 
 
 class User(Base):  # type: ignore
-    """User model"""
+    """用户模型"""
 
     __tablename__ = "users"
 
-    id = Column(Integer, primary_key=True, index=True)
-    username = Column(String(50), unique=True, index=True, nullable=False)
-    password_hash = Column(String(255), nullable=False)
-    is_admin = Column(Boolean, default=False, nullable=False)  # Admin role flag
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    id = Column(Integer, primary_key=True, index=True, comment="用户ID")
+    username = Column(
+        String(50),
+        unique=True,
+        index=True,
+        nullable=False,
+        comment="用户名，唯一标识",
     )
-    refresh_token = Column(String(255), nullable=True)
-    refresh_token_expires_at = Column(DateTime(timezone=True), nullable=True)
+    password_hash = Column(
+        String(255), nullable=False, comment="密码哈希值"
+    )
+    is_admin = Column(
+        Boolean,
+        default=False,
+        nullable=False,
+        comment="管理员权限标志",
+    )
+    created_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        comment="创建时间",
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        comment="更新时间",
+    )
+    refresh_token = Column(
+        String(255), nullable=True, comment="刷新令牌"
+    )
+    refresh_token_expires_at = Column(
+        DateTime(timezone=True),
+        nullable=True,
+        comment="刷新令牌过期时间",
+    )
 
     # Relationships
     tasks = relationship("Task", back_populates="user")
@@ -72,32 +98,60 @@ class User(Base):  # type: ignore
 
 
 class UserModel(Base):  # type: ignore
-    """User-Model relationship table for model ownership and sharing"""
+    """用户-模型关联表，用于模型所有权和共享"""
 
     __tablename__ = "user_models"
-    __table_args__ = (UniqueConstraint("user_id", "model_id", name="uq_user_model"),)
+    __table_args__ = (
+        UniqueConstraint("user_id", "model_id", name="uq_user_model"),
+    )
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True, index=True, comment="主键ID")
     user_id = Column(
-        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        comment="用户ID",
     )
     model_id = Column(
-        Integer, ForeignKey("models.id", ondelete="CASCADE"), nullable=False
+        Integer,
+        ForeignKey("models.id", ondelete="CASCADE"),
+        nullable=False,
+        comment="模型ID",
     )
     is_owner = Column(
-        Boolean, default=False, nullable=False
-    )  # True if user created the model
+        Boolean,
+        default=False,
+        nullable=False,
+        comment="是否为模型创建者",
+    )
     can_edit = Column(
-        Boolean, default=False, nullable=False
-    )  # True if user can edit the model
+        Boolean,
+        default=False,
+        nullable=False,
+        comment="是否可编辑模型",
+    )
     can_delete = Column(
-        Boolean, default=False, nullable=False
-    )  # True if user can delete the model
+        Boolean,
+        default=False,
+        nullable=False,
+        comment="是否可删除模型",
+    )
     is_shared = Column(
-        Boolean, default=False, nullable=False
-    )  # True if model is shared by admin
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+        Boolean,
+        default=False,
+        nullable=False,
+        comment="是否由管理员共享",
+    )
+    created_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        comment="创建时间",
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        onupdate=func.now(),
+        comment="更新时间",
+    )
 
     # Relationships
     user = relationship("User", back_populates="user_models")
@@ -108,25 +162,41 @@ class UserModel(Base):  # type: ignore
 
 
 class UserDefaultModel(Base):  # type: ignore
-    """User default model configurations"""
+    """用户默认模型配置"""
 
     __tablename__ = "user_default_models"
     __table_args__ = (
         UniqueConstraint("user_id", "config_type", name="uq_user_default_model"),
     )
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True, index=True, comment="主键ID")
     user_id = Column(
-        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        comment="用户ID",
     )
     model_id = Column(
-        Integer, ForeignKey("models.id", ondelete="CASCADE"), nullable=False
+        Integer,
+        ForeignKey("models.id", ondelete="CASCADE"),
+        nullable=False,
+        comment="模型ID",
     )
     config_type = Column(
-        String(50), nullable=False
-    )  # 'general', 'small_fast', 'visual', 'compact', 'embedding'
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+        String(50),
+        nullable=False,
+        comment="配置类型：general/small_fast/visual/compact/embedding",
+    )
+    created_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        comment="创建时间",
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        onupdate=func.now(),
+        comment="更新时间",
+    )
 
     # Relationships
     user = relationship("User", back_populates="user_default_models")

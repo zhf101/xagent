@@ -61,14 +61,6 @@ def init_db(db_url: str | None = None) -> None:
         UserModel,
     )
     from .agent import Agent  # noqa: F401
-    from .datamake_http_resource import DataMakeHttpResource  # noqa: F401
-    from .datamake_sql_asset import (  # noqa: F401
-        DataMakeSqlAsset,
-        DataMakeSqlAssetChunk,
-        DataMakeSqlAssetHarvestJob,
-        DataMakeSqlAssetRun,
-        DataMakeSqlAssetVersion,
-    )
     from .sandbox import SandboxInfo  # noqa: F401
     from .gdp_http_resource import GdpHttpResource  # noqa: F401
     from .text2sql import Text2SQLDatabase  # noqa: F401

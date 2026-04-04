@@ -15,23 +15,52 @@ class UserOAuth(Base):  # type: ignore[no-any-unimported]
         ),
     )
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True, index=True, comment="用户OAuth账号ID")
     user_id = Column(
-        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        comment="用户ID",
     )
-    provider = Column(String(50), nullable=False)  # e.g. "google-drive"
-    access_token = Column(String, nullable=False)
-    refresh_token = Column(String, nullable=True)
-    expires_at = Column(DateTime(timezone=True), nullable=True)
-    token_type = Column(String(50), nullable=True)
-    scope = Column(String, nullable=True)
+    provider = Column(
+        String(50),
+        nullable=False,
+        comment="提供商（如google-drive/github）",
+    )
+    access_token = Column(
+        String, nullable=False, comment="访问令牌"
+    )
+    refresh_token = Column(
+        String, nullable=True, comment="刷新令牌"
+    )
+    expires_at = Column(
+        DateTime(timezone=True), nullable=True, comment="过期时间"
+    )
+    token_type = Column(
+        String(50), nullable=True, comment="令牌类型"
+    )
+    scope = Column(
+        String, nullable=True, comment="权限范围"
+    )
     provider_user_id = Column(
-        String, nullable=True
-    )  # The user's ID in the provider system
-    email = Column(String, nullable=True)
+        String,
+        nullable=True,
+        comment="提供商系统中的用户ID",
+    )
+    email = Column(
+        String, nullable=True, comment="邮箱"
+    )
 
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        comment="创建时间",
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        onupdate=func.now(),
+        comment="更新时间",
+    )
 
     # Relationships
     user = relationship("User", back_populates="oauth_accounts")

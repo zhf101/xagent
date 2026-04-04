@@ -28,38 +28,77 @@ class DatabaseStatus(str, Enum):
 class Text2SQLDatabase(Base):
     """Text2SQL 数据源配置。
 
-    当前这个模型仍然只承担“数据源连接配置宿主”的职责：
+    当前这个模型仍然只承担"数据源连接配置宿主"的职责：
     - 保存名称、类型、URL、只读约束、连通状态
-    - 被 datamake / SQL Brain / Text2SQL 共用
-
+    - 被 Text2SQL 与相关治理接口共用
     它不承担业务流程控制职责。
     """
 
     __tablename__ = "text2sql_databases"
 
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    id = Column(Integer, primary_key=True, index=True, comment="数据源ID")
+    user_id = Column(
+        Integer,
+        ForeignKey("users.id"),
+        nullable=False,
+        index=True,
+        comment="用户ID",
+    )
 
     # Database configuration
-    name = Column(String(255), nullable=False)
-    system_short = Column(String(64), nullable=False, index=True)
-    env = Column(String(32), nullable=False, index=True)
-    type = Column(SQLEnum(DatabaseType), nullable=False)
-    url = Column(Text, nullable=False)  # Database connection URL
-    read_only = Column(Boolean, default=True, nullable=False)
+    name = Column(
+        String(255), nullable=False, comment="数据源名称"
+    )
+    system_short = Column(
+        String(64),
+        nullable=False,
+        index=True,
+        comment="系统简称",
+    )
+    env = Column(
+        String(32),
+        nullable=False,
+        index=True,
+        comment="环境（如prod/dev）",
+    )
+    type = Column(
+        SQLEnum(DatabaseType),
+        nullable=False,
+        comment="数据库类型",
+    )
+    url = Column(Text, nullable=False, comment="数据库连接URL")
+    read_only = Column(
+        Boolean,
+        default=True,
+        nullable=False,
+        comment="是否只读",
+    )
 
     # Status and metadata
     status = Column(
-        SQLEnum(DatabaseStatus), default=DatabaseStatus.DISCONNECTED, nullable=False
+        SQLEnum(DatabaseStatus),
+        default=DatabaseStatus.DISCONNECTED,
+        nullable=False,
+        comment="连接状态（connected/disconnected/error）",
     )
-    table_count = Column(Integer, nullable=True)
-    last_connected_at = Column(DateTime, nullable=True)
-    error_message = Column(Text, nullable=True)
+    table_count = Column(
+        Integer, nullable=True, comment="表数量"
+    )
+    last_connected_at = Column(
+        DateTime, nullable=True, comment="最后连接时间"
+    )
+    error_message = Column(Text, nullable=True, comment="错误信息")
 
     # Timestamps
-    created_at = Column(DateTime, default=func.now(), nullable=False)
+    created_at = Column(
+        DateTime, default=func.now(), nullable=False, comment="创建时间"
+    )
     updated_at = Column(
-        DateTime, default=func.now(), onupdate=func.now(), nullable=False
+        DateTime,
+        default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+        comment="更新时间",
     )
 
     # Relationships
