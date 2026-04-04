@@ -1,6 +1,6 @@
 "use client"
 
-import React, { useState, useEffect } from "react"
+import React, { useCallback, useEffect, useState } from "react"
 import {
   Sheet,
   SheetContent,
@@ -16,9 +16,10 @@ import { JSONSyntaxHighlighter } from "@/components/ui/json-syntax-highlighter"
 import { toast } from "sonner"
 import { getApiUrl } from "@/lib/utils"
 import { apiRequest } from "@/lib/api-wrapper"
+import { getApiErrorMessage, getApprovalSubmissionMessage } from "@/lib/api-errors"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { Save, AlertCircle, Eye, Download } from "lucide-react"
-import { Switch } from "@/components/ui/switch"
+import { Save, AlertCircle, Eye } from "lucide-react"
+import { GdpHttpAssetPayload } from "../gdp-types"
 
 interface GdpHttpConfigDrawerProps {
   open: boolean
@@ -68,7 +69,7 @@ const steps = [
 
 export function GdpHttpConfigDrawer({ open, onOpenChange, onSaved, assetId }: GdpHttpConfigDrawerProps) {
   const [activeStep, setActiveStep] = useState("step1")
-  const [payload, setPayload] = useState<any>(defaultPayload())
+  const [payload, setPayload] = useState<GdpHttpAssetPayload>(defaultPayload())
   const [isSaving, setIsSaving] = useState(false)
   const [isPreviewOpen, setIsPreviewOpen] = useState(false)
 
@@ -81,19 +82,7 @@ export function GdpHttpConfigDrawer({ open, onOpenChange, onSaved, assetId }: Gd
   const [headersText, setHeadersText] = useState("")
   const [annotationsText, setAnnotationsText] = useState("")
 
-  useEffect(() => {
-    if (open) {
-      if (assetId) {
-        fetchAsset(assetId)
-      } else {
-        setPayload(defaultPayload())
-        syncTextFromPayload(defaultPayload())
-        setActiveStep("step1")
-      }
-    }
-  }, [open, assetId])
-
-  const syncTextFromPayload = (data: any) => {
+  const syncTextFromPayload = (data: GdpHttpAssetPayload) => {
     setInputSchemaText(JSON.stringify(data.tool_contract?.input_schema_json || {}, null, 2))
     setOutputSchemaText(JSON.stringify(data.tool_contract?.output_schema_json || {}, null, 2))
     setAnnotationsText(JSON.stringify(data.tool_contract?.annotations_json || {}, null, 2))
@@ -115,13 +104,13 @@ export function GdpHttpConfigDrawer({ open, onOpenChange, onSaved, assetId }: Gd
       p.execution_profile.headers_json = JSON.parse(headersText || "{}")
       setPayload(p)
       return true
-    } catch (e) {
+    } catch {
       toast.error("JSON 格式校验失败，请检查所有 JSON 编辑器内容")
       return false
     }
   }
 
-  const fetchAsset = async (id: number) => {
+  const fetchAsset = useCallback(async (id: number) => {
     try {
       const res = await apiRequest(`${getApiUrl()}/api/v1/gdp/http-assets/${id}`)
       if (res.ok) {
@@ -163,19 +152,35 @@ export function GdpHttpConfigDrawer({ open, onOpenChange, onSaved, assetId }: Gd
       } else {
         toast.error("加载资产失败")
       }
-    } catch (e) {
-      console.error(e)
+    } catch (error) {
+      console.error(error)
     }
-  }
+  }, [])
 
-  const updateField = (category: 'resource' | 'tool_contract' | 'execution_profile', field: string, value: any) => {
-    setPayload((prev: any) => ({
+  useEffect(() => {
+    if (open) {
+      if (assetId) {
+        fetchAsset(assetId)
+      } else {
+        setPayload(defaultPayload())
+        syncTextFromPayload(defaultPayload())
+        setActiveStep("step1")
+      }
+    }
+  }, [open, assetId, fetchAsset])
+
+  const updateField = (
+    category: "resource" | "tool_contract" | "execution_profile",
+    field: string,
+    value: unknown
+  ) => {
+    setPayload(prev => ({
       ...prev,
       [category]: {
         ...prev[category],
         [field]: value
       }
-    }))
+    }) as GdpHttpAssetPayload)
   }
 
   const validate = () => {
@@ -210,14 +215,20 @@ export function GdpHttpConfigDrawer({ open, onOpenChange, onSaved, assetId }: Gd
       })
       
       if (res.ok) {
-        toast.success(`资产${assetId ? "更新" : "创建"}成功`)
+        const payload = await res.json().catch(() => null)
+        toast.success(
+          getApprovalSubmissionMessage(
+            payload,
+            assetId ? "更新申请已提交，等待系统管理员审批" : "创建申请已提交，等待系统管理员审批"
+          )
+        )
         onSaved()
         onOpenChange(false)
       } else {
         const err = await res.json()
-        toast.error(`保存失败: ${err.detail || '未知错误'}`)
+        toast.error(getApiErrorMessage(err, "保存失败"))
       }
-    } catch (e) {
+    } catch {
       toast.error("保存过程发生异常")
     } finally {
       setIsSaving(false)

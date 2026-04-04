@@ -26,6 +26,7 @@ from .api.progress_ws import progress_ws_router
 from .api.skills import router as skills_router
 from .api.sql_approval import approval_router
 from .api.system import system_router
+from .api.system_registry import router as system_registry_router
 from .api.templates import router as templates_router
 from .api.text2sql import text2sql_router
 from .api.tools import tools_router
@@ -162,6 +163,7 @@ app.include_router(tools_router)
 app.include_router(admin_users_router)
 app.include_router(skills_router)
 app.include_router(system_router)
+app.include_router(system_registry_router)
 app.include_router(templates_router)
 app.include_router(agents_router)
 app.include_router(gdp_http_assets_router)

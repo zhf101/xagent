@@ -48,6 +48,7 @@ def init_db(db_url: str | None = None) -> None:
     # Import all models to ensure they are registered with Base.metadata
     from . import (  # noqa: F401
         MCPServer,
+        MemoryJob,
         Model,
         SystemSetting,
         Task,
@@ -59,6 +60,10 @@ def init_db(db_url: str | None = None) -> None:
         User,
         UserDefaultModel,
         UserModel,
+        SystemRegistry,
+        UserSystemRole,
+        AssetChangeRequest,
+        AssetChangeRequestLog,
     )
     from .agent import Agent  # noqa: F401
     from .sandbox import SandboxInfo  # noqa: F401

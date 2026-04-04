@@ -19,11 +19,33 @@ from ...core.gdp.http_asset_protocol import (
 from ...core.gdp.http_asset_validator import GdpHttpAssetValidationError
 from ..auth_dependencies import get_current_user
 from ..models.database import get_db
+from ..models.gdp_http_resource import GdpHttpResource
 from ..models.user import User
+from ..services.system_approval_service import (
+    REQUEST_TYPE_CREATE,
+    REQUEST_TYPE_DELETE,
+    REQUEST_TYPE_UPDATE,
+    SystemApprovalError,
+    SystemApprovalService,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/gdp/http-assets", tags=["gdp_http_assets"])
+
+
+def _load_active_asset_or_404(db: Session, asset_id: int) -> GdpHttpResource:
+    asset = (
+        db.query(GdpHttpResource)
+        .filter(
+            GdpHttpResource.id == int(asset_id),
+            GdpHttpResource.status != int(GdpHttpAssetStatus.DELETED),
+        )
+        .first()
+    )
+    if asset is None:
+        raise HTTPException(status_code=404, detail="Asset not found or not accessible")
+    return asset
 
 
 @router.get("")
@@ -91,16 +113,23 @@ def create_gdp_http_asset(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """创建 GDP HTTP 资产。"""
-    service = GdpHttpResourceService(db)
+    """提交 GDP HTTP 资产创建申请。"""
+    approval_service = SystemApprovalService(db)
     try:
-        asset = service.create_asset(
-            user_id=int(user.id),
-            user_name=getattr(user, "username", None),
+        change_request = approval_service.submit_http_request(
+            actor=approval_service.to_actor(user),
             payload=request,
+            request_type=REQUEST_TYPE_CREATE,
         )
-        return {"data": asset.to_detail_dict()}
+        return {
+            "message": "submitted for approval",
+            "data": approval_service.serialize_request(change_request),
+        }
+    except HTTPException:
+        raise
     except GdpHttpAssetValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except SystemApprovalError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         logger.error("Error creating GDP http asset: %s", exc, exc_info=True)
@@ -114,16 +143,25 @@ def update_gdp_http_asset(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """全量更新 GDP HTTP 资产。"""
-    service = GdpHttpResourceService(db)
+    """提交 GDP HTTP 资产更新申请。"""
+    approval_service = SystemApprovalService(db)
     try:
-        asset = service.update_asset(
-            asset_id=asset_id,
-            user_id=int(user.id),
+        asset = _load_active_asset_or_404(db, asset_id)
+        change_request = approval_service.submit_http_request(
+            actor=approval_service.to_actor(user),
             payload=request,
+            existing=asset,
+            request_type=REQUEST_TYPE_UPDATE,
         )
-        return {"data": asset.to_detail_dict()}
+        return {
+            "message": "submitted for approval",
+            "data": approval_service.serialize_request(change_request),
+        }
+    except HTTPException:
+        raise
     except GdpHttpAssetValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except SystemApprovalError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -138,16 +176,24 @@ def delete_gdp_http_asset(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """软删除 GDP HTTP 资产。"""
-    service = GdpHttpResourceService(db)
+    """提交 GDP HTTP 资产删除申请。"""
+    approval_service = SystemApprovalService(db)
     try:
-        asset = service.delete_asset(asset_id=asset_id, user_id=int(user.id))
+        asset = _load_active_asset_or_404(db, asset_id)
+        change_request = approval_service.submit_http_request(
+            actor=approval_service.to_actor(user),
+            payload=None,
+            existing=asset,
+            request_type=REQUEST_TYPE_DELETE,
+        )
         return {
-            "data": {
-                "id": int(asset.id),
-                "status": int(GdpHttpAssetStatus.DELETED),
-            }
+            "message": "submitted for approval",
+            "data": approval_service.serialize_request(change_request),
         }
+    except HTTPException:
+        raise
+    except SystemApprovalError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:

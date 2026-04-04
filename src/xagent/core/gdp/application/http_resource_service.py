@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -40,14 +39,11 @@ class GdpHttpResourceService:
 
     def list_assets(self, user_id: int) -> list[GdpHttpResource]:
         """列出当前用户可见且未删除的资产。"""
+        del user_id
         return (
             self.db.query(GdpHttpResource)
             .filter(
                 GdpHttpResource.status != int(GdpHttpAssetStatus.DELETED),
-                or_(
-                    GdpHttpResource.create_user_id == int(user_id),
-                    GdpHttpResource.visibility.in_(["shared", "global"]),
-                ),
             )
             .order_by(GdpHttpResource.updated_at.desc(), GdpHttpResource.id.desc())
             .all()
@@ -55,15 +51,12 @@ class GdpHttpResourceService:
 
     def get_asset(self, asset_id: int, user_id: int) -> GdpHttpResource | None:
         """读取单个资产详情。"""
+        del user_id
         return (
             self.db.query(GdpHttpResource)
             .filter(
                 GdpHttpResource.id == int(asset_id),
                 GdpHttpResource.status != int(GdpHttpAssetStatus.DELETED),
-                or_(
-                    GdpHttpResource.create_user_id == int(user_id),
-                    GdpHttpResource.visibility.in_(["shared", "global"]),
-                ),
             )
             .first()
         )

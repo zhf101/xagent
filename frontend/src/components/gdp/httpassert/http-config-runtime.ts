@@ -2,6 +2,7 @@
 
 import { apiRequest } from "@/lib/api-wrapper"
 import { getApiUrl } from "@/lib/utils"
+import { getApiErrorMessage } from "@/lib/api-errors"
 
 import { GdpExecutionProfile, GdpHttpAssetPayload } from "./gdp-types"
 import { SchemaNode } from "./schema-tree-editor"
@@ -84,9 +85,7 @@ async function readErrorDetail(
 ): Promise<string> {
   try {
     const data = await response.json()
-    if (typeof data?.detail === "string" && data.detail.trim()) {
-      return data.detail
-    }
+    return getApiErrorMessage(data, fallbackMessage)
   } catch {}
   return fallbackMessage
 }

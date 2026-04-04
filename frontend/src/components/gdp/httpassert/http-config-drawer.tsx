@@ -18,6 +18,10 @@ import { JSONSyntaxHighlighter } from "@/components/ui/json-syntax-highlighter"
 import { toast } from "sonner"
 import { getApiUrl } from "@/lib/utils"
 import { apiRequest } from "@/lib/api-wrapper"
+import {
+  getApiErrorMessage,
+  getApprovalSubmissionMessage,
+} from "@/lib/api-errors"
 import { 
   GdpHttpAssetPayload, 
   createDefaultGdpHttpPayload, 
@@ -137,12 +141,18 @@ export function HttpConfigDrawer({ open, onOpenChange, onSaved, assetId }: HttpC
       })
 
       if (res.ok) {
-        toast.success("资产保存成功")
+        const payload = await res.json().catch(() => null)
+        toast.success(
+          getApprovalSubmissionMessage(
+            payload,
+            assetId ? "更新申请已提交，等待系统管理员审批" : "创建申请已提交，等待系统管理员审批"
+          )
+        )
         onSaved()
         onOpenChange(false)
       } else {
         const error = await res.json().catch(() => null)
-        toast.error(error?.detail || "资产保存失败")
+        toast.error(getApiErrorMessage(error, "资产保存失败"))
       }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "资产保存失败")

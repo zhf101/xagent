@@ -88,6 +88,25 @@ class Text2SQLDatabase(Base):
         DateTime, nullable=True, comment="最后连接时间"
     )
     error_message = Column(Text, nullable=True, comment="错误信息")
+    lifecycle_status = Column(
+        String(32),
+        default="active",
+        nullable=False,
+        index=True,
+        comment="资产生命周期状态（active/archived）",
+    )
+    approval_request_id = Column(
+        Integer, nullable=True, index=True, comment="最近一次生效审批请求ID"
+    )
+    approved_by = Column(
+        Integer, nullable=True, index=True, comment="审批人ID"
+    )
+    approved_at = Column(
+        DateTime, nullable=True, comment="审批通过时间"
+    )
+    updated_by = Column(
+        Integer, nullable=True, index=True, comment="最后更新用户ID"
+    )
 
     # Timestamps
     created_at = Column(
@@ -121,6 +140,11 @@ class Text2SQLDatabase(Base):
             if self.last_connected_at
             else None,
             "error_message": self.error_message,
+            "lifecycle_status": self.lifecycle_status,
+            "approval_request_id": self.approval_request_id,
+            "approved_by": self.approved_by,
+            "approved_at": self.approved_at.isoformat() if self.approved_at else None,
+            "updated_by": self.updated_by,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
@@ -142,4 +166,8 @@ class Text2SQLDatabase(Base):
             status=DatabaseStatus(data.get("status", "disconnected")),
             table_count=data.get("table_count"),
             error_message=data.get("error_message"),
+            lifecycle_status=data.get("lifecycle_status", "active"),
+            approval_request_id=data.get("approval_request_id"),
+            approved_by=data.get("approved_by"),
+            updated_by=data.get("updated_by"),
         )

@@ -22,16 +22,15 @@ import {
   X,
   ChevronDown,
   ChevronRight,
-  Sparkles,
-  Zap,
   Settings,
   Wrench,
   Users,
+  ShieldCheck,
   Brain,
   Database,
   Server,
-  HardDrive,
   Layers,
+  ClipboardList,
   MessageSquare,
   Loader2,
   Trash2,
@@ -49,6 +48,7 @@ import {
   MoreHorizontal,
   Edit2,
   Search,
+  type LucideIcon,
 } from "lucide-react"
 import {
   Dialog,
@@ -89,7 +89,7 @@ function formatStars(stars: number): string {
 interface NavigationItem {
   name: string
   href: string
-  icon: any
+  icon: LucideIcon
   color?: string
   children?: NavigationItem[]
   showTasks?: boolean
@@ -163,6 +163,13 @@ const navigationGroups: NavigationGroup[] = [
         color: "text-gray-500"
       },
       {
+        name: "Approval Queue",
+        nameKey: "nav.approvalQueue",
+        href: "/approval-queue",
+        icon: ClipboardList,
+        color: "text-gray-500"
+      },
+      {
         name: "Models",
         nameKey: "nav.models",
         href: "/models",
@@ -218,11 +225,19 @@ const baseUserMenuItems: NavigationItem[] = [
   }
 ]
 
-const getUserMenuItemsForUser = (user: any): NavigationItem[] => {
+const getUserMenuItemsForUser = (
+  user: { is_admin?: boolean } | null | undefined
+): NavigationItem[] => {
   const menuItems = [...baseUserMenuItems]
 
   if (user?.is_admin) {
     menuItems.splice(-1, 0, {
+      name: "System Registry",
+      nameKey: "nav.systemRegistry",
+      href: "/system-registry",
+      icon: ShieldCheck,
+      color: "text-blue-400"
+    }, {
       name: "User Management",
       nameKey: "nav.userManagement",
       href: "/users/",

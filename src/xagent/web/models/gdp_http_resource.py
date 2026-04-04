@@ -113,6 +113,18 @@ class GdpHttpResource(Base):
     timeout_seconds = Column(
         Integer, nullable=False, default=30, comment="超时时间（秒）"
     )
+    approval_request_id = Column(
+        Integer, nullable=True, index=True, comment="最近一次生效审批请求ID"
+    )
+    approved_by = Column(
+        Integer, nullable=True, index=True, comment="审批人ID"
+    )
+    approved_at = Column(
+        DateTime, nullable=True, comment="审批通过时间"
+    )
+    updated_by = Column(
+        Integer, nullable=True, index=True, comment="最后更新用户ID"
+    )
 
     created_at = Column(
         DateTime, default=func.now(), nullable=False, comment="创建时间"
@@ -139,6 +151,10 @@ class GdpHttpResource(Base):
             "direct_url": self.direct_url,
             "sys_label": self.sys_label,
             "url_suffix": self.url_suffix,
+            "approval_request_id": self.approval_request_id,
+            "approved_by": self.approved_by,
+            "approved_at": self.approved_at.isoformat() if self.approved_at else None,
+            "updated_by": self.updated_by,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
 
@@ -156,6 +172,10 @@ class GdpHttpResource(Base):
                 "status": int(self.status),
                 "summary": self.summary,
                 "tags_json": self.tags_json or [],
+                "approval_request_id": self.approval_request_id,
+                "approved_by": self.approved_by,
+                "approved_at": self.approved_at.isoformat() if self.approved_at else None,
+                "updated_by": self.updated_by,
                 "created_at": self.created_at.isoformat() if self.created_at else None,
                 "updated_at": self.updated_at.isoformat() if self.updated_at else None,
             },

@@ -4,6 +4,7 @@ import React, { useEffect, useState, useMemo } from "react"
 import { Plus, Link2, Search, ChevronLeft, ChevronRight, Edit2, Trash2, Globe, Lock, Users } from "lucide-react"
 import { getApiUrl, cn } from "@/lib/utils"
 import { apiRequest } from "@/lib/api-wrapper"
+import { getApiErrorMessage, getApprovalSubmissionMessage } from "@/lib/api-errors"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { HttpConfigDrawer } from "./http-config-drawer"
@@ -17,6 +18,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
+import { toast } from "sonner"
 
 interface HttpAssetRow {
   id: number
@@ -49,9 +51,13 @@ export function HttpAssetsPageView() {
       const res = await apiRequest(`${getApiUrl()}/api/v1/gdp/http-assets`)
       if (res.ok) {
         setHttpAssets((await res.json()).data || [])
+      } else {
+        const error = await res.json().catch(() => null)
+        toast.error(getApiErrorMessage(error, "加载接口资产失败"))
       }
     } catch (err) {
       console.error(err)
+      toast.error("加载接口资产失败")
     } finally {
       setLoading(false)
     }
@@ -77,12 +83,17 @@ export function HttpAssetsPageView() {
     try {
       const res = await apiRequest(`${getApiUrl()}/api/v1/gdp/http-assets/${id}`, { method: "DELETE" })
       if (res.ok) {
-        // 删除成功后刷新列表，并清除选中状态中的该 id
+        const payload = await res.json().catch(() => null)
+        toast.success(getApprovalSubmissionMessage(payload, "删除申请已提交，等待系统管理员审批"))
         setSelectedIds(prev => { const s = new Set(prev); s.delete(id); return s })
         await loadData()
+      } else {
+        const error = await res.json().catch(() => null)
+        toast.error(getApiErrorMessage(error, "删除接口资产失败"))
       }
     } catch (err) {
       console.error(err)
+      toast.error("删除接口资产失败")
     }
   }
 
@@ -92,15 +103,23 @@ export function HttpAssetsPageView() {
     if (!confirm(`确定要删除选中的 ${selectedIds.size} 条接口资产吗？`)) return
     setIsDeleting(true)
     try {
-      await Promise.all(
+      const responses = await Promise.all(
         Array.from(selectedIds).map(id =>
           apiRequest(`${getApiUrl()}/api/v1/gdp/http-assets/${id}`, { method: "DELETE" })
         )
       )
+      const failedResponse = responses.find(response => !response.ok)
+      if (failedResponse) {
+        const error = await failedResponse.json().catch(() => null)
+        toast.error(getApiErrorMessage(error, "批量删除申请提交失败"))
+        return
+      }
+      toast.success(`已提交 ${selectedIds.size} 条删除申请，等待系统管理员审批`)
       setSelectedIds(new Set())
       await loadData()
     } catch (err) {
       console.error(err)
+      toast.error("批量删除申请提交失败")
     } finally {
       setIsDeleting(false)
     }

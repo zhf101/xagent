@@ -32,6 +32,14 @@ from ..auth_dependencies import get_current_user
 from ..models.database import get_db
 from ..models.text2sql import DatabaseStatus, DatabaseType, Text2SQLDatabase
 from ..models.user import User
+from ..services.system_approval_service import (
+    ARCHIVED_LIFECYCLE_STATUS,
+    REQUEST_TYPE_CREATE,
+    REQUEST_TYPE_DELETE,
+    REQUEST_TYPE_UPDATE,
+    SystemApprovalError,
+    SystemApprovalService,
+)
 
 # mypy: ignore-errors
 
@@ -181,23 +189,20 @@ def _build_driver_install_hint(db_type: str) -> str | None:
     )
 
 
-def _load_owned_database_or_404(
+def _load_visible_database_or_404(
     *,
     db: Session,
-    user: User,
     database_id: int,
 ) -> Text2SQLDatabase:
     """
-    读取当前用户拥有的一条数据源记录。
-
-    这层只解决“鉴权 + 宿主读取”，避免详情、测试、结构快照重复写一套查询。
+    读取一条已生效且未归档的数据源记录。
     """
 
     row = (
         db.query(Text2SQLDatabase)
         .filter(
             Text2SQLDatabase.id == int(database_id),
-            Text2SQLDatabase.user_id == int(user.id),
+            Text2SQLDatabase.lifecycle_status != ARCHIVED_LIFECYCLE_STATUS,
         )
         .first()
     )
@@ -207,6 +212,13 @@ def _load_owned_database_or_404(
             detail="Database configuration not found",
         )
     return row
+
+
+def _submission_response(service: SystemApprovalService, request: Any) -> Dict[str, Any]:
+    return {
+        "message": "submitted for approval",
+        "data": service.serialize_request(request),
+    }
 
 
 async def _load_database_schema_snapshot(
@@ -470,8 +482,8 @@ async def get_databases(
     try:
         databases = (
             db.query(Text2SQLDatabase)
-            .filter(Text2SQLDatabase.user_id == user.id)
-            .order_by(Text2SQLDatabase.created_at.desc())
+            .filter(Text2SQLDatabase.lifecycle_status != ARCHIVED_LIFECYCLE_STATUS)
+            .order_by(Text2SQLDatabase.updated_at.desc(), Text2SQLDatabase.id.desc())
             .all()
         )
         return [DatabaseResponse(**database.to_dict()) for database in databases]
@@ -491,72 +503,45 @@ async def get_database_detail(
 ) -> DatabaseResponse:
     """读取当前用户的一条数据源详情。"""
 
-    row = _load_owned_database_or_404(
+    row = _load_visible_database_or_404(
         db=db,
-        user=user,
         database_id=database_id,
     )
     return DatabaseResponse(**row.to_dict())
 
 
-@text2sql_router.post("/databases", response_model=DatabaseResponse)
+@text2sql_router.post("/databases")
 async def create_database(
     db_config: DatabaseCreateRequest,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
-) -> DatabaseResponse:
-    """Create a new database configuration"""
+) -> Dict[str, Any]:
+    """Submit a datasource create request for approval."""
     try:
-        # Validate database type
         try:
-            db_type = DatabaseType(normalize_database_type(db_config.type))
+            DatabaseType(normalize_database_type(db_config.type))
         except ValueError:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Invalid database type: {db_config.type}",
             )
 
-        # Check if user already has a database with the same name
-        existing_db = (
-            db.query(Text2SQLDatabase)
-            .filter(
-                Text2SQLDatabase.user_id == user.id,
-                Text2SQLDatabase.name == db_config.name,
-            )
-            .first()
-        )
-
-        if existing_db:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Database with name '{db_config.name}' already exists",
-            )
-
         resolved_url = _resolve_connection_url(db_config)
-
-        # Create new database configuration
-        new_db = Text2SQLDatabase(
-            user_id=user.id,
-            name=db_config.name,
-            system_short=db_config.system_short.strip(),
-            env=db_config.env.strip(),
-            type=db_type,
-            url=resolved_url,
-            read_only=db_config.read_only,
-            status=DatabaseStatus.CONNECTED,  # Set to connected by default
-            table_count=0,  # TODO: Query actual table count
-            last_connected_at=func.now(),
+        service = SystemApprovalService(db)
+        request = service.submit_datasource_request(
+            actor=service.to_actor(user),
+            payload={
+                **db_config.model_dump(),
+                "url": resolved_url,
+                "type": normalize_database_type(db_config.type),
+            },
+            request_type=REQUEST_TYPE_CREATE,
         )
 
-        db.add(new_db)
-        db.commit()
-        db.refresh(new_db)
-
-        logger.info(
-            f"Created new database configuration for user {user.id}: {new_db.name}"
-        )
-
-        return DatabaseResponse(**new_db.to_dict())
+        logger.info("Submitted datasource create request for user %s", user.id)
+        return _submission_response(service, request)
+    except SystemApprovalError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except HTTPException:
         raise
     except Exception as e:
@@ -568,77 +553,48 @@ async def create_database(
         )
 
 
-@text2sql_router.put("/databases/{database_id}", response_model=DatabaseResponse)
+@text2sql_router.put("/databases/{database_id}")
 async def update_database(
     database_id: int,
     db_config: DatabaseCreateRequest,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
-) -> DatabaseResponse:
-    """Update an existing database configuration"""
+) -> Dict[str, Any]:
+    """Submit a datasource update request for approval."""
     try:
-        # Get existing database
-        existing_db = (
-            db.query(Text2SQLDatabase)
-            .filter(
-                Text2SQLDatabase.id == database_id,
-                Text2SQLDatabase.user_id == user.id,
-            )
-            .first()
+        existing_db = _load_visible_database_or_404(
+            db=db,
+            database_id=database_id,
         )
-
-        if not existing_db:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Database configuration not found",
-            )
-
-        # Validate database type
         try:
-            db_type = DatabaseType(normalize_database_type(db_config.type))
+            DatabaseType(normalize_database_type(db_config.type))
         except ValueError:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Invalid database type: {db_config.type}",
             )
 
-        # Check for name conflicts (excluding current database)
-        name_conflict = (
-            db.query(Text2SQLDatabase)
-            .filter(
-                Text2SQLDatabase.user_id == user.id,
-                Text2SQLDatabase.name == db_config.name,
-                Text2SQLDatabase.id != database_id,
-            )
-            .first()
+        resolved_url = _resolve_connection_url(db_config)
+        service = SystemApprovalService(db)
+        request = service.submit_datasource_request(
+            actor=service.to_actor(user),
+            payload={
+                **db_config.model_dump(),
+                "url": resolved_url,
+                "type": normalize_database_type(db_config.type),
+            },
+            existing=existing_db,
+            request_type=REQUEST_TYPE_UPDATE,
         )
 
-        if name_conflict:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Database with name '{db_config.name}' already exists",
-            )
-
-        resolved_url = _resolve_connection_url(db_config)
-
-        # Update database configuration
-        existing_db.name = db_config.name
-        existing_db.system_short = db_config.system_short.strip()
-        existing_db.env = db_config.env.strip()
-        existing_db.type = db_type
-        existing_db.url = resolved_url
-        existing_db.read_only = db_config.read_only
-        existing_db.status = (
-            DatabaseStatus.DISCONNECTED
-        )  # Reset status to verify new configuration
-        existing_db.error_message = None
-
-        db.commit()
-        db.refresh(existing_db)
-
-        logger.info(f"Updated database configuration {database_id} for user {user.id}")
-
-        return DatabaseResponse(**existing_db.to_dict())
+        logger.info(
+            "Submitted datasource update request %s for user %s",
+            database_id,
+            user.id,
+        )
+        return _submission_response(service, request)
+    except SystemApprovalError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except HTTPException:
         raise
     except Exception as e:
@@ -655,31 +611,29 @@ async def delete_database(
     database_id: int,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
-) -> Dict[str, str]:
-    """Delete a database configuration"""
+) -> Dict[str, Any]:
+    """Submit a datasource delete request for approval."""
     try:
-        # Get existing database
-        existing_db = (
-            db.query(Text2SQLDatabase)
-            .filter(
-                Text2SQLDatabase.id == database_id,
-                Text2SQLDatabase.user_id == user.id,
-            )
-            .first()
+        existing_db = _load_visible_database_or_404(
+            db=db,
+            database_id=database_id,
+        )
+        service = SystemApprovalService(db)
+        request = service.submit_datasource_request(
+            actor=service.to_actor(user),
+            payload={},
+            existing=existing_db,
+            request_type=REQUEST_TYPE_DELETE,
         )
 
-        if not existing_db:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Database configuration not found",
-            )
-
-        db.delete(existing_db)
-        db.commit()
-
-        logger.info(f"Deleted database configuration {database_id} for user {user.id}")
-
-        return {"message": "Database configuration deleted successfully"}
+        logger.info(
+            "Submitted datasource delete request %s for user %s",
+            database_id,
+            user.id,
+        )
+        return _submission_response(service, request)
+    except SystemApprovalError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except HTTPException:
         raise
     except Exception as e:
@@ -699,9 +653,8 @@ async def test_database_connection(
 ) -> Dict[str, Any]:
     """Test database connection"""
     try:
-        existing_db = _load_owned_database_or_404(
+        existing_db = _load_visible_database_or_404(
             db=db,
-            user=user,
             database_id=database_id,
         )
 
@@ -774,9 +727,8 @@ async def get_database_schema(
 ) -> Dict[str, Any]:
     """返回当前用户某个数据源的结构快照摘要。"""
 
-    existing_db = _load_owned_database_or_404(
+    existing_db = _load_visible_database_or_404(
         db=db,
-        user=user,
         database_id=database_id,
     )
     try:

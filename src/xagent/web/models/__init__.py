@@ -3,9 +3,16 @@ from .chat_message import TaskChatMessage
 from .database import Base, get_db, get_engine, get_session_local
 from .gdp_http_resource import GdpHttpResource
 from .mcp import MCPServer, UserMCPServer
+from .memory_job import MemoryJob
 from .model import Model
 from .sql_approval import ApprovalLedger, ApprovalRequest, DAGStepRun
 from .sandbox import SandboxInfo
+from .system_approval import (
+    AssetChangeRequest,
+    AssetChangeRequestLog,
+    SystemRegistry,
+    UserSystemRole,
+)
 from .system_setting import SystemSetting
 from .task import DAGExecution, Task
 from .template_stats import TemplateStats
@@ -41,6 +48,7 @@ __all__ = [
     "Model",
     "MCPServer",
     "UserMCPServer",
+    "MemoryJob",
     "Task",
     "DAGExecution",
     "ApprovalLedger",
@@ -56,6 +64,10 @@ __all__ = [
     "TaskChatMessage",
     "UploadedFile",
     "SandboxInfo",
+    "SystemRegistry",
+    "UserSystemRole",
+    "AssetChangeRequest",
+    "AssetChangeRequestLog",
     "VannaKnowledgeBase",
     "VannaSchemaHarvestJob",
     "VannaSchemaTable",

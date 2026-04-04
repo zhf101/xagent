@@ -11,6 +11,10 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { toast } from "sonner"
 import { getApiUrl } from "@/lib/utils"
 import { apiRequest } from "@/lib/api-wrapper"
+import {
+  getApiErrorMessage,
+  getApprovalSubmissionMessage,
+} from "@/lib/api-errors"
 
 interface DatabaseFormDialogProps {
   open: boolean
@@ -63,6 +67,8 @@ interface ConnectionFormDefinition {
 interface DatabaseDetail {
   id: number
   name: string
+  system_short: string
+  env: string
   type: string
   url: string
   read_only: boolean
@@ -80,8 +86,18 @@ type TestFeedback = {
   message: string
 }
 
-const EMPTY_DIALOG_STATE = {
+type DialogState = {
+  name: string
+  system_short: string
+  env: string
+  type: string
+  read_only: boolean
+}
+
+const EMPTY_DIALOG_STATE: DialogState = {
   name: "",
+  system_short: "",
+  env: "",
   type: "",
   read_only: true,
 }
@@ -239,6 +255,8 @@ export function DatabaseFormDialog({ open, onOpenChange, databaseId, onSuccess }
     const defaultType = loadedProfiles[0]?.db_type || "mysql"
     setDialogState({
       name: "",
+      system_short: "",
+      env: "",
       type: defaultType,
       read_only: true,
     })
@@ -254,6 +272,8 @@ export function DatabaseFormDialog({ open, onOpenChange, databaseId, onSuccess }
     const detail = (await detailResponse.json()) as DatabaseDetail
     setDialogState({
       name: detail.name,
+      system_short: detail.system_short,
+      env: detail.env,
       type: detail.type,
       read_only: detail.read_only,
     })
@@ -375,7 +395,7 @@ export function DatabaseFormDialog({ open, onOpenChange, databaseId, onSuccess }
           const data = await response.json().catch(() => ({}))
           if (!cancelled) {
             setPreview(null)
-            setPreviewError(data.detail || "生成连接串预览失败")
+            setPreviewError(getApiErrorMessage(data, "生成连接串预览失败"))
           }
           return
         }
@@ -453,7 +473,7 @@ export function DatabaseFormDialog({ open, onOpenChange, databaseId, onSuccess }
 
       const payload = await response.json().catch(() => ({}))
       if (!response.ok) {
-        const message = payload.detail || "连接测试失败"
+        const message = getApiErrorMessage(payload, "连接测试失败")
         setTestFeedback({
           type: "error",
           message,
@@ -493,6 +513,16 @@ export function DatabaseFormDialog({ open, onOpenChange, databaseId, onSuccess }
       return
     }
 
+    if (!dialogState.system_short.trim()) {
+      toast.error("请填写所属系统")
+      return
+    }
+
+    if (!dialogState.env.trim()) {
+      toast.error("请填写环境标识")
+      return
+    }
+
     if (connectionValidationErrors.length > 0) {
       toast.error(connectionValidationErrors[0])
       return
@@ -502,6 +532,8 @@ export function DatabaseFormDialog({ open, onOpenChange, databaseId, onSuccess }
     try {
       const requestPayload = {
         name: dialogState.name.trim(),
+        system_short: dialogState.system_short.trim(),
+        env: dialogState.env.trim(),
         type: dialogState.type,
         connection_mode: "form",
         connection_form: effectiveConnectionForm,
@@ -520,11 +552,18 @@ export function DatabaseFormDialog({ open, onOpenChange, databaseId, onSuccess }
 
       const payload = await response.json().catch(() => ({}))
       if (!response.ok) {
-        toast.error(payload.detail || "保存数据源失败")
+        toast.error(getApiErrorMessage(payload, "保存数据源失败"))
         return
       }
 
-      toast.success(databaseId ? "数据源已更新" : "数据源已创建")
+      toast.success(
+        getApprovalSubmissionMessage(
+          payload,
+          databaseId
+            ? "更新申请已提交，等待系统管理员审批"
+            : "创建申请已提交，等待系统管理员审批"
+        )
+      )
       onSuccess()
       onOpenChange(false)
     } catch (error) {
@@ -562,6 +601,24 @@ export function DatabaseFormDialog({ open, onOpenChange, databaseId, onSuccess }
                     value={dialogState.name}
                     onChange={event => setDialogState(current => ({ ...current, name: event.target.value }))}
                     placeholder="例如：订单分析库"
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="database-system-short">所属系统</Label>
+                  <Input
+                    id="database-system-short"
+                    value={dialogState.system_short}
+                    onChange={event => setDialogState(current => ({ ...current, system_short: event.target.value }))}
+                    placeholder="例如：CRM"
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="database-env">环境</Label>
+                  <Input
+                    id="database-env"
+                    value={dialogState.env}
+                    onChange={event => setDialogState(current => ({ ...current, env: event.target.value }))}
+                    placeholder="例如：prod / test / uat"
                   />
                 </div>
                 <div className="grid gap-2">
