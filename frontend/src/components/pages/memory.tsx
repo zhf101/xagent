@@ -13,6 +13,7 @@ import { SearchInput } from "@/components/ui/search-input"
 import { Badge } from "@/components/ui/badge"
 import { InfoTooltip } from "@/components/ui/tooltip"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Select, type SelectOption } from "@/components/ui/select"
 import { getApiUrl } from "@/lib/utils"
 import { apiRequest } from "@/lib/api-wrapper"
 import { useI18n } from "@/contexts/i18n-context"
@@ -38,6 +39,7 @@ interface MemoryItem {
   keywords: string[]
   tags: string[]
   category: string
+  memory_type?: string
   timestamp: string
   mime_type: string
   metadata: Record<string, any>
@@ -60,7 +62,7 @@ interface MemoryFilters {
   search?: string
 }
 
-const DEFAULT_MEMORY_CATEGORIES = ["execution_memory", "react_memory", "general"] as const
+const DEFAULT_MEMORY_CATEGORIES = ["general", "experience", "execution_memory", "react_memory"] as const
 const DEFAULT_SIMILARITY_THRESHOLD = 1.5
 
 export function MemoryPage() {
@@ -95,6 +97,17 @@ export function MemoryPage() {
   const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const isComposingRef = useRef(false)
   const [searchInput, setSearchInput] = useState(filters.search || "")
+  const categories = Array.from(new Set([
+    ...DEFAULT_MEMORY_CATEGORIES,
+    ...Object.keys(stats?.category_counts ?? {})
+  ]))
+
+  const getCategoryLabel = (category: string) => {
+    const translated = t(`memory.filters.categoryOptions.${category}`)
+    return translated === `memory.filters.categoryOptions.${category}`
+      ? category.replace(/_/g, " ")
+      : translated
+  }
 
   const debouncedSearch = useCallback((searchTerm: string) => {
     if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current)
@@ -312,8 +325,10 @@ export function MemoryPage() {
   // Helper to determine icon based on category
   const getCategoryIcon = (category: string) => {
     const lower = category.toLowerCase()
+    if (lower === 'experience') return Wrench
     if (lower === 'react_memory') return Wrench
     if (lower === 'execution_memory') return FileText
+    if (lower === 'session_summary') return FileText
     if (lower === 'general') return User
     return Layers
   }
@@ -321,8 +336,10 @@ export function MemoryPage() {
   // Helper to determine badge color
   const getCategoryColor = (category: string) => {
     const lower = category.toLowerCase()
+    if (lower === 'experience') return "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300"
     if (lower === 'react_memory') return "bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300"
     if (lower === 'execution_memory') return "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300"
+    if (lower === 'session_summary') return "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300"
     if (lower === 'general') return "bg-slate-100 text-slate-800 dark:bg-slate-800 dark:text-slate-300"
     return "bg-slate-100 text-slate-800 dark:bg-slate-800 dark:text-slate-300"
   }
@@ -364,7 +381,7 @@ export function MemoryPage() {
                   <MemoryForm
                     formData={formData}
                     setFormData={setFormData}
-                    categories={[...DEFAULT_MEMORY_CATEGORIES]}
+                    categories={categories}
                     onSubmit={handleCreateMemory}
                     onCancel={() => setIsCreateDialogOpen(false)}
                   />
@@ -402,7 +419,7 @@ export function MemoryPage() {
                   {t("memory.sidebar.byCategory")}
                 </h3>
                 <div className="space-y-1">
-                  {DEFAULT_MEMORY_CATEGORIES.map(cat => (
+                  {categories.map(cat => (
                     <Button
                       key={cat}
                       variant={filters.category === cat ? "secondary" : "ghost"}
@@ -411,10 +428,13 @@ export function MemoryPage() {
                     >
                       <div className={cn("h-2 w-2 rounded-full shrink-0",
                         cat === 'general' ? 'bg-slate-400' :
+                          cat === 'experience' ? 'bg-emerald-400' :
                           cat === 'react_memory' ? 'bg-purple-400' :
-                            'bg-blue-400'
+                            cat === 'execution_memory' ? 'bg-blue-400' :
+                              cat === 'session_summary' ? 'bg-amber-400' :
+                                'bg-slate-400'
                       )} />
-                      {t(`memory.filters.categoryOptions.${cat}`)}
+                      {getCategoryLabel(cat)}
                       {stats?.category_counts[cat] ? (
                         <span className="ml-auto text-xs text-muted-foreground">
                           {stats.category_counts[cat]}
@@ -456,7 +476,7 @@ export function MemoryPage() {
                       onChange={handleSelectAll}
                     />
                     <h2 className="text-lg font-semibold">
-                      {filters.category ? t(`memory.filters.categoryOptions.${filters.category}`) : t("memory.sidebar.allMemories")}
+                      {filters.category ? getCategoryLabel(filters.category) : t("memory.sidebar.allMemories")}
                     </h2>
                   </div>
                   <div className="flex items-center gap-2">
@@ -547,9 +567,7 @@ export function MemoryPage() {
                             <div className="flex-1 min-w-0 space-y-2">
                               <div className="flex items-center gap-3">
                                 <Badge variant="outline" className={cn("rounded-md border-0 px-2 py-0.5 text-xs font-medium uppercase tracking-wide", badgeColorClass)}>
-                                  {t(`memory.filters.categoryOptions.${memory.category}`) === `memory.filters.categoryOptions.${memory.category}`
-                                    ? memory.category.replace(/_/g, ' ')
-                                    : t(`memory.filters.categoryOptions.${memory.category}`)}
+                                  {getCategoryLabel(memory.category)}
                                 </Badge>
                                 <span className="text-xs text-muted-foreground">
                                   {memory.category === 'general' ? t("memory.item.addedManually") : t("memory.item.addedAutomatically")} • {formatDate(memory.timestamp)}
@@ -676,7 +694,7 @@ export function MemoryPage() {
           <MemoryForm
             formData={formData}
             setFormData={setFormData}
-            categories={[...DEFAULT_MEMORY_CATEGORIES]}
+            categories={categories}
             onSubmit={handleUpdateMemory}
             onCancel={() => { setIsEditDialogOpen(false); setEditingMemory(null) }}
           />
@@ -724,6 +742,16 @@ interface MemoryFormProps {
 
 function MemoryForm({ formData, setFormData, categories, onSubmit, onCancel }: MemoryFormProps) {
   const { t } = useI18n()
+  const categoryOptions: SelectOption[] = categories.map((category) => {
+    const translated = t(`memory.filters.categoryOptions.${category}`)
+    return {
+      value: category,
+      label: translated === `memory.filters.categoryOptions.${category}`
+        ? category.replace(/_/g, " ")
+        : translated
+    }
+  })
+
   return (
     <div className="space-y-4">
       <div>
@@ -764,7 +792,17 @@ function MemoryForm({ formData, setFormData, categories, onSubmit, onCancel }: M
           />
         </div>
       </div>
-      {/* Category field hidden */}
+      <div>
+        <div className="mb-1.5">
+          <Label htmlFor="category">{t("memory.filters.category.label")}</Label>
+        </div>
+        <Select
+          value={formData.category}
+          onValueChange={(value) => setFormData((prev: any) => ({ ...prev, category: value }))}
+          options={categoryOptions}
+          placeholder={t("memory.filters.category.placeholder")}
+        />
+      </div>
       <div>
         <div className="mb-1.5">
           <Label htmlFor="metadata">{t("memory.form.metadataLabel")}</Label>

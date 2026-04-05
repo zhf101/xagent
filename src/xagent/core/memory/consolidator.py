@@ -16,6 +16,7 @@ def upsert_memory_candidates(
     for candidate in candidates:
         dedupe_key = candidate.dedupe_key
         existing = []
+        current_time = datetime.now()
         if dedupe_key:
             existing = memory_store.list_all(
                 filters={
@@ -27,14 +28,23 @@ def upsert_memory_candidates(
         if existing:
             note = existing[0]
             note.content = candidate.content
-            note.freshness_at = datetime.now()
-            note.timestamp = datetime.now()
+            note.category = candidate.category
+            note.memory_type = candidate.memory_type
+            note.freshness_at = current_time
+            note.timestamp = current_time
             note.memory_subtype = candidate.memory_subtype
             note.scope = candidate.scope
+            note.source_session_id = candidate.source_session_id or note.source_session_id
+            note.source_agent_id = candidate.source_agent_id or note.source_agent_id
+            note.project_id = candidate.project_id or note.project_id
+            note.workspace_id = candidate.workspace_id or note.workspace_id
             note.confidence = max(note.confidence, candidate.confidence)
             note.importance = max(note.importance, candidate.importance)
             note.metadata.update(candidate.metadata)
+            note.dedupe_key = dedupe_key
             note.metadata["dedupe_key"] = dedupe_key
+            note.status = "active"
+            note.expires_at = None
             response = memory_store.update(note)
         else:
             candidate.metadata["dedupe_key"] = dedupe_key

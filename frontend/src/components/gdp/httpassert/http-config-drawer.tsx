@@ -1,6 +1,6 @@
 "use client"
 
-import React, { useState, useEffect } from "react"
+import React, { useEffect, useMemo, useState } from "react"
 import {
   Sheet,
   SheetContent,
@@ -11,6 +11,7 @@ import { Dialog, DialogContent, DialogTitle, DialogFooter, DialogDescription } f
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Select, type SelectOption } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
 import { Switch } from "@/components/ui/switch"
 import { Select as SelectRadix, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select-radix"
@@ -57,6 +58,13 @@ interface RequestPreviewData {
   body?: string | null
 }
 
+interface SystemOption {
+  system_short: string
+  display_name: string
+  description?: string | null
+  status: string
+}
+
 const STEPS = [
   { id: "basic", title: "基础资源", desc: "资产标识与归属", icon: Database },
   { id: "model", title: "工具定义", desc: "面向模型描述", icon: FileCode },
@@ -74,6 +82,9 @@ export function HttpConfigDrawer({ open, onOpenChange, onSaved, assetId }: HttpC
   const [isRequestPreviewOpen, setIsRequestPreviewOpen] = useState(false)
   const [requestPreviewData, setRequestPreviewData] = useState<RequestPreviewData | null>(null)
   const [isAssembling, setIsAssembling] = useState(false)
+  const [systemOptions, setSystemOptions] = useState<SystemOption[]>([])
+  const [isSystemOptionsLoading, setIsSystemOptionsLoading] = useState(false)
+  const [systemOptionsError, setSystemOptionsError] = useState<string | null>(null)
 
   const [inputEditMode, setInputEditMode] = useState<"visual" | "json">("visual")
   const [outputEditMode, setOutputEditMode] = useState<"visual" | "json">("visual")
@@ -81,9 +92,53 @@ export function HttpConfigDrawer({ open, onOpenChange, onSaved, assetId }: HttpC
   const [outputTree, setOutputTree] = useState<SchemaNode[]>([])
   const [rawInputJson, setRawInputJson] = useState("")
   const [rawOutputJson, setRawOutputJson] = useState("")
+  const selectedSystemOption = useMemo(
+    () => systemOptions.find(option => option.system_short === payload.resource.system_short),
+    [systemOptions, payload.resource.system_short]
+  )
+  const systemShortOptions: SelectOption[] = useMemo(
+    () =>
+      systemOptions.map(system => ({
+        value: system.system_short,
+        label: `${system.system_short} · ${system.display_name}`,
+        description:
+          system.status === "active"
+            ? (system.description || "可用于新建或更新 HTTP 资产")
+            : `当前系统状态：${system.status}${system.description ? ` · ${system.description}` : ""}`,
+      })),
+    [systemOptions]
+  )
+
+  const loadSystemOptions = async (includeSystemShort?: string) => {
+    setIsSystemOptionsLoading(true)
+    try {
+      const params = new URLSearchParams()
+      if (includeSystemShort?.trim()) {
+        params.set("include_system_short", includeSystemShort.trim())
+      }
+      const query = params.toString()
+      const res = await apiRequest(
+        `${getApiUrl()}/api/system-registry/options${query ? `?${query}` : ""}`
+      )
+      if (!res.ok) {
+        const payload = await res.json().catch(() => null)
+        throw new Error(getApiErrorMessage(payload, "加载系统选项失败"))
+      }
+      const data = await res.json()
+      setSystemOptions(Array.isArray(data?.data) ? data.data : [])
+      setSystemOptionsError(null)
+    } catch (error) {
+      setSystemOptions([])
+      setSystemOptionsError(error instanceof Error ? error.message : "加载系统选项失败")
+    } finally {
+      setIsSystemOptionsLoading(false)
+    }
+  }
 
   useEffect(() => {
     if (open) {
+      setSystemOptions([])
+      setSystemOptionsError(null)
       if (assetId) {
         fetchAsset(assetId)
       } else {
@@ -94,6 +149,7 @@ export function HttpConfigDrawer({ open, onOpenChange, onSaved, assetId }: HttpC
         setRawInputJson(JSON.stringify(nextPayload.tool_contract.input_schema_json, null, 2))
         setRawOutputJson(JSON.stringify(nextPayload.tool_contract.output_schema_json, null, 2))
         setActiveStep("basic")
+        void loadSystemOptions()
       }
     }
   }, [open, assetId])
@@ -106,6 +162,7 @@ export function HttpConfigDrawer({ open, onOpenChange, onSaved, assetId }: HttpC
         const data = await res.json()
         const asset = coerceHttpAssetPayloadFromApi(data.data)
         setPayload(asset)
+        await loadSystemOptions(asset.resource.system_short)
         
         if (asset.tool_contract.input_schema_json) {
           const tree = parseTreeFromSchemaAndRoutes(
@@ -121,12 +178,24 @@ export function HttpConfigDrawer({ open, onOpenChange, onSaved, assetId }: HttpC
           setRawOutputJson(JSON.stringify(asset.tool_contract.output_schema_json, null, 2))
         }
       }
+    } catch (error) {
+      console.error(error)
+      toast.error(error instanceof Error ? error.message : "加载资产详情失败")
     } finally {
       setIsLoading(false)
     }
   }
 
   const handleSave = async () => {
+    if (!payload.resource.system_short.trim()) {
+      toast.error("请选择所属系统")
+      return
+    }
+    if (selectedSystemOption && selectedSystemOption.status !== "active") {
+      toast.error("当前系统已停用，请选择一个有效系统")
+      return
+    }
+
     setIsSaving(true)
     try {
       const res = await saveHttpAsset({
@@ -272,7 +341,13 @@ export function HttpConfigDrawer({ open, onOpenChange, onSaved, assetId }: HttpC
   if (isLoading) {
     return (
       <Sheet open={open} onOpenChange={onOpenChange}>
-        <SheetContent side="right" className="w-[95vw] sm:max-w-[1200px] flex items-center justify-center bg-background"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" /></SheetContent>
+        <SheetContent side="right" className="w-[95vw] sm:max-w-[1200px] flex items-center justify-center bg-background">
+          <div className="sr-only">
+            <SheetTitle>{assetId ? "加载资产配置" : "加载新资产表单"}</SheetTitle>
+            <SheetDescription>正在准备 HTTP 资产配置抽屉内容。</SheetDescription>
+          </div>
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
+        </SheetContent>
       </Sheet>
     )
   }
@@ -346,7 +421,31 @@ export function HttpConfigDrawer({ open, onOpenChange, onSaved, assetId }: HttpC
                   </div>
                   <div className="grid grid-cols-2 gap-8 p-8 border rounded-[2rem] bg-zinc-50/50 dark:bg-zinc-900/50 border-dashed">
                     <div className="space-y-2.5"><Label className="text-xs font-black uppercase tracking-wider">资源标识 (Key) *</Label><Input value={payload.resource.resource_key} onChange={e => updateResource("resource_key", e.target.value)} placeholder="crm_user_get" className="h-11 rounded-xl" /></div>
-                    <div className="space-y-2.5"><Label className="text-xs font-black uppercase tracking-wider">所属系统 *</Label><Input value={payload.resource.system_short} onChange={e => updateResource("system_short", e.target.value)} placeholder="CRM" className="h-11 rounded-xl" /></div>
+                    <div className="space-y-2.5">
+                      <Label className="text-xs font-black uppercase tracking-wider">所属系统 *</Label>
+                      {systemOptionsError ? (
+                        <>
+                          <Input
+                            value={payload.resource.system_short}
+                            onChange={e => updateResource("system_short", e.target.value)}
+                            placeholder="输入系统简称"
+                            className="h-11 rounded-xl"
+                          />
+                          <p className="text-xs text-amber-600">
+                            {systemOptionsError}，当前回退为手动输入。
+                          </p>
+                        </>
+                      ) : (
+                        <Select
+                          value={payload.resource.system_short}
+                          onValueChange={value => updateResource("system_short", value)}
+                          options={systemShortOptions}
+                          placeholder={isSystemOptionsLoading ? "加载系统中..." : "选择所属系统"}
+                          className="rounded-xl"
+                          disabled={isSystemOptionsLoading || systemShortOptions.length === 0}
+                        />
+                      )}
+                    </div>
                     <div className="space-y-2.5">
                       <Label className="text-xs font-black uppercase tracking-wider">可见性</Label>
                       <SelectRadix value={payload.resource.visibility} onValueChange={v => updateResource("visibility", v)}>

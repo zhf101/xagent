@@ -167,6 +167,30 @@ class SystemApprovalService:
             for system in systems
         ]
 
+    def list_system_options(
+        self, *, include_system_short: str | None = None
+    ) -> list[dict[str, Any]]:
+        query = self.db.query(SystemRegistry).filter(
+            SystemRegistry.status == SYSTEM_STATUS_ACTIVE
+        )
+        systems = {system.system_short: system for system in query.all()}
+
+        if include_system_short:
+            normalized = normalize_system_short(include_system_short)
+            included = self.get_system(normalized)
+            if included is not None:
+                systems[included.system_short] = included
+
+        return [
+            {
+                "system_short": system.system_short,
+                "display_name": system.display_name,
+                "description": system.description,
+                "status": system.status,
+            }
+            for system in sorted(systems.values(), key=lambda item: item.system_short)
+        ]
+
     def create_system(
         self,
         *,

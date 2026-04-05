@@ -80,6 +80,13 @@ interface ConnectionPreviewResponse {
   db_type: string
 }
 
+interface SystemOption {
+  system_short: string
+  display_name: string
+  description?: string | null
+  status: string
+}
+
 type ConnectionFormValues = Record<string, string>
 type TestFeedback = {
   type: "success" | "error"
@@ -151,6 +158,8 @@ function hasAdvancedContent(
 
 export function DatabaseFormDialog({ open, onOpenChange, databaseId, onSuccess }: DatabaseFormDialogProps) {
   const [profiles, setProfiles] = useState<DatabaseProfile[]>([])
+  const [systemOptions, setSystemOptions] = useState<SystemOption[]>([])
+  const [systemOptionsError, setSystemOptionsError] = useState<string | null>(null)
   const [definition, setDefinition] = useState<ConnectionFormDefinition | null>(null)
   const [dialogState, setDialogState] = useState(EMPTY_DIALOG_STATE)
   const [connectionForm, setConnectionForm] = useState<ConnectionFormValues>({})
@@ -216,6 +225,10 @@ export function DatabaseFormDialog({ open, onOpenChange, databaseId, onSuccess }
   const effectiveConnectionForm = useMemo(() => {
     return buildEffectiveConnectionForm()
   }, [buildEffectiveConnectionForm])
+  const selectedSystemOption = useMemo(
+    () => systemOptions.find(option => option.system_short === dialogState.system_short),
+    [systemOptions, dialogState.system_short]
+  )
 
   const loadProfiles = useCallback(async (): Promise<DatabaseProfile[]> => {
     const response = await apiRequest(`${getApiUrl()}/api/text2sql/database-types`)
@@ -223,6 +236,32 @@ export function DatabaseFormDialog({ open, onOpenChange, databaseId, onSuccess }
       throw new Error("加载数据库类型失败")
     }
     return await response.json()
+  }, [])
+
+  const loadSystemOptions = useCallback(async (includeSystemShort?: string) => {
+    try {
+      const params = new URLSearchParams()
+      if (includeSystemShort?.trim()) {
+        params.set("include_system_short", includeSystemShort.trim())
+      }
+      const query = params.toString()
+      const response = await apiRequest(
+        `${getApiUrl()}/api/system-registry/options${query ? `?${query}` : ""}`
+      )
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null)
+        throw new Error(getApiErrorMessage(payload, "加载系统选项失败"))
+      }
+      const payload = await response.json()
+      const nextOptions = Array.isArray(payload?.data) ? payload.data : []
+      setSystemOptions(nextOptions)
+      setSystemOptionsError(null)
+      return nextOptions as SystemOption[]
+    } catch (error) {
+      setSystemOptions([])
+      setSystemOptionsError(error instanceof Error ? error.message : "加载系统选项失败")
+      return []
+    }
   }, [])
 
   const loadDefinition = useCallback(async (
@@ -260,8 +299,11 @@ export function DatabaseFormDialog({ open, onOpenChange, databaseId, onSuccess }
       type: defaultType,
       read_only: true,
     })
-    await loadDefinition(defaultType)
-  }, [loadDefinition])
+    await Promise.all([
+      loadDefinition(defaultType),
+      loadSystemOptions(),
+    ])
+  }, [loadDefinition, loadSystemOptions])
 
   const bootstrapEditDialog = useCallback(async () => {
     const detailResponse = await apiRequest(`${getApiUrl()}/api/text2sql/databases/${databaseId}`)
@@ -290,6 +332,7 @@ export function DatabaseFormDialog({ open, onOpenChange, databaseId, onSuccess }
         }),
       }),
       apiRequest(`${getApiUrl()}/api/text2sql/database-types/${detail.type}/connection-form`),
+      loadSystemOptions(detail.system_short),
     ])
 
     if (!parseResponse.ok || !nextDefinition.ok) {
@@ -322,7 +365,7 @@ export function DatabaseFormDialog({ open, onOpenChange, databaseId, onSuccess }
     )
     setPreviewError(null)
     setShowAdvanced(hasAdvancedContent(resolvedDefinition, parsedPayload.form || {}))
-  }, [databaseId])
+  }, [databaseId, loadSystemOptions])
 
   useEffect(() => {
     if (!open) return
@@ -338,6 +381,8 @@ export function DatabaseFormDialog({ open, onOpenChange, databaseId, onSuccess }
       setPreview(null)
       setPreviewError(null)
       setTestFeedback(null)
+      setSystemOptions([])
+      setSystemOptionsError(null)
       setShowAdvanced(false)
 
       try {
@@ -517,6 +562,10 @@ export function DatabaseFormDialog({ open, onOpenChange, databaseId, onSuccess }
       toast.error("请填写所属系统")
       return
     }
+    if (selectedSystemOption && selectedSystemOption.status !== "active") {
+      toast.error("当前系统已停用，请选择一个有效系统")
+      return
+    }
 
     if (!dialogState.env.trim()) {
       toast.error("请填写环境标识")
@@ -579,6 +628,13 @@ export function DatabaseFormDialog({ open, onOpenChange, databaseId, onSuccess }
     label: profile.display_name,
     description: `${profile.category} · ${profile.support_level}`,
   }))
+  const systemShortOptions: SelectOption[] = systemOptions.map(system => ({
+    value: system.system_short,
+    label: `${system.system_short} · ${system.display_name}`,
+    description: system.status === "active"
+      ? (system.description || "可用于新建或更新数据源")
+      : `当前系统状态：${system.status}${system.description ? ` · ${system.description}` : ""}`,
+  }))
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -605,12 +661,27 @@ export function DatabaseFormDialog({ open, onOpenChange, databaseId, onSuccess }
                 </div>
                 <div className="grid gap-2">
                   <Label htmlFor="database-system-short">所属系统</Label>
-                  <Input
-                    id="database-system-short"
-                    value={dialogState.system_short}
-                    onChange={event => setDialogState(current => ({ ...current, system_short: event.target.value }))}
-                    placeholder="例如：CRM"
-                  />
+                  {systemOptionsError ? (
+                    <>
+                      <Input
+                        id="database-system-short"
+                        value={dialogState.system_short}
+                        onChange={event => setDialogState(current => ({ ...current, system_short: event.target.value }))}
+                        placeholder="输入所属系统简称"
+                      />
+                      <div className="text-xs text-amber-600">
+                        {systemOptionsError}，当前回退为手动输入。
+                      </div>
+                    </>
+                  ) : (
+                    <Select
+                      value={dialogState.system_short}
+                      onValueChange={value => setDialogState(current => ({ ...current, system_short: value }))}
+                      options={systemShortOptions}
+                      placeholder="选择所属系统"
+                      disabled={loading || systemShortOptions.length === 0}
+                    />
+                  )}
                 </div>
                 <div className="grid gap-2">
                   <Label htmlFor="database-env">环境</Label>

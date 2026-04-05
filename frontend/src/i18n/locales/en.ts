@@ -884,7 +884,7 @@ Build when you need.`
     },
     createDialog: {
       title: "Create Memory",
-      description: "Fill in the content, keywords, tags, and metadata to add a new memory item. The category is \"User Added Memory\" by default.",
+      description: "Fill in the content, keywords, tags, category, and metadata to add a new memory item.",
     },
     stats: {
       total: "Total Memories",
@@ -901,6 +901,7 @@ Build when you need.`
       },
       categoryOptions: {
         general: "Memory added by users",
+        experience: "Experience memory",
         react_memory: "Execution memory",
         execution_memory: "Task memory",
       },
@@ -947,7 +948,7 @@ Build when you need.`
     },
     editDialog: {
       title: "Edit Memory",
-      description: "Modify the content, keywords, tags, or metadata",
+      description: "Modify the content, keywords, tags, category, or metadata",
     },
     deleteDialog: {
       title: "Delete Memory",
@@ -981,8 +982,36 @@ Build when you need.`
         description: "This panel is for operational inspection only. Use it to check queue status, failures, and retry behavior.",
       },
       filters: {
+        statusLabel: "Status filter",
         statusPlaceholder: "Filter by status",
+        allStatuses: "All statuses",
+        jobTypeLabel: "Job type filter",
         jobTypePlaceholder: "Filter by job type",
+        allJobTypes: "All job types",
+      },
+      statusOptions: {
+        pending: "Pending",
+        running: "Running",
+        succeeded: "Succeeded",
+        failed: "Failed",
+        dead: "Dead",
+        cancelled: "Cancelled",
+      },
+      jobTypeOptions: {
+        extract_memories: "Extract memories",
+        consolidate_memories: "Consolidate memories",
+        expire_memories: "Expire memories",
+      },
+      autoRefresh: {
+        label: "Auto refresh",
+        hint: "Refresh every {seconds}s",
+        lastRefreshed: "Last refreshed: {time}",
+      },
+      pagination: {
+        summary: "Showing {from}-{to} of {total} jobs",
+        page: "Page {current} of {total}",
+        prev: "Previous",
+        next: "Next",
       },
       actions: {
         refresh: "Refresh",

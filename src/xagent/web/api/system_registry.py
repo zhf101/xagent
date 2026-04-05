@@ -177,6 +177,21 @@ def list_system_registry(
     return {"data": rows}
 
 
+@router.get("/api/system-registry/options")
+def list_system_registry_options(
+    include_system_short: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    del user
+    service = SystemApprovalService(db)
+    try:
+        rows = service.list_system_options(include_system_short=include_system_short)
+    except SystemApprovalError as exc:
+        raise _service_error_to_http(exc) from exc
+    return {"data": rows}
+
+
 @router.put("/api/system-registry/{system_short}")
 def update_system_registry_entry(
     system_short: str,

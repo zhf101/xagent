@@ -884,7 +884,7 @@ Build when you need.`
     },
     createDialog: {
       title: "创建记忆",
-      description: "填写内容、关键词、标签和元数据以添加新的记忆项，类别默认为\"用户添加的记忆\"。",
+      description: "填写内容、关键词、标签、类别和元数据以添加新的记忆项。",
     },
     stats: {
       total: "记忆总数",
@@ -901,6 +901,7 @@ Build when you need.`
       },
       categoryOptions: {
         general: "用户添加的记忆",
+        experience: "经验记忆",
         react_memory: "运行记忆",
         execution_memory: "任务记忆",
       },
@@ -947,7 +948,7 @@ Build when you need.`
     },
     editDialog: {
       title: "编辑记忆",
-      description: "修改内容、关键词、标签或元数据",
+      description: "修改内容、关键词、标签、类别或元数据",
     },
     deleteDialog: {
       title: "删除记忆",
@@ -981,8 +982,36 @@ Build when you need.`
         description: "这个面板只用于运维治理，不做记忆编辑。重点看队列状态、失败原因和重试结果。",
       },
       filters: {
+        statusLabel: "状态筛选",
         statusPlaceholder: "按状态筛选",
+        allStatuses: "全部状态",
+        jobTypeLabel: "任务类型筛选",
         jobTypePlaceholder: "按任务类型筛选",
+        allJobTypes: "全部任务类型",
+      },
+      statusOptions: {
+        pending: "待处理",
+        running: "执行中",
+        succeeded: "已成功",
+        failed: "失败",
+        dead: "已死亡",
+        cancelled: "已取消",
+      },
+      jobTypeOptions: {
+        extract_memories: "提取记忆",
+        consolidate_memories: "合并记忆",
+        expire_memories: "过期治理",
+      },
+      autoRefresh: {
+        label: "自动刷新",
+        hint: "每 {seconds} 秒刷新一次",
+        lastRefreshed: "最近刷新：{time}",
+      },
+      pagination: {
+        summary: "显示 {from}-{to} 条，共 {total} 条任务",
+        page: "第 {current} / {total} 页",
+        prev: "上一页",
+        next: "下一页",
       },
       actions: {
         refresh: "刷新",

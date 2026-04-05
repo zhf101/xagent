@@ -5,6 +5,7 @@ from typing import Any, Callable, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
+from sqlalchemy import case
 from sqlalchemy.orm import Session
 
 from xagent.core.memory.base import MemoryStore
@@ -213,9 +214,26 @@ class MemoryManagementRouter:
                     )
                     filters_used["source_project_id"] = source_project_id
 
+                failed_first_order = case(
+                    (
+                        MemoryJob.status.in_(
+                            [
+                                MemoryJobStatus.FAILED.value,
+                                MemoryJobStatus.DEAD.value,
+                                MemoryJobStatus.CANCELLED.value,
+                            ]
+                        ),
+                        0,
+                    ),
+                    else_=1,
+                )
                 total_count = query.count()
                 jobs = (
-                    query.order_by(MemoryJob.created_at.desc(), MemoryJob.id.desc())
+                    query.order_by(
+                        failed_first_order.asc(),
+                        MemoryJob.created_at.desc(),
+                        MemoryJob.id.desc(),
+                    )
                     .offset(offset)
                     .limit(limit)
                     .all()
@@ -533,35 +551,10 @@ class MemoryManagementRouter:
                     if update_request.metadata is not None:
                         updates["metadata"] = update_request.metadata
 
-                    # Create updated memory note
-                    updated_memory = MemoryNote(
-                        id=memory_id,
-                        content=updates.get("content", existing_memory.content),
-                        keywords=updates.get("keywords", existing_memory.keywords),
-                        tags=updates.get("tags", existing_memory.tags),
-                        category=updates.get("category", existing_memory.category),
-                        memory_type=updates.get(
-                            "memory_type", existing_memory.memory_type
-                        ),
-                        memory_subtype=updates.get(
-                            "memory_subtype", existing_memory.memory_subtype
-                        ),
-                        scope=updates.get("scope", existing_memory.scope),
-                        project_id=updates.get("project_id", existing_memory.project_id),
-                        workspace_id=updates.get(
-                            "workspace_id", existing_memory.workspace_id
-                        ),
-                        importance=updates.get(
-                            "importance", existing_memory.importance
-                        ),
-                        confidence=updates.get(
-                            "confidence", existing_memory.confidence
-                        ),
-                        status=updates.get("status", existing_memory.status),
-                        metadata=updates.get("metadata", existing_memory.metadata),
-                        mime_type=existing_memory.mime_type,
-                        timestamp=existing_memory.timestamp,  # Keep original timestamp
-                    )
+                    # Rebuild from the existing note so provenance/governance fields survive
+                    updated_memory_data = existing_memory.model_dump()
+                    updated_memory_data.update(updates)
+                    updated_memory = MemoryNote(**updated_memory_data)
 
                     # Update in store
                     response = self.memory_store.update(updated_memory)

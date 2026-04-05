@@ -23,11 +23,25 @@ def build_session_summary_content(
 
     parts = []
     if previous_summary:
-        parts.append(f"Previous Summary:\n{previous_summary}")
+        previous_snapshot = _extract_latest_summary_snapshot(previous_summary)
+        if previous_snapshot:
+            parts.append(f"Previous Summary Snapshot:\n{previous_snapshot}")
     parts.append(f"Current Task: {task}")
     parts.append(f"Latest Status: {'Success' if success else 'Failed'}")
     parts.append(f"Latest Outcome: {str(output)[:500]}")
     return "\n\n".join(parts)
+
+
+def _extract_latest_summary_snapshot(previous_summary: str) -> Optional[str]:
+    summary_text = previous_summary.strip()
+    if not summary_text:
+        return None
+
+    latest_task_idx = summary_text.rfind("Current Task:")
+    if latest_task_idx >= 0:
+        return summary_text[latest_task_idx:].strip()
+
+    return summary_text
 
 
 def upsert_session_summary(

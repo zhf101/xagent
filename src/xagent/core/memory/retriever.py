@@ -96,8 +96,7 @@ class MemoryRetriever:
         limit: int,
         similarity_threshold: Optional[float],
     ) -> List[Dict[str, Any]]:
-        effective_filters = dict(filters)
-        effective_filters.setdefault("status", "active")
+        effective_filters = self._build_effective_filters(filters)
         results = self.memory_store.search(
             query=query,
             k=limit,
@@ -113,12 +112,23 @@ class MemoryRetriever:
         limit: int,
         similarity_threshold: Optional[float],
     ) -> List[Dict[str, Any]]:
-        results = self._search(query, filters, limit, similarity_threshold)
+        effective_filters = self._build_effective_filters(filters)
+        results = self.memory_store.search(
+            query=query,
+            k=limit,
+            filters=effective_filters,
+            similarity_threshold=similarity_threshold,
+        )
         if results:
-            return results
+            return [self._memory_to_payload(memory) for memory in results]
 
-        fallback_results = self.memory_store.list_all(filters=filters)[:limit]
+        fallback_results = self.memory_store.list_all(filters=effective_filters)[:limit]
         return [self._memory_to_payload(memory) for memory in fallback_results]
+
+    def _build_effective_filters(self, filters: dict[str, Any]) -> dict[str, Any]:
+        effective_filters = dict(filters)
+        effective_filters.setdefault("status", "active")
+        return effective_filters
 
     def _memory_to_payload(self, memory: MemoryNote) -> Dict[str, Any]:
         content = memory.content
