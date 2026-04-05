@@ -29,7 +29,7 @@ interface GdpHttpConfigDrawerProps {
 }
 
 // Default payload matching backend expectations
-const defaultPayload = () => ({
+const defaultPayload = (): GdpHttpAssetPayload => ({
   resource: {
     resource_key: "",
     system_short: "",
@@ -54,8 +54,8 @@ const defaultPayload = () => ({
     request_template_json: {},
     response_template_json: {},
     error_response_template: "",
-    auth_json: {},
-    headers_json: {},
+    auth_json: { type: "none" },
+    headers_json: [],
     timeout_seconds: 30
   }
 })
@@ -110,6 +110,13 @@ export function GdpHttpConfigDrawer({ open, onOpenChange, onSaved, assetId }: Gd
     }
   }
 
+  const normalizeVisibility = (visibility: unknown): "private" | "shared" | "global" => {
+    if (visibility === "shared" || visibility === "global") {
+      return visibility
+    }
+    return "private"
+  }
+
   const fetchAsset = useCallback(async (id: number) => {
     try {
       const res = await apiRequest(`${getApiUrl()}/api/v1/gdp/http-assets/${id}`)
@@ -117,11 +124,11 @@ export function GdpHttpConfigDrawer({ open, onOpenChange, onSaved, assetId }: Gd
         const json = await res.json()
         const data = json.data
         // Reconstruct payload format
-        const fetchedPayload = {
+        const fetchedPayload: GdpHttpAssetPayload = {
           resource: {
             resource_key: data.resource_key,
             system_short: data.system_short,
-            visibility: data.visibility,
+            visibility: normalizeVisibility(data.visibility),
             summary: data.summary,
             tags_json: data.tags_json || []
           },
@@ -142,8 +149,8 @@ export function GdpHttpConfigDrawer({ open, onOpenChange, onSaved, assetId }: Gd
             request_template_json: data.request_template_json || {},
             response_template_json: data.response_template_json || {},
             error_response_template: data.error_response_template || "",
-            auth_json: data.auth_json || {},
-            headers_json: data.headers_json || {},
+            auth_json: data.auth_json?.type ? data.auth_json : { type: "none" },
+            headers_json: Array.isArray(data.headers_json) ? data.headers_json : [],
             timeout_seconds: data.timeout_seconds || 30
           }
         }

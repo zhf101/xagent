@@ -878,6 +878,10 @@ Build when you need.`
       description: "Store, search, and manage agent memory items",
       create: "New Memory",
     },
+    tabs: {
+      memories: "Memories",
+      jobs: "Jobs",
+    },
     createDialog: {
       title: "Create Memory",
       description: "Fill in the content, keywords, tags, and metadata to add a new memory item. The category is \"User Added Memory\" by default.",
@@ -967,6 +971,46 @@ Build when you need.`
       contextSource: "Context Source",
       allMemories: "All Memories",
       byCategory: "By Category",
+    },
+    jobs: {
+      title: "Memory Governance Jobs",
+      description: "Inspect asynchronous extraction, consolidation, and expiration jobs. Retry failed jobs when needed.",
+      headerHint: "View the memory governance queue and retry failed jobs.",
+      sidebar: {
+        title: "Governance Queue",
+        description: "This panel is for operational inspection only. Use it to check queue status, failures, and retry behavior.",
+      },
+      filters: {
+        statusPlaceholder: "Filter by status",
+        jobTypePlaceholder: "Filter by job type",
+      },
+      actions: {
+        refresh: "Refresh",
+        retry: "Retry",
+        retrying: "Retrying...",
+      },
+      columns: {
+        job: "Job",
+        status: "Status",
+        source: "Source",
+        attempts: "Attempts",
+        updatedAt: "Updated At",
+        actions: "Actions",
+      },
+      detail: {
+        title: "Job Detail",
+        empty: "Select a job to inspect its payload and error details.",
+        jobType: "Job Type",
+        status: "Status",
+        source: "Source",
+        lastError: "Last Error",
+        payload: "Payload",
+      },
+      errors: {
+        loadFailed: "Failed to load memory jobs",
+        retryFailed: "Failed to retry memory job",
+      },
+      empty: "No memory jobs found for the current filters.",
     },
     actions: {
       exportSelected: "Export Selected ({count})",
@@ -2218,6 +2262,8 @@ Build when you need.`
         completed: "Completed",
         failed: "Failed",
         skipped: "Skipped",
+        waitingApproval: "Waiting Approval",
+        analyzed: "Analyzed",
       },
       right: {
         titles: {

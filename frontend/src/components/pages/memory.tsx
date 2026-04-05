@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useRef, useCallback } from "react"
+import React, { useState, useEffect, useRef, useCallback } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -12,10 +12,12 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { SearchInput } from "@/components/ui/search-input"
 import { Badge } from "@/components/ui/badge"
 import { InfoTooltip } from "@/components/ui/tooltip"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { getApiUrl } from "@/lib/utils"
 import { apiRequest } from "@/lib/api-wrapper"
 import { useI18n } from "@/contexts/i18n-context"
 import { cn } from "@/lib/utils"
+import { MemoryJobsPanel } from "@/components/pages/memory-jobs-panel"
 import {
   Database,
   Plus,
@@ -23,7 +25,6 @@ import {
   Trash2,
   Save,
   X,
-  Globe,
   User,
   Wrench,
   Layers,
@@ -59,8 +60,12 @@ interface MemoryFilters {
   search?: string
 }
 
+const DEFAULT_MEMORY_CATEGORIES = ["execution_memory", "react_memory", "general"] as const
+const DEFAULT_SIMILARITY_THRESHOLD = 1.5
+
 export function MemoryPage() {
   const { t, locale } = useI18n()
+  const [activeTab, setActiveTab] = useState<"memories" | "jobs">("memories")
   const [memories, setMemories] = useState<MemoryItem[]>([])
   const [stats, setStats] = useState<MemoryStats | null>(null)
   const [loading, setLoading] = useState(true)
@@ -73,7 +78,6 @@ export function MemoryPage() {
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [isBulkDeleting, setIsBulkDeleting] = useState(false)
-  const [similarityThreshold, setSimilarityThreshold] = useState([1.5])
 
   const [filters, setFilters] = useState<MemoryFilters>({})
   const [limit, setLimit] = useState(50)
@@ -86,8 +90,6 @@ export function MemoryPage() {
     category: "general",
     metadata: ""
   })
-
-  const [categories, setCategories] = useState<string[]>(['execution_memory', 'react_memory', 'general'])
 
   // Search debouncing
   const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null)
@@ -188,7 +190,7 @@ export function MemoryPage() {
       if (filters.date_from) params.append("date_from", filters.date_from)
       if (filters.date_to) params.append("date_to", filters.date_to)
       if (filters.search) params.append("search", filters.search)
-      params.append("similarity_threshold", similarityThreshold[0].toString())
+      params.append("similarity_threshold", DEFAULT_SIMILARITY_THRESHOLD.toString())
       if (limit) params.append("limit", limit.toString())
       if (offset) params.append("offset", offset.toString())
 
@@ -335,37 +337,41 @@ export function MemoryPage() {
         </div>
 
         <div className="flex items-center gap-3">
-          <SearchInput
-            placeholder={t("memory.filters.search.placeholder")}
-            className="h-9"
-            containerClassName="w-64 hidden sm:block"
-            value={searchInput}
-            onChange={handleSearchChange}
-            onCompositionStart={handleCompositionStart}
-            onCompositionEnd={handleCompositionEnd}
-          />
-
-          <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
-            <DialogTrigger asChild>
-              <Button size="sm" className="bg-primary hover:bg-primary/90 text-primary-foreground">
-                <Plus className="h-4 w-4 mr-2" />
-                {t("memory.header.create")}
-              </Button>
-            </DialogTrigger>
-            <DialogContent className="max-w-2xl">
-              <DialogHeader>
-                <DialogTitle>{t("memory.createDialog.title")}</DialogTitle>
-                <DialogDescription>{t("memory.createDialog.description")}</DialogDescription>
-              </DialogHeader>
-              <MemoryForm
-                formData={formData}
-                setFormData={setFormData}
-                categories={categories}
-                onSubmit={handleCreateMemory}
-                onCancel={() => setIsCreateDialogOpen(false)}
+          {activeTab === "memories" && (
+            <>
+              <SearchInput
+                placeholder={t("memory.filters.search.placeholder")}
+                className="h-9"
+                containerClassName="w-64 hidden sm:block"
+                value={searchInput}
+                onChange={handleSearchChange}
+                onCompositionStart={handleCompositionStart}
+                onCompositionEnd={handleCompositionEnd}
               />
-            </DialogContent>
-          </Dialog>
+
+              <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
+                <DialogTrigger asChild>
+                  <Button size="sm" className="bg-primary hover:bg-primary/90 text-primary-foreground">
+                    <Plus className="h-4 w-4 mr-2" />
+                    {t("memory.header.create")}
+                  </Button>
+                </DialogTrigger>
+                <DialogContent className="max-w-2xl">
+                    <DialogHeader>
+                      <DialogTitle>{t("memory.createDialog.title")}</DialogTitle>
+                      <DialogDescription>{t("memory.createDialog.description")}</DialogDescription>
+                    </DialogHeader>
+                  <MemoryForm
+                    formData={formData}
+                    setFormData={setFormData}
+                    categories={[...DEFAULT_MEMORY_CATEGORIES]}
+                    onSubmit={handleCreateMemory}
+                    onCancel={() => setIsCreateDialogOpen(false)}
+                  />
+                </DialogContent>
+              </Dialog>
+            </>
+          )}
         </div>
       </div>
 
@@ -373,211 +379,233 @@ export function MemoryPage() {
       <div className="flex flex-1 overflow-hidden">
         {/* Left Sidebar */}
         <aside className="w-64 border-r bg-muted/10 flex flex-col flex-shrink-0 overflow-y-auto">
-          <div className="p-4 space-y-8">
-            <div className="space-y-3">
-              <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider px-2">
-                {t("memory.sidebar.contextSource")}
-              </h3>
-              <div className="space-y-1">
-                <Button
-                  variant={!filters.category ? "secondary" : "ghost"}
-                  className={cn("w-full justify-start", !filters.category && "font-medium")}
-                  onClick={() => setFilters(prev => ({ ...prev, category: undefined }))}
-                >
-                  <Database className="h-4 w-4 mr-2" />
-                  {t("memory.sidebar.allMemories")}
-                </Button>
-              </div>
-            </div>
-
-            <div className="space-y-3">
-              <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider px-2">
-                {t("memory.sidebar.byCategory")}
-              </h3>
-              <div className="space-y-1">
-                {categories.map(cat => (
+          {activeTab === "memories" ? (
+            <div className="p-4 space-y-8">
+              <div className="space-y-3">
+                <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider px-2">
+                  {t("memory.sidebar.contextSource")}
+                </h3>
+                <div className="space-y-1">
                   <Button
-                    key={cat}
-                    variant={filters.category === cat ? "secondary" : "ghost"}
-                    className={cn("w-full justify-start", filters.category === cat && "font-medium")}
-                    onClick={() => setFilters(prev => ({ ...prev, category: cat }))}
+                    variant={!filters.category ? "secondary" : "ghost"}
+                    className={cn("w-full justify-start", !filters.category && "font-medium")}
+                    onClick={() => setFilters(prev => ({ ...prev, category: undefined }))}
                   >
-                    <div className={cn("h-2 w-2 rounded-full shrink-0",
-                      cat === 'general' ? 'bg-slate-400' :
-                        cat === 'react_memory' ? 'bg-purple-400' :
-                          'bg-blue-400'
-                    )} />
-                    {t(`memory.filters.categoryOptions.${cat}`)}
-                    {stats?.category_counts[cat] ? (
-                      <span className="ml-auto text-xs text-muted-foreground">
-                        {stats.category_counts[cat]}
-                      </span>
-                    ) : null}
+                    <Database className="h-4 w-4 mr-2" />
+                    {t("memory.sidebar.allMemories")}
                   </Button>
-                ))}
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider px-2">
+                  {t("memory.sidebar.byCategory")}
+                </h3>
+                <div className="space-y-1">
+                  {DEFAULT_MEMORY_CATEGORIES.map(cat => (
+                    <Button
+                      key={cat}
+                      variant={filters.category === cat ? "secondary" : "ghost"}
+                      className={cn("w-full justify-start", filters.category === cat && "font-medium")}
+                      onClick={() => setFilters(prev => ({ ...prev, category: cat }))}
+                    >
+                      <div className={cn("h-2 w-2 rounded-full shrink-0",
+                        cat === 'general' ? 'bg-slate-400' :
+                          cat === 'react_memory' ? 'bg-purple-400' :
+                            'bg-blue-400'
+                      )} />
+                      {t(`memory.filters.categoryOptions.${cat}`)}
+                      {stats?.category_counts[cat] ? (
+                        <span className="ml-auto text-xs text-muted-foreground">
+                          {stats.category_counts[cat]}
+                        </span>
+                      ) : null}
+                    </Button>
+                  ))}
+                </div>
               </div>
             </div>
-          </div>
+          ) : (
+            <div className="p-4 space-y-4">
+              <h3 className="px-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                {t("memory.jobs.sidebar.title")}
+              </h3>
+              <div className="rounded-xl border bg-card p-4 text-sm text-muted-foreground">
+                {t("memory.jobs.sidebar.description")}
+              </div>
+            </div>
+          )}
         </aside>
 
         {/* Main Content */}
         <main className="flex-1 flex flex-col bg-slate-50/50 dark:bg-background overflow-hidden">
-          {/* Main Content Header */}
-          <div className="h-24 flex items-center justify-between px-8 bg-card flex-shrink-0">
-            <div className="flex items-center gap-3">
-              <input
-                type="checkbox"
-                className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary accent-primary"
-                checked={memories.length > 0 && selectedIds.size === memories.length}
-                onChange={handleSelectAll}
-              />
-              <h2 className="text-lg font-semibold">
-                {filters.category ? t(`memory.filters.categoryOptions.${filters.category}`) : t("memory.sidebar.allMemories")}
-              </h2>
-            </div>
-            <div className="flex items-center gap-2">
-              <Button variant="outline" size="sm" className="h-8 text-xs" onClick={handleBulkExport}>
-                <Download className="h-3.5 w-3.5 mr-2" />
-                {selectedIds.size > 0 ? t("memory.actions.exportSelected", { count: selectedIds.size }) : t("memory.actions.exportCsv")}
-              </Button>
-              {selectedIds.size > 0 ? (
-                <Button variant="destructive" size="sm" className="h-8 text-xs" onClick={() => setIsBulkDeleting(true)}>
-                  <Trash2 className="h-3.5 w-3.5 mr-2" />
-                  {t("memory.actions.deleteSelected", { count: selectedIds.size })}
-                </Button>
+          <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as "memories" | "jobs")} className="flex h-full flex-col">
+            <div className="flex items-center justify-between bg-card px-8 py-5">
+              <TabsList className="grid w-[260px] grid-cols-2">
+                <TabsTrigger value="memories">{t("memory.tabs.memories")}</TabsTrigger>
+                <TabsTrigger value="jobs">{t("memory.tabs.jobs")}</TabsTrigger>
+              </TabsList>
+
+              {activeTab === "memories" ? (
+                <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-3">
+                    <input
+                      type="checkbox"
+                      className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary accent-primary"
+                      checked={memories.length > 0 && selectedIds.size === memories.length}
+                      onChange={handleSelectAll}
+                    />
+                    <h2 className="text-lg font-semibold">
+                      {filters.category ? t(`memory.filters.categoryOptions.${filters.category}`) : t("memory.sidebar.allMemories")}
+                    </h2>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button variant="outline" size="sm" className="h-8 text-xs" onClick={handleBulkExport}>
+                      <Download className="h-3.5 w-3.5 mr-2" />
+                      {selectedIds.size > 0 ? t("memory.actions.exportSelected", { count: selectedIds.size }) : t("memory.actions.exportCsv")}
+                    </Button>
+                    {selectedIds.size > 0 ? (
+                      <Button variant="destructive" size="sm" className="h-8 text-xs" onClick={() => setIsBulkDeleting(true)}>
+                        <Trash2 className="h-3.5 w-3.5 mr-2" />
+                        {t("memory.actions.deleteSelected", { count: selectedIds.size })}
+                      </Button>
+                    ) : (
+                      filters.category && (
+                        <Button variant="ghost" size="sm" className="h-8 text-xs text-muted-foreground hover:text-foreground" onClick={() => setFilters(prev => ({ ...prev, category: undefined }))}>
+                          <X className="h-3.5 w-3.5 mr-2" />
+                          {t("memory.actions.clearFilter")}
+                        </Button>
+                      )
+                    )}
+                  </div>
+                </div>
               ) : (
-                filters.category && (
-                  <Button variant="ghost" size="sm" className="h-8 text-xs text-muted-foreground hover:text-foreground" onClick={() => setFilters(prev => ({ ...prev, category: undefined }))}>
-                    <X className="h-3.5 w-3.5 mr-2" />
-                    {t("memory.actions.clearFilter")}
-                  </Button>
-                )
+                <div className="text-sm text-muted-foreground">{t("memory.jobs.headerHint")}</div>
               )}
             </div>
-          </div>
 
-          {/* Memory List */}
-          <div className="flex-1 overflow-y-auto">
-            {error && (
-              <Alert variant="destructive" className="mb-6">
-                <AlertDescription>{error}</AlertDescription>
-              </Alert>
-            )}
+            <TabsContent value="memories" className="flex-1 overflow-y-auto">
+              <div className="flex-1 overflow-y-auto">
+                {error && (
+                  <Alert variant="destructive" className="mb-6">
+                    <AlertDescription>{error}</AlertDescription>
+                  </Alert>
+                )}
 
-            {loading && !memories.length ? (
-              <div className="flex items-center justify-center h-64">
-                <div className="text-center">
-                  <Database className="h-12 w-12 text-blue-400 mx-auto mb-4 animate-pulse" />
-                  <p className="text-muted-foreground">{t("memory.loading")}</p>
-                </div>
-              </div>
-            ) : memories.length === 0 ? (
-              <div className="flex flex-col items-center justify-center h-full text-muted-foreground">
-                <div className="h-16 w-16 bg-muted rounded-full flex items-center justify-center mb-4">
-                  <Database className="h-8 w-8 opacity-50" />
-                </div>
-                <h3 className="text-lg font-medium mb-1">{t("memory.empty.title")}</h3>
-                <p className="text-sm max-w-sm text-center">
-                  {filters.search ? t("memory.empty.searchHint") : t("memory.empty.categoryHint")}
-                </p>
-              </div>
-            ) : (
-              <div className="space-y-4 mx-auto px-8">
-                {memories.map((memory) => {
-                  const Icon = getCategoryIcon(memory.category)
-                  const badgeColorClass = getCategoryColor(memory.category)
+                {loading && !memories.length ? (
+                  <div className="flex items-center justify-center h-64">
+                    <div className="text-center">
+                      <Database className="h-12 w-12 text-blue-400 mx-auto mb-4 animate-pulse" />
+                      <p className="text-muted-foreground">{t("memory.loading")}</p>
+                    </div>
+                  </div>
+                ) : memories.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center h-full text-muted-foreground">
+                    <div className="h-16 w-16 bg-muted rounded-full flex items-center justify-center mb-4">
+                      <Database className="h-8 w-8 opacity-50" />
+                    </div>
+                    <h3 className="text-lg font-medium mb-1">{t("memory.empty.title")}</h3>
+                    <p className="text-sm max-w-sm text-center">
+                      {filters.search ? t("memory.empty.searchHint") : t("memory.empty.categoryHint")}
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-4 mx-auto px-8 py-6">
+                    {memories.map((memory) => {
+                      const Icon = getCategoryIcon(memory.category)
+                      const badgeColorClass = getCategoryColor(memory.category)
 
-                  return (
-                    <Card
-                      key={memory.id}
-                      className={cn(
-                        "group cursor-pointer hover:shadow-md transition-all duration-200 border-border/60",
-                        selectedIds.has(memory.id) && "border-primary/50 bg-accent/50"
-                      )}
-                      onClick={() => openViewDialog(memory)}
-                    >
-                      <CardContent className="p-5 flex gap-5">
-                        {/* Checkbox */}
-                        <div
+                      return (
+                        <Card
+                          key={memory.id}
                           className={cn(
-                            "flex items-center justify-center pt-1 transition-opacity duration-200",
-                            selectedIds.has(memory.id) ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+                            "group cursor-pointer hover:shadow-md transition-all duration-200 border-border/60",
+                            selectedIds.has(memory.id) && "border-primary/50 bg-accent/50"
                           )}
-                          onClick={(e) => e.stopPropagation()}
+                          onClick={() => openViewDialog(memory)}
                         >
-                          <input
-                            type="checkbox"
-                            className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary accent-primary cursor-pointer"
-                            checked={selectedIds.has(memory.id)}
-                            onChange={() => handleToggleSelect(memory.id)}
-                          />
-                        </div>
+                          <CardContent className="p-5 flex gap-5">
+                            <div
+                              className={cn(
+                                "flex items-center justify-center pt-1 transition-opacity duration-200",
+                                selectedIds.has(memory.id) ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+                              )}
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <input
+                                type="checkbox"
+                                className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary accent-primary cursor-pointer"
+                                checked={selectedIds.has(memory.id)}
+                                onChange={() => handleToggleSelect(memory.id)}
+                              />
+                            </div>
 
-                        {/* Icon Box */}
-                        <div className={cn("h-12 w-12 rounded-xl flex items-center justify-center flex-shrink-0 mt-1", badgeColorClass.split(' ')[0])}>
-                          <Icon className={cn("h-6 w-6", badgeColorClass.split(' ')[1])} />
-                        </div>
+                            <div className={cn("h-12 w-12 rounded-xl flex items-center justify-center flex-shrink-0 mt-1", badgeColorClass.split(' ')[0])}>
+                              <Icon className={cn("h-6 w-6", badgeColorClass.split(' ')[1])} />
+                            </div>
 
-                        {/* Content */}
-                        <div className="flex-1 min-w-0 space-y-2">
-                          <div className="flex items-center gap-3">
-                            <Badge variant="outline" className={cn("rounded-md border-0 px-2 py-0.5 text-xs font-medium uppercase tracking-wide", badgeColorClass)}>
-                              {t(`memory.filters.categoryOptions.${memory.category}`) === `memory.filters.categoryOptions.${memory.category}`
-                                ? memory.category.replace(/_/g, ' ')
-                                : t(`memory.filters.categoryOptions.${memory.category}`)}
-                            </Badge>
-                            <span className="text-xs text-muted-foreground">
-                              {memory.category === 'general' ? t("memory.item.addedManually") : t("memory.item.addedAutomatically")} • {formatDate(memory.timestamp)}
-                            </span>
-                          </div>
-
-                          <p className="text-sm text-foreground/90 leading-relaxed line-clamp-3">
-                            {memory.content}
-                          </p>
-
-                          {/* Footer / Source */}
-                          <div className="pt-1 flex items-center gap-2 flex-wrap">
-                            {/* Keywords */}
-                            {memory.keywords.length > 0 && (
-                              <div className="flex items-center gap-1 ml-2">
-                                <span className="text-xs text-muted-foreground">{t("memory.item.keywordsLabel")}</span>
-                                {memory.keywords.slice(0, 3).map(keyword => (
-                                  <Badge key={keyword} variant="secondary" className="text-[10px] px-1.5 h-5 font-normal bg-blue-50 text-blue-700 hover:bg-blue-100 dark:bg-blue-900/30 dark:text-blue-300 border-0">
-                                    {keyword}
-                                  </Badge>
-                                ))}
+                            <div className="flex-1 min-w-0 space-y-2">
+                              <div className="flex items-center gap-3">
+                                <Badge variant="outline" className={cn("rounded-md border-0 px-2 py-0.5 text-xs font-medium uppercase tracking-wide", badgeColorClass)}>
+                                  {t(`memory.filters.categoryOptions.${memory.category}`) === `memory.filters.categoryOptions.${memory.category}`
+                                    ? memory.category.replace(/_/g, ' ')
+                                    : t(`memory.filters.categoryOptions.${memory.category}`)}
+                                </Badge>
+                                <span className="text-xs text-muted-foreground">
+                                  {memory.category === 'general' ? t("memory.item.addedManually") : t("memory.item.addedAutomatically")} • {formatDate(memory.timestamp)}
+                                </span>
                               </div>
-                            )}
 
-                            {memory.tags.length > 0 && (
-                              <div className="flex items-center gap-1 ml-2">
-                                <span className="text-xs text-muted-foreground">{t("memory.item.tagsLabel")}</span>
-                                {memory.tags.slice(0, 3).map(tag => (
-                                  <span key={tag} className="text-xs text-muted-foreground bg-muted/50 px-1.5 py-0.5 rounded">
-                                    #{tag}
-                                  </span>
-                                ))}
+                              <p className="text-sm text-foreground/90 leading-relaxed line-clamp-3">
+                                {memory.content}
+                              </p>
+
+                              <div className="pt-1 flex items-center gap-2 flex-wrap">
+                                {memory.keywords.length > 0 && (
+                                  <div className="flex items-center gap-1 ml-2">
+                                    <span className="text-xs text-muted-foreground">{t("memory.item.keywordsLabel")}</span>
+                                    {memory.keywords.slice(0, 3).map(keyword => (
+                                      <Badge key={keyword} variant="secondary" className="text-[10px] px-1.5 h-5 font-normal bg-blue-50 text-blue-700 hover:bg-blue-100 dark:bg-blue-900/30 dark:text-blue-300 border-0">
+                                        {keyword}
+                                      </Badge>
+                                    ))}
+                                  </div>
+                                )}
+
+                                {memory.tags.length > 0 && (
+                                  <div className="flex items-center gap-1 ml-2">
+                                    <span className="text-xs text-muted-foreground">{t("memory.item.tagsLabel")}</span>
+                                    {memory.tags.slice(0, 3).map(tag => (
+                                      <span key={tag} className="text-xs text-muted-foreground bg-muted/50 px-1.5 py-0.5 rounded">
+                                        #{tag}
+                                      </span>
+                                    ))}
+                                  </div>
+                                )}
                               </div>
-                            )}
-                          </div>
-                        </div>
+                            </div>
 
-                        {/* Actions */}
-                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity self-start">
-                          <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-foreground" onClick={(e) => { e.stopPropagation(); openEditDialog(memory); }}>
-                            <Edit className="h-4 w-4" />
-                          </Button>
-                          <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive/70 hover:text-destructive" onClick={(e) => { e.stopPropagation(); setDeletingId(memory.id); }}>
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
-                        </div>
-                      </CardContent>
-                    </Card>
-                  )
-                })}
+                            <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity self-start">
+                              <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-foreground" onClick={(e) => { e.stopPropagation(); openEditDialog(memory); }}>
+                                <Edit className="h-4 w-4" />
+                              </Button>
+                              <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive/70 hover:text-destructive" onClick={(e) => { e.stopPropagation(); setDeletingId(memory.id); }}>
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            </div>
+                          </CardContent>
+                        </Card>
+                      )
+                    })}
+                  </div>
+                )}
               </div>
-            )}
-          </div>
+            </TabsContent>
+
+            <TabsContent value="jobs" className="flex-1 overflow-y-auto">
+              <MemoryJobsPanel />
+            </TabsContent>
+          </Tabs>
         </main>
       </div>
 
@@ -648,7 +676,7 @@ export function MemoryPage() {
           <MemoryForm
             formData={formData}
             setFormData={setFormData}
-            categories={categories}
+            categories={[...DEFAULT_MEMORY_CATEGORIES]}
             onSubmit={handleUpdateMemory}
             onCancel={() => { setIsEditDialogOpen(false); setEditingMemory(null) }}
           />

@@ -35,7 +35,7 @@ import { useI18n } from "@/contexts/i18n-context";
 interface DAGNode extends Node {
   data: {
     label: string
-    status: "pending" | "running" | "completed" | "failed" | "skipped"
+    status: "pending" | "running" | "completed" | "failed" | "skipped" | "waiting_approval" | "analyzed"
     description?: string
     tool_names?: string[]
     started_at?: string | number
@@ -54,7 +54,7 @@ interface DAGEdge extends Edge {
 }
 
 interface DAGExecution {
-  phase: "planning" | "executing" | "completed" | "failed"
+  phase: "planning" | "executing" | "waiting_approval" | "checking" | "completed" | "failed"
   current_plan: Record<string, unknown>
   created_at: string | number
   updated_at: string | number
@@ -70,7 +70,7 @@ interface CenterPanelProps {
   hasError?: boolean
   dagLayout?: 'TB' | 'LR'
   onLayoutChange?: (layout: 'TB' | 'LR') => void
-  currentTaskStatus?: "pending" | "running" | "completed" | "failed" | "paused"
+  currentTaskStatus?: "pending" | "running" | "completed" | "failed" | "paused" | "waiting_approval"
   onFileClick?: (filePath: string, fileName: string) => void
 }
 
@@ -273,6 +273,8 @@ const nodeTypes: NodeTypes = {
       completed: "",
       failed: "",
       skipped: "border-dashed border-gray-500/50 opacity-60 bg-gray-500/5",
+      waiting_approval: "border-amber-500/40 bg-amber-500/5",
+      analyzed: "border-violet-500/40 bg-violet-500/5",
     }
 
     const statusBadges = {
@@ -281,6 +283,8 @@ const nodeTypes: NodeTypes = {
       completed: { variant: "default" as const, label: t("agent.layout.status.completed") },
       failed: { variant: "destructive" as const, label: t("agent.layout.status.failed") },
       skipped: { variant: "secondary" as const, label: t("agent.layout.status.skipped") },
+      waiting_approval: { variant: "secondary" as const, label: t("agent.layout.status.waitingApproval") },
+      analyzed: { variant: "secondary" as const, label: t("agent.layout.status.analyzed") },
     }
 
     const getDuration = () => {
@@ -350,12 +354,15 @@ const nodeTypes: NodeTypes = {
                 data.status === 'running' ? 'bg-blue-500/10 text-blue-600' :
                 data.status === 'failed' ? 'bg-red-500/10 text-red-600' :
                 data.status === 'skipped' ? 'bg-gray-500/10 text-gray-500' :
+                data.status === 'waiting_approval' ? 'bg-amber-500/10 text-amber-600' :
+                data.status === 'analyzed' ? 'bg-violet-500/10 text-violet-600' :
                 'bg-primary/10 text-primary'
               )}>
                 {data.status === 'completed' ? <CheckCircle2 className="w-4 h-4" /> :
                  data.status === 'running' ? <Loader2 className="w-4 h-4 animate-spin" /> :
                  data.status === 'failed' ? <XCircle className="w-4 h-4 text-red-500" /> :
                  data.status === 'skipped' ? <RotateCcw className="w-4 h-4 text-gray-500" /> :
+                 data.status === 'waiting_approval' ? <AlertCircle className="w-4 h-4 text-amber-500" /> :
                  <Brain className="w-4 h-4" />}
               </div>
               <div className="font-bold text-sm text-foreground tracking-wide leading-tight">{data.label}</div>
@@ -460,6 +467,7 @@ function CenterPanelInner({
     if (currentTaskStatus === "running") return "executing"
     if (currentTaskStatus === "pending") return "planning"
     if (currentTaskStatus === "paused") return "executing" // Treat paused as still executing
+    if (currentTaskStatus === "waiting_approval") return "waiting_approval"
 
     // Otherwise use dagExecution phase
     return dagExecution?.phase || "planning"
@@ -502,6 +510,8 @@ function CenterPanelInner({
     const variants = {
       planning: "secondary",
       executing: "default",
+      waiting_approval: "secondary",
+      checking: "secondary",
       completed: "default",
       failed: "destructive",
     } as const
@@ -509,6 +519,8 @@ function CenterPanelInner({
     const labels = {
       planning: t("agent.layout.common.inProgress"),
       executing: t("agent.layout.common.inProgress"),
+      waiting_approval: t("agent.layout.status.waitingApproval"),
+      checking: t("agent.layout.common.inProgress"),
       completed: t("agent.status.completed"),
       failed: t("agent.status.failed"),
     }
@@ -516,6 +528,8 @@ function CenterPanelInner({
     const customStyles = {
       planning: "bg-muted/50 text-muted-foreground border-border",
       executing: "bg-primary/10 text-primary border-primary/20",
+      waiting_approval: "bg-amber-500/10 text-amber-600 border-amber-500/20",
+      checking: "bg-violet-500/10 text-violet-600 border-violet-500/20",
       completed: "bg-green-500/10 text-green-500 border-green-500/20",
       failed: "bg-destructive/10 text-destructive border-destructive/20",
     }
@@ -626,6 +640,8 @@ function CenterPanelInner({
                 completed: 'hsl(142, 76%, 36%)',
                 failed: 'hsl(var(--destructive))',
                 skipped: 'hsl(220, 10%, 50%)',
+                waiting_approval: 'hsl(38, 92%, 50%)',
+                analyzed: 'hsl(262, 83%, 58%)',
               }
               return colors[data.status] || colors.pending
             }}

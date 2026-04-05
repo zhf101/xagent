@@ -1,4 +1,17 @@
+from .consolidator import upsert_memory_candidates as upsert_memory_candidates
 from .base import MemoryStore as MemoryStore
 from .core import MemoryNote as MemoryNote
 from .core import MemoryResponse as MemoryResponse
+from .extractor import extract_memory_candidates as extract_memory_candidates
+from .job_manager import MemoryJobManager as MemoryJobManager
+from .job_repository import MemoryJobRepository as MemoryJobRepository
+from .job_types import MemoryJobStatus as MemoryJobStatus
+from .job_types import MemoryJobType as MemoryJobType
 from .lancedb import LanceDBMemoryStore as LanceDBMemoryStore
+from .retriever import MemoryBundle as MemoryBundle
+from .retriever import MemoryQuery as MemoryQuery
+from .retriever import MemoryRetriever as MemoryRetriever
+from .session_summary import upsert_session_summary as upsert_session_summary
+from .schema import MemoryScope as MemoryScope
+from .schema import MemorySubtype as MemorySubtype
+from .schema import MemoryType as MemoryType

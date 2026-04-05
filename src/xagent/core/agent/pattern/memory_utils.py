@@ -7,10 +7,62 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from ...memory import MemoryStore
+from ...memory import MemoryJobManager, MemoryStore
 from ...memory.core import MemoryNote
+from ...memory.prompt_builder import enhance_goal_with_memory_bundle
+from ...memory.retriever import MemoryBundle, MemoryQuery, MemoryRetriever
+from ...memory.schema import (
+    MemorySubtype,
+    MemoryType,
+    default_category_for_type,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _coerce_optional_int(value: Any) -> Optional[int]:
+    if value is None or value == "":
+        return None
+    if isinstance(value, int):
+        return value
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def enqueue_memory_extraction_job(
+    *,
+    task: str,
+    result: Any,
+    classification: Optional[Dict[str, Any]] = None,
+    session_id: Optional[str] = None,
+    user_id: Optional[Any] = None,
+    project_id: Optional[str] = None,
+    task_id: Optional[str] = None,
+    pattern: Optional[str] = None,
+    job_manager: Optional[MemoryJobManager] = None,
+) -> Optional[int]:
+    """
+    Enqueue asynchronous memory extraction without failing the main agent flow.
+
+    Returns the job ID when enqueue succeeds, otherwise ``None``.
+    """
+    try:
+        manager = job_manager or MemoryJobManager()
+        return manager.enqueue_extract_memories(
+            task=task,
+            result=result,
+            classification=classification or {},
+            session_id=session_id,
+            user_id=_coerce_optional_int(user_id),
+            project_id=project_id,
+            task_id=task_id,
+            pattern=pattern,
+        )
+    except Exception as exc:
+        logger.warning("Failed to enqueue memory extraction job: %s", exc)
+        return None
 
 
 def enhance_goal_with_memory(goal: str, memories: List[Dict[str, Any]]) -> str:
@@ -35,8 +87,12 @@ def enhance_goal_with_memory(goal: str, memories: List[Dict[str, Any]]) -> str:
 
     for mem in memories:
         content = mem.get("content", "")
+        memory_type = mem.get("memory_type")
+        memory_subtype = mem.get("memory_subtype")
         if content.strip():
-            context_parts.append(f"• {content}")
+            label_parts = [part for part in [memory_type, memory_subtype] if part]
+            prefix = f"[{'/'.join(label_parts)}] " if label_parts else ""
+            context_parts.append(f"• {prefix}{content}")
 
     # Combine goal with context
     if context_parts:
@@ -48,6 +104,11 @@ def enhance_goal_with_memory(goal: str, memories: List[Dict[str, Any]]) -> str:
         return enhanced_goal
     else:
         return goal
+
+
+def enhance_goal_with_bundle(goal: str, bundle: MemoryBundle) -> str:
+    """Enhance goal using structured memory bundle sections."""
+    return enhance_goal_with_memory_bundle(goal, bundle)
 
 
 def store_plan_generation_memory(
@@ -92,7 +153,9 @@ def store_plan_generation_memory(
             content=content,
             keywords=["task planning", "strategy design", "step decomposition"]
             + domain_keywords,
-            category="dag_plan_execute_memory",
+            category=default_category_for_type(MemoryType.EXPERIENCE.value),
+            memory_type=MemoryType.EXPERIENCE.value,
+            memory_subtype=MemorySubtype.EXECUTION_PATTERN.value,
             metadata={
                 "operation": "dag_plan_generation",
                 "goal_type": task_type,
@@ -210,7 +273,13 @@ def store_execution_result_memory(
         note = MemoryNote(
             content=content,
             keywords=keywords,
-            category="execution_memory",
+            category=default_category_for_type(MemoryType.EXPERIENCE.value),
+            memory_type=MemoryType.EXPERIENCE.value,
+            memory_subtype=(
+                MemorySubtype.FAILURE_CASE.value
+                if failed_steps > 0
+                else MemorySubtype.TASK_OUTCOME.value
+            ),
             metadata={
                 "successful_steps": successful_steps,
                 "failed_steps": failed_steps,
@@ -293,10 +362,13 @@ def store_react_task_memory(
         note = MemoryNote(
             content=content,
             keywords=keywords,
-            category="react_memory",
+            category=default_category_for_type(MemoryType.EXPERIENCE.value),
+            memory_type=MemoryType.EXPERIENCE.value,
+            memory_subtype=MemorySubtype.TASK_OUTCOME.value,
             metadata={
                 "task": task,
                 "success": success,
+                "tool_usage": bool(tool_usage_insights),
                 "timestamp": datetime.now().isoformat(),
             },
         )
@@ -339,29 +411,29 @@ def lookup_relevant_memories(
         all_memories = []
         search_categories = []
 
-        # If category specified, search that category (system memories)
-        if category:
-            search_categories.append(category)
+        search_filters: list[dict[str, Any]] = []
 
-        # Also search general memories if requested
+        if category:
+            search_filters.append({"memory_type": category})
+
         if include_general:
-            search_categories.append("general")
+            search_filters.append({"category": "general"})
 
         logger.info(
-            f"Looking up memories for query: '{query[:100]}...' in categories: {search_categories}"
+            f"Looking up memories for query: '{query[:100]}...' with filters: {search_filters}"
         )
 
-        # Search each category
-        for cat in search_categories:
-            filters = {"category": cat}
+        for filter_item in search_filters:
             category_memories = memory_store.search(
                 query=query,
                 k=limit,
-                filters=filters,
+                filters=filter_item,
                 similarity_threshold=similarity_threshold,
             )
             all_memories.extend(category_memories)
-            logger.info(f"Found {len(category_memories)} memories in category '{cat}'")
+            logger.info(
+                f"Found {len(category_memories)} memories using filters {filter_item}"
+            )
 
         # Remove duplicates based on content (handle both string and bytes)
         seen_contents = set()
@@ -391,6 +463,8 @@ def lookup_relevant_memories(
             {
                 "content": memory.content,
                 "keywords": memory.keywords,
+                "memory_type": getattr(memory, "memory_type", None),
+                "memory_subtype": getattr(memory, "memory_subtype", None),
                 "metadata": memory.metadata,
             }
             for memory in final_memories
@@ -400,6 +474,35 @@ def lookup_relevant_memories(
             f"Failed to lookup relevant memories for query '{query[:50]}...': {e}"
         )
         return []
+
+
+def lookup_memory_bundle(
+    memory_store: MemoryStore,
+    query: str,
+    category: Optional[str] = None,
+    include_general: bool = True,
+    limit: int = 5,
+    similarity_threshold: Optional[float] = None,
+    session_id: Optional[str] = None,
+) -> MemoryBundle:
+    """
+    Look up memories as a structured bundle.
+
+    `category` is kept for backward compatibility:
+    - "experience" retrieves past experiences
+    - other values currently only affect include_general behavior
+    """
+    retriever = MemoryRetriever(memory_store)
+    memory_query = MemoryQuery(
+        query=query,
+        session_id=session_id,
+        include_session_summary=bool(session_id),
+        durable_limit=2 if include_general else 0,
+        experience_limit=limit if category == MemoryType.EXPERIENCE.value else 0,
+        similarity_threshold=similarity_threshold,
+        include_durable=include_general,
+    )
+    return retriever.retrieve(memory_query)
 
 
 # Simple usage examples:

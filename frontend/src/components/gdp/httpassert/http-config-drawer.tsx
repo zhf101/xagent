@@ -166,6 +166,12 @@ export function HttpConfigDrawer({ open, onOpenChange, onSaved, assetId }: HttpC
   const updateAnnotations = (key: keyof GdpToolAnnotations, value: unknown) => setPayload(p => ({ ...p, tool_contract: { ...p.tool_contract, annotations_json: { ...p.tool_contract.annotations_json, [key]: value } } }))
   const updateProfile = (key: keyof GdpExecutionProfile, value: unknown) => setPayload(p => ({ ...p, execution_profile: { ...p.execution_profile, [key]: value } }))
   const updateAuth = (key: string, value: unknown) => setPayload(p => ({ ...p, execution_profile: { ...p.execution_profile, auth_json: { ...p.execution_profile.auth_json, [key]: value } } }))
+  const annotationHints: Array<{ key: keyof GdpToolAnnotations; label: string; desc: string }> = [
+    { key: "readOnlyHint", label: "只读查询", desc: "无修改操作" },
+    { key: "destructiveHint", label: "高风险/破坏性", desc: "必须强确认" },
+    { key: "idempotentHint", label: "幂等性接口", desc: "支持重试" },
+    { key: "openWorldHint", label: "外部强时效性", desc: "不建议缓存" },
+  ]
   const updateResponseTemplate = (key: string, value: unknown) =>
     setPayload(p => ({
       ...p,
@@ -366,12 +372,7 @@ export function HttpConfigDrawer({ open, onOpenChange, onSaved, assetId }: HttpC
                     <div className="space-y-4">
                       <Label className="text-xs font-black uppercase tracking-wider">行为提示 (Annotations)</Label>
                       <div className="grid grid-cols-2 gap-4">
-                        {[
-                          { key: "readOnlyHint", label: "只读查询", desc: "无修改操作" },
-                          { key: "destructiveHint", label: "高风险/破坏性", desc: "必须强确认" },
-                          { key: "idempotentHint", label: "幂等性接口", desc: "支持重试" },
-                          { key: "openWorldHint", label: "外部强时效性", desc: "不建议缓存" },
-                        ].map((hint: { key: keyof GdpToolAnnotations; label: string; desc: string }) => (
+                        {annotationHints.map((hint) => (
                           <div key={hint.key} className="flex items-center justify-between p-5 rounded-[1.5rem] border bg-background hover:border-primary/40 transition-all shadow-sm">
                             <div className="space-y-1"><Label className="text-sm font-bold">{hint.label}</Label><p className="text-[10px] text-muted-foreground leading-tight">{hint.desc}</p></div>
                             <Switch checked={!!payload.tool_contract.annotations_json[hint.key]} onCheckedChange={v => updateAnnotations(hint.key, v)} />

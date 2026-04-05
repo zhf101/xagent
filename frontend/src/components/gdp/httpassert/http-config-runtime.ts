@@ -107,7 +107,7 @@ export function coerceHttpAssetPayloadFromApi(data: GdpHttpAssetPayload): GdpHtt
       ...data.execution_profile,
       auth_json: data.execution_profile.auth_json?.type
         ? data.execution_profile.auth_json
-        : { type: "none", ...(data.execution_profile.auth_json || {}) },
+        : { ...(data.execution_profile.auth_json || {}), type: "none" },
       headers_json: headersToList(data.execution_profile.headers_json),
     },
   }

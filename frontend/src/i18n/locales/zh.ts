@@ -878,6 +878,10 @@ Build when you need.`
       description: "存储、搜索并管理智能体的记忆项",
       create: "新建记忆",
     },
+    tabs: {
+      memories: "记忆列表",
+      jobs: "治理任务",
+    },
     createDialog: {
       title: "创建记忆",
       description: "填写内容、关键词、标签和元数据以添加新的记忆项，类别默认为\"用户添加的记忆\"。",
@@ -967,6 +971,46 @@ Build when you need.`
       contextSource: "上下文来源",
       allMemories: "所有记忆",
       byCategory: "按类别",
+    },
+    jobs: {
+      title: "记忆治理任务",
+      description: "查看异步记忆提取、合并、过期治理任务，并对失败任务执行重试。",
+      headerHint: "查看记忆治理队列状态，并对失败任务进行重试。",
+      sidebar: {
+        title: "治理队列",
+        description: "这个面板只用于运维治理，不做记忆编辑。重点看队列状态、失败原因和重试结果。",
+      },
+      filters: {
+        statusPlaceholder: "按状态筛选",
+        jobTypePlaceholder: "按任务类型筛选",
+      },
+      actions: {
+        refresh: "刷新",
+        retry: "重试",
+        retrying: "重试中...",
+      },
+      columns: {
+        job: "任务",
+        status: "状态",
+        source: "来源",
+        attempts: "尝试次数",
+        updatedAt: "更新时间",
+        actions: "操作",
+      },
+      detail: {
+        title: "任务详情",
+        empty: "选择一条任务后，可查看其负载和错误详情。",
+        jobType: "任务类型",
+        status: "状态",
+        source: "来源",
+        lastError: "最近错误",
+        payload: "任务负载",
+      },
+      errors: {
+        loadFailed: "加载记忆治理任务失败",
+        retryFailed: "重试记忆治理任务失败",
+      },
+      empty: "当前筛选条件下没有记忆治理任务。",
     },
     actions: {
       exportSelected: "导出选中 ({count})",
@@ -2218,6 +2262,8 @@ Build when you need.`
         completed: "已完成",
         failed: "失败",
         skipped: "已跳过",
+        waitingApproval: "等待审批",
+        analyzed: "已分析",
       },
       right: {
         titles: {

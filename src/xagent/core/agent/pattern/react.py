@@ -18,6 +18,8 @@ from json_repair import loads as repair_loads
 from pydantic import BaseModel, Field, ValidationError
 
 from ...memory import MemoryStore
+from ...memory.prompt_builder import build_memory_prompt_sections
+from ...memory.session_summary import upsert_session_summary
 from ...model.chat.basic.base import BaseLLM
 from ...tools.adapters.vibe import Tool
 from ..context import AgentContext
@@ -51,7 +53,11 @@ from ..transcript import normalize_transcript_messages
 from ..utils.compact import CompactConfig, CompactUtils
 from ..utils.llm_utils import clean_messages
 from .base import AgentPattern, notify_condition
-from .memory_utils import enhance_goal_with_memory, store_react_task_memory
+from .memory_utils import (
+    enhance_goal_with_bundle,
+    enqueue_memory_extraction_job,
+    store_react_task_memory,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -678,7 +684,7 @@ class ReActPattern(AgentPattern):
                 task_id,
                 data={
                     "task": task,
-                    "memory_category": "react_memory",
+                    "memory_category": "experience",
                 },
             )
 
@@ -690,16 +696,19 @@ class ReActPattern(AgentPattern):
             except ImportError:
                 # Fallback for non-web environment
                 user_id = None
+            session_id = context.session_id if context and context.session_id else None
 
-            memories = await asyncio.to_thread(
-                self._lookup_relevant_memories_with_context,
+            memory_bundle = await asyncio.to_thread(
+                self._lookup_memory_bundle_with_context,
                 self.memory_store,
                 task,
-                "react_memory",
+                "experience",
                 include_general=True,
                 user_id=user_id,
+                session_id=session_id,
             )
-            enhanced_task = enhance_goal_with_memory(task, memories)
+            memories = memory_bundle.flatten()
+            enhanced_task = enhance_goal_with_bundle(task, memory_bundle)
 
             # Trace memory retrieval end
             await trace_memory_retrieve_end(
@@ -893,13 +902,22 @@ class ReActPattern(AgentPattern):
                             },
                         )
 
-                    return {
+                    final_result = {
                         "success": success_status,
                         "output": result["content"],
                         "iterations": iteration + 1,
                         "execution_history": messages,
                         "pattern": "react",
                     }
+                    if self.memory_store and context and context.session_id:
+                        await asyncio.to_thread(
+                            upsert_session_summary,
+                            self.memory_store,
+                            context.session_id,
+                            task,
+                            final_result,
+                        )
+                    return final_result
 
                 # ReAct 只负责把工具层阻断结果原样带出；
                 # 是否投影成 DAG 的 waiting_approval、是否允许恢复，交给上层执行器和宿主服务处理。
@@ -1044,7 +1062,7 @@ class ReActPattern(AgentPattern):
                     memory_task_id,
                     data={
                         "task": user_message,
-                        "memory_category": "react_memory",
+                        "memory_category": "experience",
                     },
                     step_id=step_id,
                 )
@@ -1057,15 +1075,18 @@ class ReActPattern(AgentPattern):
                 except ImportError:
                     # Fallback for non-web environment
                     user_id = None
+                session_id = getattr(self._context, "session_id", None)
 
-                memories = await asyncio.to_thread(
-                    self._lookup_relevant_memories_with_context,
+                memory_bundle = await asyncio.to_thread(
+                    self._lookup_memory_bundle_with_context,
                     self.memory_store,
                     user_message,
-                    "react_memory",
+                    "experience",
                     include_general=True,
                     user_id=user_id,
+                    session_id=session_id,
                 )
+                memories = memory_bundle.flatten()
 
                 # Trace memory retrieval end
                 await trace_memory_retrieve_end(
@@ -1083,12 +1104,11 @@ class ReActPattern(AgentPattern):
 
                 # Add memory context to the user message
                 if memories:
-                    memory_context = "\n\nRelevant Memories:\n" + "\n".join(
-                        [
-                            f"- {m.get('content', '')}"
-                            for m in memories
-                            if m.get("content", "").strip()
-                        ]
+                    memory_context_body = build_memory_prompt_sections(memory_bundle)
+                    memory_context = (
+                        f"\n\nRelevant Memory Context:\n{memory_context_body}"
+                        if memory_context_body
+                        else ""
                     )
                     enhanced_messages = []
                     for msg in messages:
@@ -2400,7 +2420,7 @@ After using tools, provide a clear summary of the results in the SAME LANGUAGE a
                         task_id,
                         data={
                             "task": task,
-                            "memory_category": "react_memory",
+                            "memory_category": "experience",
                             "classification": insights.get("classification", {}),
                             "step_id": getattr(self, "_current_step_id", None),
                         },
@@ -2444,6 +2464,41 @@ After using tools, provide a clear summary of the results in the SAME LANGUAGE a
                     logger.info(
                         f"Stored valuable ReAct memory for task: {task[:100]}... Reason: {reason}"
                     )
+
+                extract_job_id = await asyncio.to_thread(
+                    enqueue_memory_extraction_job,
+                    task=task,
+                    result=result,
+                    classification=insights,
+                    session_id=(
+                        self._context.session_id
+                        if self._context and self._context.session_id
+                        else None
+                    ),
+                    user_id=(
+                        self._context.user_id
+                        if self._context and self._context.user_id
+                        else None
+                    ),
+                    project_id=(
+                        str(self._context.state.get("project_id"))
+                        if self._context
+                        and self._context.state
+                        and self._context.state.get("project_id") is not None
+                        else None
+                    ),
+                    task_id=(
+                        self._context.task_id
+                        if self._context and self._context.task_id
+                        else None
+                    ),
+                    pattern="react",
+                )
+                if extract_job_id is not None:
+                    logger.info(
+                        "Enqueued async memory extraction job %s for ReAct task",
+                        extract_job_id,
+                    )
                 elif should_store and not self.memory_store:
                     # Trace memory storage decision (would store but no memory_store)
                     await trace_memory_store_end(
@@ -2460,7 +2515,7 @@ After using tools, provide a clear summary of the results in the SAME LANGUAGE a
                     logger.info(
                         f"Would store valuable ReAct memory but no memory_store: {task[:100]}... Reason: {reason}"
                     )
-                else:
+                elif not should_store:
                     # Trace memory storage decision (not storing)
                     await trace_memory_store_end(
                         self.tracer,
@@ -2596,7 +2651,7 @@ STORAGE THRESHOLD: Be extremely conservative. Only store truly exceptional insig
         logger.error(f"LLM response: {response}")
         logger.error("=== END CONTEXT ===")
 
-    def _lookup_relevant_memories_with_context(
+    def _lookup_memory_bundle_with_context(
         self,
         memory_store: MemoryStore,
         query: str,
@@ -2605,12 +2660,13 @@ STORAGE THRESHOLD: Be extremely conservative. Only store truly exceptional insig
         limit: int = 5,
         similarity_threshold: Optional[float] = None,
         user_id: Optional[int] = None,
-    ) -> List[Dict[str, Any]]:
+        session_id: Optional[str] = None,
+    ) -> Any:
         """
-        Wrapper for lookup_relevant_memories that sets user context for thread execution.
+        Wrapper for lookup_memory_bundle that sets user context for thread execution.
 
         This method ensures that user context is properly set when calling
-        lookup_relevant_memories from a different thread (e.g., via asyncio.to_thread).
+        lookup_memory_bundle from a different thread (e.g., via asyncio.to_thread).
         """
         # Set user context for this thread
         if user_id is not None:
@@ -2620,41 +2676,44 @@ STORAGE THRESHOLD: Be extremely conservative. Only store truly exceptional insig
                 context_token = current_user_id.set(user_id)
             except ImportError:
                 # Fallback for non-web environment - proceed without user context
-                from .memory_utils import lookup_relevant_memories
+                from .memory_utils import lookup_memory_bundle
 
-                return lookup_relevant_memories(
+                return lookup_memory_bundle(
                     memory_store,
                     query,
                     category,
                     include_general,
                     limit,
                     similarity_threshold,
+                    session_id,
                 )
 
             try:
                 # Call the original function with context set
-                from .memory_utils import lookup_relevant_memories
+                from .memory_utils import lookup_memory_bundle
 
-                return lookup_relevant_memories(
+                return lookup_memory_bundle(
                     memory_store,
                     query,
                     category,
                     include_general,
                     limit,
                     similarity_threshold,
+                    session_id,
                 )
             finally:
                 # Clean up context
                 current_user_id.reset(context_token)
         else:
             # No user ID provided, call function directly
-            from .memory_utils import lookup_relevant_memories
+            from .memory_utils import lookup_memory_bundle
 
-            return lookup_relevant_memories(
+            return lookup_memory_bundle(
                 memory_store,
                 query,
                 category,
                 include_general,
                 limit,
                 similarity_threshold,
+                session_id,
             )

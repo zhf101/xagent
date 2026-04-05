@@ -6,6 +6,13 @@ from typing import Any, Optional, Union
 
 from pydantic import BaseModel, Field
 
+from .schema import (
+    MemoryScope,
+    default_category_for_type,
+    resolve_memory_subtype,
+    resolve_memory_type,
+)
+
 
 class MemoryNote(BaseModel):
     content: Union[str, bytes]
@@ -13,9 +20,38 @@ class MemoryNote(BaseModel):
     keywords: list[str] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
     category: str = "general"
+    memory_type: Optional[str] = None
+    memory_subtype: Optional[str] = None
+    scope: str = MemoryScope.USER.value
     timestamp: datetime = Field(default_factory=datetime.now)
     mime_type: str = "text/plain"
+    source_session_id: Optional[str] = None
+    source_agent_id: Optional[str] = None
+    project_id: Optional[str] = None
+    workspace_id: Optional[str] = None
+    importance: int = 3
+    confidence: float = 0.5
+    freshness_at: Optional[datetime] = None
+    expires_at: Optional[datetime] = None
+    dedupe_key: Optional[str] = None
+    status: str = "active"
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    def model_post_init(self, __context: Any) -> None:
+        self.memory_type = resolve_memory_type(self.memory_type, self.category)
+        self.memory_subtype = resolve_memory_subtype(
+            self.memory_subtype,
+            category=self.category,
+            metadata=self.metadata,
+        )
+        if (
+            self.category == "general"
+            and self.memory_type
+            and self.memory_type != "durable"
+        ):
+            self.category = default_category_for_type(self.memory_type)
+        if self.freshness_at is None:
+            self.freshness_at = self.timestamp
 
 
 class MemoryResponse(BaseModel):

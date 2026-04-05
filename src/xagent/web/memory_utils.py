@@ -2,10 +2,15 @@
 
 import logging
 import os
-from typing import Optional, Union
+from datetime import datetime
+from typing import Any, Optional, Union
 
+from xagent.core.memory.freshness import get_freshness_label
 from xagent.core.memory.in_memory import InMemoryMemoryStore
 from xagent.core.memory.lancedb import LanceDBMemoryStore
+from xagent.core.memory.prompt_builder import build_memory_prompt_sections
+from xagent.core.memory.retriever import MemoryBundle
+from xagent.core.memory.core import MemoryNote
 
 from .user_isolated_memory import UserIsolatedMemoryStore
 
@@ -95,3 +100,53 @@ def create_memory_store(
     # Wrap with user isolation for web application
     logger.info("Wrapping with user isolation")
     return UserIsolatedMemoryStore(in_memory_store)
+
+
+def serialize_memory_note(memory: MemoryNote) -> dict[str, Any]:
+    freshness_label = _get_freshness_label(memory)
+    return {
+        "id": memory.id,
+        "content": memory.content,
+        "keywords": memory.keywords,
+        "tags": memory.tags,
+        "category": memory.category,
+        "memory_type": memory.memory_type,
+        "memory_subtype": memory.memory_subtype,
+        "scope": memory.scope,
+        "timestamp": memory.timestamp,
+        "mime_type": memory.mime_type,
+        "source_session_id": memory.source_session_id,
+        "source_agent_id": memory.source_agent_id,
+        "project_id": memory.project_id,
+        "workspace_id": memory.workspace_id,
+        "importance": memory.importance,
+        "confidence": memory.confidence,
+        "freshness_at": memory.freshness_at,
+        "freshness_label": freshness_label,
+        "expires_at": memory.expires_at,
+        "dedupe_key": memory.dedupe_key,
+        "status": memory.status,
+        "metadata": memory.metadata,
+    }
+
+
+def serialize_memory_bundle(bundle: MemoryBundle) -> dict[str, Any]:
+    return {
+        "session_context": bundle.session_context,
+        "durable_memories": bundle.durable_memories,
+        "past_experiences": bundle.past_experiences,
+        "knowledge_refs": bundle.knowledge_refs,
+        "flat_memories": bundle.flatten(),
+        "counts": {
+            "session_context": len(bundle.session_context),
+            "durable_memories": len(bundle.durable_memories),
+            "past_experiences": len(bundle.past_experiences),
+            "knowledge_refs": len(bundle.knowledge_refs),
+            "flat_memories": len(bundle.flatten()),
+        },
+        "prompt_preview": build_memory_prompt_sections(bundle),
+    }
+
+
+def _get_freshness_label(memory: MemoryNote) -> str:
+    return get_freshness_label(memory, now=datetime.now())

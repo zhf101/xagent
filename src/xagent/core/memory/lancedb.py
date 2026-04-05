@@ -14,6 +14,7 @@ from ..model.embedding.adapter import create_embedding_adapter
 from ..model.model import EmbeddingModelConfig
 from .base import MemoryStore
 from .core import MemoryNote, MemoryResponse
+from .schema import matches_memory_filter
 
 logger = logging.getLogger(__name__)
 
@@ -176,8 +177,23 @@ class LanceDBMemoryStore(MemoryStore):
             "keywords": note.keywords,
             "tags": note.tags,
             "category": note.category,
+            "memory_type": note.memory_type,
+            "memory_subtype": note.memory_subtype,
+            "scope": note.scope,
             "timestamp": note.timestamp.isoformat(),
             "mime_type": note.mime_type,
+            "source_session_id": note.source_session_id,
+            "source_agent_id": note.source_agent_id,
+            "project_id": note.project_id,
+            "workspace_id": note.workspace_id,
+            "importance": note.importance,
+            "confidence": note.confidence,
+            "freshness_at": note.freshness_at.isoformat()
+            if note.freshness_at
+            else None,
+            "expires_at": note.expires_at.isoformat() if note.expires_at else None,
+            "dedupe_key": note.dedupe_key,
+            "status": note.status,
             **note.metadata,
         }
 
@@ -201,26 +217,43 @@ class LanceDBMemoryStore(MemoryStore):
             keywords=metadata.pop("keywords", []),
             tags=metadata.pop("tags", []),
             category=metadata.pop("category", "general"),
+            memory_type=metadata.pop("memory_type", None),
+            memory_subtype=metadata.pop("memory_subtype", None),
+            scope=metadata.pop("scope", "user"),
             timestamp=metadata.pop("timestamp", None),
             mime_type=metadata.pop("mime_type", "text/plain"),
+            source_session_id=metadata.pop("source_session_id", None),
+            source_agent_id=metadata.pop("source_agent_id", None),
+            project_id=metadata.pop("project_id", None),
+            workspace_id=metadata.pop("workspace_id", None),
+            importance=metadata.pop("importance", 3),
+            confidence=metadata.pop("confidence", 0.5),
+            freshness_at=metadata.pop("freshness_at", None),
+            expires_at=metadata.pop("expires_at", None),
+            dedupe_key=metadata.pop("dedupe_key", None),
+            status=metadata.pop("status", "active"),
             metadata=metadata,
         )
 
     def _apply_filters(self, note: MemoryNote, filters: dict[str, Any]) -> bool:
         """Apply filters to a MemoryNote for vector search results."""
         for key, value in filters.items():
-            # Special handling for category - check note.category first
-            if key == "category":
-                if str(note.category) != str(value):
-                    return False
-            elif key == "metadata":
-                # Handle nested metadata filters
-                if not self._apply_metadata_filters(note.metadata, value):
-                    return False
-            else:
-                # For other fields, check metadata
-                if str(note.metadata.get(key, "")) != str(value):
-                    return False
+            if not matches_memory_filter(
+                note_category=note.category,
+                note_memory_type=note.memory_type,
+                note_memory_subtype=note.memory_subtype,
+                note_scope=note.scope,
+                note_source_session_id=note.source_session_id,
+                note_source_agent_id=note.source_agent_id,
+                note_project_id=note.project_id,
+                note_workspace_id=note.workspace_id,
+                note_dedupe_key=note.dedupe_key,
+                note_status=note.status,
+                metadata=note.metadata,
+                key=key,
+                value=value,
+            ):
+                return False
         return True
 
     def _apply_text_search_filters(
@@ -228,14 +261,22 @@ class LanceDBMemoryStore(MemoryStore):
     ) -> bool:
         """Apply filters to metadata dict for text search results."""
         for key, value in filters.items():
-            if key == "metadata":
-                # Handle nested metadata filters
-                if not self._apply_metadata_filters(metadata_dict, value):
-                    return False
-            else:
-                # Direct field comparison
-                if str(metadata_dict.get(key, "")) != str(value):
-                    return False
+            if not matches_memory_filter(
+                note_category=metadata_dict.get("category"),
+                note_memory_type=metadata_dict.get("memory_type"),
+                note_memory_subtype=metadata_dict.get("memory_subtype"),
+                note_scope=metadata_dict.get("scope"),
+                note_source_session_id=metadata_dict.get("source_session_id"),
+                note_source_agent_id=metadata_dict.get("source_agent_id"),
+                note_project_id=metadata_dict.get("project_id"),
+                note_workspace_id=metadata_dict.get("workspace_id"),
+                note_dedupe_key=metadata_dict.get("dedupe_key"),
+                note_status=metadata_dict.get("status"),
+                metadata=metadata_dict,
+                key=key,
+                value=value,
+            ):
+                return False
         return True
 
     def _apply_metadata_filters(
