@@ -7,6 +7,8 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from ....core.database.config import normalize_database_name, resolve_database_name_from_url
+from ....web.models.text2sql import Text2SQLDatabase
 from ....web.models.vanna import (
     VannaSqlAsset,
     VannaSqlAssetStatus,
@@ -22,6 +24,21 @@ class SqlAssetResolver:
     def __init__(self, db: Session) -> None:
         self.db = db
 
+    def _resolve_asset_database_name(self, asset: VannaSqlAsset) -> str | None:
+        normalized = normalize_database_name(getattr(asset, "database_name", None))
+        if normalized is not None:
+            return normalized
+        source_datasource = (
+            self.db.query(Text2SQLDatabase)
+            .filter(Text2SQLDatabase.id == int(asset.datasource_id))
+            .first()
+        )
+        if source_datasource is None:
+            return None
+        return normalize_database_name(
+            getattr(source_datasource, "database_name", None)
+        ) or normalize_database_name(resolve_database_name_from_url(str(source_datasource.url)))
+
     def resolve(
         self,
         *,
@@ -35,9 +52,25 @@ class SqlAssetResolver:
         if not normalized_question:
             return []
 
+        datasource = (
+            self.db.query(Text2SQLDatabase)
+            .filter(
+                Text2SQLDatabase.id == int(datasource_id),
+                Text2SQLDatabase.user_id == int(owner_user_id),
+            )
+            .first()
+        )
+        if datasource is None:
+            raise ValueError(f"Datasource {datasource_id} was not found")
+        target_database_name = normalize_database_name(
+            getattr(datasource, "database_name", None)
+        ) or normalize_database_name(resolve_database_name_from_url(str(datasource.url)))
+        if target_database_name is None:
+            raise ValueError(f"Datasource {datasource_id} has no database_name")
+
         query = self.db.query(VannaSqlAsset).filter(
             VannaSqlAsset.owner_user_id == int(owner_user_id),
-            VannaSqlAsset.datasource_id == int(datasource_id),
+            VannaSqlAsset.system_short == str(datasource.system_short),
             VannaSqlAsset.status.in_(
                 [
                     VannaSqlAssetStatus.PUBLISHED.value,
@@ -45,13 +78,16 @@ class SqlAssetResolver:
                 ]
             ),
         )
-        if kb_id is not None:
-            query = query.filter(VannaSqlAsset.kb_id == int(kb_id))
-
         assets = query.all()
         scored: list[dict[str, Any]] = []
         for asset in assets:
-            score, reason = self._score_asset(asset=asset, question=normalized_question)
+            score, reason = self._score_asset(
+                asset=asset,
+                question=normalized_question,
+                target_datasource=datasource,
+                target_database_name=target_database_name,
+                kb_id=kb_id,
+            )
             if score <= 0:
                 continue
             version = None
@@ -80,7 +116,13 @@ class SqlAssetResolver:
         return scored[: max(1, int(top_k))]
 
     def _score_asset(
-        self, *, asset: VannaSqlAsset, question: str
+        self,
+        *,
+        asset: VannaSqlAsset,
+        question: str,
+        target_datasource: Text2SQLDatabase,
+        target_database_name: str,
+        kb_id: int | None,
     ) -> tuple[float, str]:
         score = 0.0
         reasons: list[str] = []
@@ -96,6 +138,19 @@ class SqlAssetResolver:
         if asset_code and asset_code in question:
             score += 1.0
             reasons.append("asset_code_exact")
+        asset_database_name = self._resolve_asset_database_name(asset)
+        if asset_database_name != target_database_name:
+            return 0.0, "database_name_mismatch"
+        if int(asset.datasource_id) == int(target_datasource.id):
+            score += 0.3
+            reasons.append("same_datasource")
+        reasons.append("same_database_name")
+        if str(asset.env or "") == str(target_datasource.env or ""):
+            score += 0.18
+            reasons.append("same_env")
+        if kb_id is not None and int(asset.kb_id) == int(kb_id):
+            score += 0.12
+            reasons.append("same_kb")
         if name and name in question:
             score += 0.8
             reasons.append("name_contains")

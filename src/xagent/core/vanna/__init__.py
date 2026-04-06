@@ -12,6 +12,7 @@ __all__ = [
     "QueryService",
     "RetrievalService",
     "SchemaHarvestService",
+    "SchemaAnnotationService",
     "SchemaSummaryService",
     "SqlAssetBindingService",
     "SqlAssetExecutionService",
@@ -31,6 +32,10 @@ _LAZY_IMPORTS = {
     "QueryService": (".query_service", "QueryService"),
     "RetrievalService": (".retrieval_service", "RetrievalService"),
     "SchemaHarvestService": (".schema_harvest_service", "SchemaHarvestService"),
+    "SchemaAnnotationService": (
+        ".schema_annotation_service",
+        "SchemaAnnotationService",
+    ),
     "SchemaSummaryService": (".schema_summary_service", "SchemaSummaryService"),
     "SqlAssetBindingService": (
         ".sql_assets",

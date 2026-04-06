@@ -54,7 +54,20 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
   const reconnectAttemptsRef = useRef(0)
   const taskIdRef = useRef(taskId)
   const tokenRef = useRef(token || authToken) // Prioritize passed token, otherwise use auth token
+  const onMessageRef = useRef(onMessage)
+  const onConnectRef = useRef(onConnect)
+  const onDisconnectRef = useRef(onDisconnect)
+  const onErrorRef = useRef(onError)
+  const authRefreshTokenRef = useRef(authRefreshToken)
   const maxReconnectAttempts = 3
+
+  useEffect(() => {
+    onMessageRef.current = onMessage
+    onConnectRef.current = onConnect
+    onDisconnectRef.current = onDisconnect
+    onErrorRef.current = onError
+    authRefreshTokenRef.current = authRefreshToken
+  }, [onMessage, onConnect, onDisconnect, onError, authRefreshToken])
 
   // Update token ref when token changes
   useEffect(() => {
@@ -85,11 +98,12 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
   }, [authToken, token, taskId])
 
   const connect = useCallback(() => {
+    const currentTaskId = taskIdRef.current
     console.log('🔧 Connect called:', {
       currentSocket: socketRef.current,
       readyState: socketRef.current?.readyState,
       isConnecting: isConnectingRef.current,
-      taskId
+      taskId: currentTaskId
     })
 
     if (socketRef.current?.readyState === WebSocket.OPEN || isConnectingRef.current) return
@@ -97,12 +111,12 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
 
     try {
       // Don't try to connect if there's no task ID
-      if (!taskId) {
+      if (!currentTaskId) {
         isConnectingRef.current = false
         return
       }
 
-      const wsUrl = `${url}/ws/chat/${taskId}${tokenRef.current ? `?token=${tokenRef.current}` : ''}`
+      const wsUrl = `${url}/ws/chat/${currentTaskId}${tokenRef.current ? `?token=${tokenRef.current}` : ''}`
       console.log('🚀 Attempting to connect to WebSocket:', wsUrl)
 
       // Test if the URL is valid before creating WebSocket
@@ -122,7 +136,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
           url: socket.url,
           protocol: socket.protocol,
           extensions: socket.extensions,
-          taskId: taskId
+          taskId: currentTaskId
         })
         console.log('🎯 About to set isConnected to true')
         setIsConnected(true)
@@ -130,7 +144,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
         setConnectionError(null)
         reconnectAttemptsRef.current = 0
         isConnectingRef.current = false
-        onConnect?.()
+        onConnectRef.current?.()
       }
 
       socket.onclose = (event) => {
@@ -143,15 +157,16 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
         })
         setIsConnected(false)
         isConnectingRef.current = false
-        onDisconnect?.()
+        onDisconnectRef.current?.()
 
         // Handle authentication errors (4001 = Authentication required)
         if (event.code === 4001) {
           console.log('🔐 WebSocket authentication failed, trying token refresh')
-          if (authRefreshToken && typeof authRefreshToken === 'function') {
+          const refreshTokenFn = authRefreshTokenRef.current
+          if (refreshTokenFn && typeof refreshTokenFn === 'function') {
             try {
               console.log('🔄 Attempting to refresh auth token for WebSocket')
-              const refreshTokenFunc = authRefreshToken as () => Promise<boolean>
+              const refreshTokenFunc = refreshTokenFn as () => Promise<boolean>
               refreshTokenFunc().then(refreshSuccess => {
                 if (refreshSuccess) {
                   console.log('✅ Auth token refreshed successfully, will reconnect WebSocket')
@@ -162,19 +177,19 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
                   }, 1000)
                 } else {
                   console.log('❌ Auth token refresh failed, WebSocket connection will not be restored')
-                  onError?.(new Error('Authentication failed and token refresh failed'))
+                  onErrorRef.current?.(new Error('Authentication failed and token refresh failed'))
                 }
               }).catch(error => {
                 console.error('❌ Error during auth token refresh for WebSocket:', error)
-                onError?.(new Error('Authentication failed and token refresh error'))
+                onErrorRef.current?.(new Error('Authentication failed and token refresh error'))
               })
             } catch (error) {
               console.error('❌ Error during auth token refresh for WebSocket:', error)
-              onError?.(new Error('Authentication failed and token refresh error'))
+              onErrorRef.current?.(new Error('Authentication failed and token refresh error'))
             }
           } else {
             console.log('❌ No refresh token available, cannot recover WebSocket connection')
-            onError?.(new Error('Authentication failed and no refresh token available'))
+            onErrorRef.current?.(new Error('Authentication failed and no refresh token available'))
           }
           return
         }
@@ -198,7 +213,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
         }
 
         // Only attempt to reconnect if under max attempts and taskId exists
-        if (reconnectAttemptsRef.current < maxReconnectAttempts && taskId) {
+        if (reconnectAttemptsRef.current < maxReconnectAttempts && taskIdRef.current) {
           reconnectAttemptsRef.current++
           const delay = Math.min(1000 * reconnectAttemptsRef.current, 5000)
           console.log(`🔄 Attempting to reconnect in ${delay}ms... (attempt ${reconnectAttemptsRef.current}/${maxReconnectAttempts})`)
@@ -225,7 +240,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
         setConnectionError(connectionError)
         setIsConnected(false)
         isConnectingRef.current = false
-        onError?.(connectionError)
+        onErrorRef.current?.(connectionError)
 
         // Don't attempt to reconnect if there's an immediate error (like 404)
         if (reconnectTimeoutRef.current) {
@@ -337,8 +352,11 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
             }
           }
 
-          setLastMessage(message)
-          onMessage?.(message)
+          if (onMessageRef.current) {
+            onMessageRef.current(message)
+          } else {
+            setLastMessage(message)
+          }
         } catch (error) {
           console.log("Error parsing WebSocket message:", error)
         }
@@ -348,9 +366,9 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
       console.log('Failed to create WebSocket connection:', error)
       const connectionError = error instanceof Error ? error : new Error('Failed to create WebSocket connection')
       setConnectionError(connectionError)
-      onError?.(connectionError)
+      onErrorRef.current?.(connectionError)
     }
-  }, [url, taskId, token, authToken, onConnect, onDisconnect, onError])
+  }, [url])
 
   const disconnect = useCallback(() => {
     if (reconnectTimeoutRef.current) {
@@ -383,6 +401,11 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
     // logic: if we have a new taskId (different from ref) and we are currently connected
     if (taskId && taskId !== taskIdRef.current && isConnected) {
       console.log(`🔄 TaskId changed from ${taskIdRef.current} to ${taskId}, disconnecting old socket...`)
+      disconnect()
+    }
+
+    if (!taskId && socketRef.current) {
+      console.log('🔄 taskId cleared, disconnecting WebSocket')
       disconnect()
     }
 
@@ -597,23 +620,19 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
 
 
   useEffect(() => {
-    // Only attempt to connect when taskId changes and autoConnect is enabled
-    // We also check connectionError to avoid infinite loops, but we need to react when it's cleared
-    // Note: We don't check !isConnected here because:
-    // 1. connect() has its own guard checks
-    // 2. When switching tasks, isConnected might still be true from the previous task in this render cycle,
-    //    preventing the new connection if we check it here.
+    // Only attempt to connect when taskId changes and autoConnect is enabled.
+    // Cleanup is handled separately on unmount to avoid reconnect loops from routine rerenders.
     if (autoConnect && taskId && !connectionError && !isConnectingRef.current) {
       connect()
     }
+  }, [taskId, autoConnect, connectionError, connect])
 
+  useEffect(() => {
     return () => {
-      // Clean up on unmount or when dependencies change
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current)
         reconnectTimeoutRef.current = null
       }
-      // Close WebSocket connection to prevent port closed errors
       if (socketRef.current) {
         socketRef.current.close(1000, 'Component unmounting')
         socketRef.current = null
@@ -621,7 +640,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
       setIsConnected(false)
       isConnectingRef.current = false
     }
-  }, [url, taskId, token, authToken, autoConnect, connectionError]) // Added connectionError to dependencies
+  }, [])
 
   // Separate effect to handle connection state changes
   useEffect(() => {

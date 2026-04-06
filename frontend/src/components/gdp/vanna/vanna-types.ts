@@ -13,11 +13,13 @@ export type VannaAskExecutionStatus =
   | "executed"
   | "failed"
   | "waiting_approval"
+export type VannaSqlAssetStatus = "draft" | "published" | "archived"
 
 export interface Text2SqlDatabaseRecord {
   id: number
   name: string
   system_short: string
+  database_name?: string | null
   env: string
   type: string
   url: string
@@ -40,6 +42,7 @@ export interface VannaKnowledgeBaseRecord {
   datasource_id: number
   datasource_name?: string | null
   system_short: string
+  database_name?: string | null
   env: string
   db_type?: string | null
   dialect?: string | null
@@ -129,6 +132,35 @@ export interface VannaSchemaColumnRecord {
   stats_json: Record<string, unknown>
   semantic_tags_json: string[]
   content_hash?: string | null
+  business_description?: string | null
+  comment_override?: string | null
+  default_value_override?: string | null
+  allowed_values_override_json: string[]
+  sample_values_override_json: string[]
+  effective_default_raw?: string | null
+  effective_column_comment?: string | null
+  effective_allowed_values_json: string[]
+  effective_sample_values_json: string[]
+  annotation?: {
+    id: number
+    kb_id: number
+    datasource_id: number
+    schema_name?: string | null
+    table_name: string
+    column_name: string
+    business_description?: string | null
+    comment_override?: string | null
+    default_value_override?: string | null
+    allowed_values_override_json: string[]
+    sample_values_override_json: string[]
+    update_source: string
+    create_user_id: number
+    create_user_name?: string | null
+    updated_by_user_id: number
+    updated_by_user_name?: string | null
+    created_at?: string | null
+    updated_at?: string | null
+  } | null
   created_at: string
   updated_at: string
 }
@@ -231,5 +263,49 @@ export interface VannaAskResult {
   sql_confidence?: number | null
   execution_result?: Record<string, unknown> | null
   auto_train_entry_id?: number | null
+}
+
+export interface VannaSqlAssetRecord {
+  id: number
+  kb_id: number
+  datasource_id: number
+  asset_code: string
+  name: string
+  description?: string | null
+  intent_summary?: string | null
+  asset_kind: string
+  status: VannaSqlAssetStatus | string
+  system_short: string
+  database_name?: string | null
+  env: string
+  match_keywords: string[]
+  match_examples: string[]
+  owner_user_id: number
+  owner_user_name?: string | null
+  current_version_id?: number | null
+  origin_ask_run_id?: number | null
+  origin_training_entry_id?: number | null
+  created_at: string
+  updated_at: string
+}
+
+export interface VannaSqlAssetVersionRecord {
+  id: number
+  asset_id: number
+  version_no: number
+  version_label?: string | null
+  template_sql: string
+  parameter_schema_json: Array<Record<string, unknown>>
+  render_config_json: Record<string, unknown>
+  statement_kind: string
+  tables_read_json: string[]
+  columns_read_json: string[]
+  output_fields_json: string[]
+  verification_result_json: Record<string, unknown>
+  quality_status: string
+  is_published: boolean
+  published_at?: string | null
+  created_by?: string | null
+  created_at: string
 }
 

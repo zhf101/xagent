@@ -168,6 +168,8 @@ class QueryService:
         run = await self.execution_service.execute(
             asset=asset,
             version=version,
+            datasource_id=int(datasource_id),
+            kb_id=int(kb_id) if kb_id is not None else None,
             owner_user_id=int(owner_user_id),
             owner_user_name=create_user_name,
             question=normalized_question,

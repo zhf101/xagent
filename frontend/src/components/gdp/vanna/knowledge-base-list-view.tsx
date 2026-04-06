@@ -3,14 +3,10 @@
 import { useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
 import {
-  Activity,
-  ArrowRight,
-  BookOpen,
   Database,
   Loader2,
   Plus,
   RefreshCw,
-  Sparkles,
 } from "lucide-react"
 import { toast } from "sonner"
 
@@ -24,6 +20,14 @@ import {
   SelectValue,
   Select as SelectRadix,
 } from "@/components/ui/select-radix"
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table"
 import { cn, formatDate } from "@/lib/utils"
 
 import {
@@ -42,14 +46,6 @@ import type {
   VannaTrainingEntryRecord,
 } from "./vanna-types"
 
-function isRecent(value?: string | null) {
-  if (!value) {
-    return false
-  }
-  const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000
-  return new Date(value).getTime() >= sevenDaysAgo
-}
-
 function getKbStatusTone(status: string) {
   if (status === "active") {
     return "bg-emerald-500/10 text-emerald-600 border-emerald-200"
@@ -58,6 +54,10 @@ function getKbStatusTone(status: string) {
     return "bg-amber-500/10 text-amber-600 border-amber-200"
   }
   return "bg-zinc-500/10 text-zinc-600 border-zinc-200"
+}
+
+function formatDateOrFallback(value?: string | null) {
+  return value ? formatDate(value) : "暂无"
 }
 
 export function KnowledgeBaseListView() {
@@ -144,6 +144,7 @@ export function KnowledgeBaseListView() {
       item.name.toLowerCase().includes(keyword) ||
       item.kb_code.toLowerCase().includes(keyword) ||
       item.system_short.toLowerCase().includes(keyword) ||
+      (item.database_name || "").toLowerCase().includes(keyword) ||
       item.env.toLowerCase().includes(keyword)
     return matchesStatus && matchesKeyword
   })
@@ -154,11 +155,11 @@ export function KnowledgeBaseListView() {
       const kb = await createVannaKnowledgeBase({
         datasource_id: datasource.id,
         name: `${datasource.name} 知识库`,
-        description: `${datasource.system_short}/${datasource.env} 数据源默认知识库`,
+        description: `${datasource.system_short}/${datasource.database_name || "-"}/${datasource.env} 数据源默认知识库`,
       })
       toast.success("默认知识库已创建")
       await loadData(true)
-      router.push(`/knowledge-bases/${kb.id}`)
+      router.push(`/knowledge-bases/${kb.id}/facts`)
     } catch (error) {
       console.error(error)
       toast.error(error instanceof Error ? error.message : "创建知识库失败")
@@ -210,53 +211,7 @@ export function KnowledgeBaseListView() {
       </header>
 
       <main className="flex-1 overflow-y-auto p-8">
-        <div className="mx-auto flex max-w-7xl flex-col gap-8">
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-6">
-            {[
-              { label: "知识库总数", value: knowledgeBases.length, icon: Database, tone: "text-sky-600" },
-              {
-                label: "Active",
-                value: knowledgeBases.filter(item => item.status === "active").length,
-                icon: Activity,
-                tone: "text-emerald-600",
-              },
-              {
-                label: "Draft",
-                value: knowledgeBases.filter(item => item.status === "draft").length,
-                icon: BookOpen,
-                tone: "text-amber-600",
-              },
-              {
-                label: "近 7 天训练活跃",
-                value: knowledgeBases.filter(item => isRecent(item.last_train_at)).length,
-                icon: Sparkles,
-                tone: "text-violet-600",
-              },
-              {
-                label: "近 7 天 Ask 活跃",
-                value: knowledgeBases.filter(item => isRecent(item.last_ask_at)).length,
-                icon: Activity,
-                tone: "text-indigo-600",
-              },
-              {
-                label: "待创建默认知识库",
-                value: creatableDatasources.length,
-                icon: Plus,
-                tone: "text-zinc-600",
-              },
-            ].map(item => (
-              <div key={item.label} className="rounded-2xl border bg-card p-5 shadow-sm">
-                <div className="mb-3 flex items-center justify-between">
-                  <span className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
-                    {item.label}
-                  </span>
-                  <item.icon className={cn("h-4 w-4", item.tone)} />
-                </div>
-                <div className="text-3xl font-black">{item.value}</div>
-              </div>
-            ))}
-          </div>
-
+        <div className="mx-auto flex max-w-7xl flex-col gap-6">
           <div className="flex flex-wrap items-center gap-4 rounded-[2rem] border bg-card p-5 shadow-sm">
             <SearchInput
               value={searchTerm}
@@ -296,6 +251,8 @@ export function KnowledgeBaseListView() {
                         <div className="mt-1 flex items-center gap-2 text-xs font-mono text-muted-foreground">
                           <span>{item.system_short}</span>
                           <span className="h-1 w-1 rounded-full bg-border" />
+                          <span>{item.database_name || "-"}</span>
+                          <span className="h-1 w-1 rounded-full bg-border" />
                           <span>{item.env}</span>
                           <span className="h-1 w-1 rounded-full bg-border" />
                           <span>{item.type}</span>
@@ -331,110 +288,97 @@ export function KnowledgeBaseListView() {
                 共 {filteredKnowledgeBases.length} 个知识库
               </span>
             </div>
-
-            {filteredKnowledgeBases.length === 0 ? (
-              <div className="rounded-[2rem] border border-dashed bg-card p-12 text-center shadow-sm">
-                <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-primary/10">
-                  <Database className="h-6 w-6 text-primary" />
-                </div>
-                <h3 className="text-lg font-bold">还没有可展示的知识库</h3>
-                <p className="mt-2 text-sm text-muted-foreground">
-                  先配置数据源，再为数据源创建默认知识库，即可进入训练和治理流程。
-                </p>
-              </div>
-            ) : (
-              <div className="grid gap-6 md:grid-cols-2 xl:grid-cols-3">
-                {filteredKnowledgeBases.map(item => (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onClick={() => router.push(`/knowledge-bases/${item.id}`)}
-                    className="group flex flex-col rounded-[2rem] border bg-card p-6 text-left shadow-sm transition-all hover:border-primary/30 hover:shadow-xl"
-                  >
-                    <div className="mb-4 flex items-start justify-between gap-3">
-                      <div>
-                        <div className="mb-2 flex items-center gap-2">
-                          <h3 className="text-lg font-bold group-hover:text-primary">
-                            {item.name}
-                          </h3>
+            <div className="overflow-hidden rounded-[2rem] border bg-card shadow-sm">
+              <Table>
+                <TableHeader>
+                  <TableRow className="bg-zinc-50/80 hover:bg-zinc-50/80">
+                    <TableHead className="min-w-[220px]">知识库</TableHead>
+                    <TableHead className="w-[110px]">状态</TableHead>
+                    <TableHead className="w-[220px]">系统 / 数据库 / 环境</TableHead>
+                    <TableHead className="min-w-[180px]">数据源</TableHead>
+                    <TableHead className="w-[110px]">活跃表数</TableHead>
+                    <TableHead className="w-[120px]">已发布知识</TableHead>
+                    <TableHead className="w-[100px]">待审核</TableHead>
+                    <TableHead className="w-[100px]">Ask 记录</TableHead>
+                    <TableHead className="w-[170px]">最后训练</TableHead>
+                    <TableHead className="w-[170px]">最后 Ask</TableHead>
+                    <TableHead className="w-[120px] text-right">操作</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {filteredKnowledgeBases.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={11} className="py-16 text-center text-muted-foreground">
+                        还没有可展示的知识库。先配置数据源，再为数据源创建默认知识库。
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    filteredKnowledgeBases.map(item => (
+                      <TableRow
+                        key={item.id}
+                        className="cursor-pointer"
+                        onClick={() => router.push(`/knowledge-bases/${item.id}/facts`)}
+                      >
+                        <TableCell>
+                          <div className="space-y-1">
+                            <div className="font-semibold">{item.name}</div>
+                            <div className="font-mono text-xs text-muted-foreground">{item.kb_code}</div>
+                          </div>
+                        </TableCell>
+                        <TableCell>
                           <Badge variant="outline" className={getKbStatusTone(item.status)}>
                             {item.status}
                           </Badge>
-                        </div>
-                        <div className="flex items-center gap-2 text-xs font-mono text-muted-foreground">
-                          <span>{item.kb_code}</span>
-                          <span className="h-1 w-1 rounded-full bg-border" />
-                          <span>{item.system_short}</span>
-                          <span className="h-1 w-1 rounded-full bg-border" />
-                          <span>{item.env}</span>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="my-4 grid grid-cols-2 gap-4 border-y border-dashed border-border/60 py-5">
-                      <div>
-                        <div className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
-                          活跃表数
-                        </div>
-                        <div className="text-sm font-medium">
-                          <span className="font-black text-foreground">
-                            {tableCountByKb[item.id] ?? 0}
+                        </TableCell>
+                        <TableCell>
+                          <div className="space-y-1 text-sm">
+                            <div className="font-medium">{item.system_short}</div>
+                            <div className="text-xs text-muted-foreground">
+                              {item.database_name || "-"} / {item.env}
+                            </div>
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <div className="space-y-1 text-sm">
+                            <div className="font-medium">{item.datasource_name || `#${item.datasource_id}`}</div>
+                            <div className="text-xs text-muted-foreground">ID: {item.datasource_id}</div>
+                          </div>
+                        </TableCell>
+                        <TableCell>{tableCountByKb[item.id] ?? 0}</TableCell>
+                        <TableCell>{publishedEntryCountByKb[item.id] ?? 0}</TableCell>
+                        <TableCell>
+                          <span className={cn(
+                            "font-medium",
+                            (candidateEntryCountByKb[item.id] ?? 0) > 0 && "text-amber-600"
+                          )}>
+                            {candidateEntryCountByKb[item.id] ?? 0}
                           </span>
-                          <span className="text-muted-foreground"> 张</span>
-                        </div>
-                      </div>
-                      <div>
-                        <div className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
-                          已发布知识
-                        </div>
-                        <div className="text-sm font-medium">
-                          <span className="font-black text-foreground">
-                            {publishedEntryCountByKb[item.id] ?? 0}
-                          </span>
-                          <span className="text-muted-foreground"> 条</span>
-                        </div>
-                      </div>
-                      <div>
-                        <div className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
-                          待审核
-                        </div>
-                        <div className="text-sm font-medium text-amber-600">
-                          {candidateEntryCountByKb[item.id] ?? 0} 条
-                        </div>
-                      </div>
-                      <div>
-                        <div className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
-                          Ask 记录
-                        </div>
-                        <div className="text-sm font-medium">
-                          <span className="font-black text-foreground">
-                            {askRunCountByKb[item.id] ?? 0}
-                          </span>
-                          <span className="text-muted-foreground"> 次</span>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="mb-5 space-y-1 text-xs text-muted-foreground">
-                      <div>数据源：{item.datasource_name || `#${item.datasource_id}`}</div>
-                      <div>
-                        最后训练：
-                        {item.last_train_at ? formatDate(item.last_train_at) : "暂无"}
-                      </div>
-                      <div>
-                        最后 Ask：
-                        {item.last_ask_at ? formatDate(item.last_ask_at) : "暂无"}
-                      </div>
-                    </div>
-
-                    <div className="mt-auto flex items-center justify-between text-sm font-bold text-primary">
-                      <span>进入工作台</span>
-                      <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-1" />
-                    </div>
-                  </button>
-                ))}
-              </div>
-            )}
+                        </TableCell>
+                        <TableCell>{askRunCountByKb[item.id] ?? 0}</TableCell>
+                        <TableCell className="text-xs text-muted-foreground">
+                          {formatDateOrFallback(item.last_train_at)}
+                        </TableCell>
+                        <TableCell className="text-xs text-muted-foreground">
+                          {formatDateOrFallback(item.last_ask_at)}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={(event) => {
+                              event.stopPropagation()
+                              router.push(`/knowledge-bases/${item.id}/facts`)
+                            }}
+                          >
+                            查看表结构
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  )}
+                </TableBody>
+              </Table>
+            </div>
           </section>
         </div>
       </main>

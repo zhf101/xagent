@@ -27,6 +27,7 @@ from ...core.database import (
 )
 from ...core.database.adapters import create_adapter_for_type
 from ...core.database.config import database_connection_config_from_url
+from ...core.database.config import clean_database_name, resolve_database_name_from_url
 from ...core.database.types import normalize_database_type
 from ..auth_dependencies import get_current_user
 from ..models.database import get_db
@@ -62,6 +63,12 @@ class DatabaseCreateRequest(BaseModel):
         max_length=64,
         description="Business system short name",
     )
+    database_name: Optional[str] = Field(
+        default=None,
+        min_length=1,
+        max_length=255,
+        description="Logical database name used for cross-environment reuse",
+    )
     env: str = Field(
         ...,
         min_length=1,
@@ -95,6 +102,7 @@ class DatabaseResponse(BaseModel):
     id: int
     name: str
     system_short: str
+    database_name: Optional[str] = None
     env: str
     type: str
     url: str
@@ -169,6 +177,23 @@ def _build_connection_config(url_str: str, *, read_only: bool):
             detail=f"Invalid connection URL: {exc}",
         ) from exc
     return database_connection_config_from_url(url, read_only=read_only)
+
+
+def _resolve_database_name(
+    payload: DatabaseCreateRequest,
+    *,
+    resolved_url: str,
+) -> str:
+    database_name = clean_database_name(payload.database_name)
+    if database_name:
+        return database_name
+    derived = resolve_database_name_from_url(resolved_url)
+    if derived:
+        return derived
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail="database_name is required when it cannot be derived from connection URL",
+    )
 
 
 def _build_driver_install_hint(db_type: str) -> str | None:
@@ -533,6 +558,9 @@ async def create_database(
             payload={
                 **db_config.model_dump(),
                 "url": resolved_url,
+                "database_name": _resolve_database_name(
+                    db_config, resolved_url=resolved_url
+                ),
                 "type": normalize_database_type(db_config.type),
             },
             request_type=REQUEST_TYPE_CREATE,
@@ -581,6 +609,9 @@ async def update_database(
             payload={
                 **db_config.model_dump(),
                 "url": resolved_url,
+                "database_name": _resolve_database_name(
+                    db_config, resolved_url=resolved_url
+                ),
                 "type": normalize_database_type(db_config.type),
             },
             existing=existing_db,

@@ -94,6 +94,9 @@ describe("SqlDataSourcesPage", () => {
           {
             id: 7,
             name: "orders-db",
+            system_short: "OMS",
+            database_name: "orders_core",
+            env: "prod",
             type: "postgresql",
             read_only: true,
             status: "connected",
@@ -112,6 +115,7 @@ describe("SqlDataSourcesPage", () => {
     render(<SqlDataSourcesPage />)
 
     await screen.findByText("orders-db")
+    expect(screen.getByText("OMS / orders_core / prod")).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole("button", { name: /编辑/i }))
 

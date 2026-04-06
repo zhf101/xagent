@@ -1,5 +1,5 @@
-import { KnowledgeBaseReviewView } from "@/components/gdp/vanna/knowledge-base-review-view"
+import { redirect } from "next/navigation"
 
 export default function KnowledgeBaseReviewPage() {
-  return <KnowledgeBaseReviewView />
+  redirect("/approval-queue?asset_type=training_entry")
 }

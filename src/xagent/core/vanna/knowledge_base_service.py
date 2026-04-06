@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
+from ...core.database.config import clean_database_name, resolve_database_name_from_url
 from ...web.models.text2sql import Text2SQLDatabase
 from ...web.models.vanna import VannaKnowledgeBase, VannaKnowledgeBaseStatus
 from .errors import VannaDatasourceNotFoundError, VannaKnowledgeBaseNotFoundError
@@ -33,6 +34,11 @@ class KnowledgeBaseService:
             )
         return datasource
 
+    def _resolve_datasource_database_name(self, datasource: Text2SQLDatabase) -> str | None:
+        return clean_database_name(datasource.database_name) or resolve_database_name_from_url(
+            str(datasource.url)
+        )
+
     def get_or_create_default_kb(
         self,
         *,
@@ -56,6 +62,7 @@ class KnowledgeBaseService:
                 ("owner_user_name", owner_user_name),
                 ("datasource_name", datasource.name),
                 ("system_short", datasource.system_short),
+                ("database_name", self._resolve_datasource_database_name(datasource)),
                 ("env", datasource.env),
                 ("db_type", datasource.type.value),
                 ("dialect", datasource.type.value),
@@ -76,6 +83,7 @@ class KnowledgeBaseService:
             datasource_id=int(datasource.id),
             datasource_name=datasource.name,
             system_short=datasource.system_short,
+            database_name=self._resolve_datasource_database_name(datasource),
             env=datasource.env,
             db_type=datasource.type.value,
             dialect=datasource.type.value,

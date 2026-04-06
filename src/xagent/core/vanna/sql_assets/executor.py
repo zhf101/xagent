@@ -8,7 +8,11 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 
 from ....core.database.adapters import create_adapter_for_type
-from ....core.database.config import database_connection_config_from_url
+from ....core.database.config import (
+    database_connection_config_from_url,
+    normalize_database_name,
+    resolve_database_name_from_url,
+)
 from ....web.models.text2sql import Text2SQLDatabase
 from ....web.models.vanna import (
     VannaSqlAsset,
@@ -36,11 +40,28 @@ class SqlAssetExecutionService:
         self.compiler = compiler or SqlTemplateCompiler()
         self.sql_executor = sql_executor
 
+    def _resolve_asset_database_name(self, asset: VannaSqlAsset) -> str | None:
+        normalized = normalize_database_name(getattr(asset, "database_name", None))
+        if normalized is not None:
+            return normalized
+        source_datasource = (
+            self.db.query(Text2SQLDatabase)
+            .filter(Text2SQLDatabase.id == int(asset.datasource_id))
+            .first()
+        )
+        if source_datasource is None:
+            return None
+        return normalize_database_name(
+            getattr(source_datasource, "database_name", None)
+        ) or normalize_database_name(resolve_database_name_from_url(str(source_datasource.url)))
+
     async def execute(
         self,
         *,
         asset: VannaSqlAsset,
         version: VannaSqlAssetVersion,
+        datasource_id: int | None = None,
+        kb_id: int | None = None,
         owner_user_id: int,
         owner_user_name: str | None,
         question: str,
@@ -69,8 +90,38 @@ class SqlAssetExecutionService:
             render_config_json=dict(version.render_config_json or {}),
             bound_params=dict(binding.get("bound_params") or {}),
         )
+        target_datasource_id = (
+            int(datasource_id) if datasource_id is not None else int(asset.datasource_id)
+        )
+        target_kb_id = int(kb_id) if kb_id is not None else int(asset.kb_id)
+        target_datasource = (
+            self.db.query(Text2SQLDatabase)
+            .filter(
+                Text2SQLDatabase.id == target_datasource_id,
+                Text2SQLDatabase.user_id == int(owner_user_id),
+            )
+            .first()
+        )
+        if target_datasource is None:
+            raise ValueError(f"Datasource {target_datasource_id} was not found")
+        if str(target_datasource.system_short) != str(asset.system_short):
+            raise ValueError(
+                "Target datasource must belong to the same system as the SQL asset"
+            )
+        target_database_name = normalize_database_name(
+            getattr(target_datasource, "database_name", None)
+        ) or normalize_database_name(resolve_database_name_from_url(str(target_datasource.url)))
+        asset_database_name = self._resolve_asset_database_name(asset)
+        if target_database_name is None:
+            raise ValueError(f"Datasource {target_datasource_id} has no database_name")
+        if asset_database_name is None:
+            raise ValueError(f"SQL asset {asset.id} has no database_name")
+        if target_database_name != asset_database_name:
+            raise ValueError(
+                "Target datasource must belong to the same database as the SQL asset"
+            )
         execution_result = await self._execute_compiled_sql(
-            datasource_id=int(asset.datasource_id),
+            datasource_id=target_datasource_id,
             owner_user_id=int(owner_user_id),
             compiled_sql=str(compiled["compiled_sql"]),
             bound_params=dict(compiled["bound_params"]),
@@ -80,8 +131,8 @@ class SqlAssetExecutionService:
         run = VannaSqlAssetRun(
             asset_id=int(asset.id),
             asset_version_id=int(version.id),
-            kb_id=int(asset.kb_id),
-            datasource_id=int(asset.datasource_id),
+            kb_id=target_kb_id,
+            datasource_id=target_datasource_id,
             task_id=task_id,
             question_text=question.strip(),
             resolved_by="asset_search",

@@ -2,6 +2,7 @@
 Skill Parser - Parse SKILL.md and related files
 """
 
+import locale
 import re
 from pathlib import Path
 from typing import Dict, List
@@ -37,11 +38,13 @@ class SkillParser:
         if not skill_md.exists():
             raise ValueError(f"SKILL.md not found in {skill_dir}")
 
-        content = skill_md.read_text()
+        content = SkillParser._read_markdown_text(skill_md)
 
         # Try to read template.md
         template_md = skill_dir / "template.md"
-        template_content = template_md.read_text() if template_md.exists() else ""
+        template_content = (
+            SkillParser._read_markdown_text(template_md) if template_md.exists() else ""
+        )
 
         return {
             "name": skill_dir.name,
@@ -63,12 +66,33 @@ class SkillParser:
         return match.group(1).strip() if match else ""
 
     @staticmethod
+    def _read_markdown_text(path: Path) -> str:
+        """Read markdown text with UTF-8 first, then fall back to the local encoding."""
+        encodings = ("utf-8-sig", locale.getpreferredencoding(False))
+        errors = []
+
+        for encoding in dict.fromkeys(encodings):
+            try:
+                return path.read_text(encoding=encoding)
+            except UnicodeDecodeError as exc:
+                errors.append(f"{encoding}: {exc}")
+
+        tried = ", ".join(dict.fromkeys(encodings))
+        raise UnicodeDecodeError(
+            " / ".join(dict.fromkeys(encodings)),
+            b"?",
+            0,
+            1,
+            f"Unable to decode {path} with encodings [{tried}]. Details: {'; '.join(errors)}",
+        )
+
+    @staticmethod
     def _list_files(skill_dir: Path) -> List[str]:
         """List all files in skill directory"""
         files = []
         for file_path in skill_dir.rglob("*"):
             if file_path.is_file():
-                files.append(str(file_path.relative_to(skill_dir)))
+                files.append(file_path.relative_to(skill_dir).as_posix())
         return sorted(files)
 
     @staticmethod

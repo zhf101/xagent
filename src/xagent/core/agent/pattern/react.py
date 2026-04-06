@@ -909,12 +909,17 @@ class ReActPattern(AgentPattern):
                         "execution_history": messages,
                         "pattern": "react",
                     }
-                    if self.memory_store and context and context.session_id:
+                    current_context = self._context
+                    if (
+                        self.memory_store
+                        and current_context is not None
+                        and current_context.session_id
+                    ):
                         await asyncio.to_thread(
                             upsert_session_summary,
                             self.memory_store,
-                            context.session_id,
-                            task,
+                            current_context.session_id,
+                            task_description,
                             final_result,
                         )
                     return final_result

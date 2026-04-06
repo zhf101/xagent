@@ -610,7 +610,6 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
     pauseTask: wsPauseTask,
     resumeTask: wsResumeTask,
     requestStatus,
-    connect,
   } = useWebSocket({
     taskId: state.taskId || undefined,
     token,
@@ -664,14 +663,6 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
   //     finalTaskId: state.taskId !== null && state.taskId !== undefined ? state.taskId : undefined
   //   })
   // }, [state.taskId])
-
-  // Manually trigger connection when taskId is set
-  useEffect(() => {
-    if (state.taskId && !isConnected && !connectionError) {
-      console.log('🔧 Manually triggering WebSocket connection for task:', state.taskId)
-      connect()
-    }
-  }, [state.taskId, isConnected, connectionError, connect])
 
   const handleMessage = useCallback((message: WebSocketMessage, dispatch: React.Dispatch<AppAction>, currentState: AppState) => {
     // If we're in replay mode, don't process immediately - collect for delayed playback

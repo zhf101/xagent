@@ -51,6 +51,18 @@ class SqlAssetPublishRequest(BaseModel):
     version_id: int = Field(..., ge=1)
 
 
+class SqlAssetUpdateRequest(BaseModel):
+    asset_code: str = Field(..., min_length=1, max_length=255)
+    name: str = Field(..., min_length=1, max_length=255)
+    description: str | None = None
+    intent_summary: str | None = None
+    asset_kind: str = Field(default="query", max_length=32)
+    match_keywords: list[str] = Field(default_factory=list)
+    match_examples: list[str] = Field(default_factory=list)
+    template_sql: str = Field(..., min_length=1)
+    version_label: str | None = Field(default=None, max_length=64)
+
+
 class SqlAssetResolveRequest(BaseModel):
     datasource_id: int = Field(..., ge=1)
     kb_id: int | None = Field(default=None, ge=1)
@@ -67,6 +79,8 @@ class SqlAssetBindRequest(BaseModel):
 
 
 class SqlAssetExecuteRequest(BaseModel):
+    datasource_id: int | None = Field(default=None, ge=1)
+    kb_id: int | None = Field(default=None, ge=1)
     question: str = Field(..., min_length=1)
     explicit_params: dict[str, Any] = Field(default_factory=dict)
     context: dict[str, Any] = Field(default_factory=dict)
@@ -231,6 +245,9 @@ async def resolve_assets(
 async def list_assets(
     kb_id: Optional[int] = Query(default=None),
     datasource_id: Optional[int] = Query(default=None),
+    system_short: Optional[str] = Query(default=None),
+    database_name: Optional[str] = Query(default=None),
+    env: Optional[str] = Query(default=None),
     status_value: Optional[str] = Query(default=None, alias="status"),
     keyword: Optional[str] = Query(default=None),
     db: Session = Depends(get_db),
@@ -240,6 +257,9 @@ async def list_assets(
         owner_user_id=int(user.id),
         datasource_id=int(datasource_id) if datasource_id is not None else None,
         kb_id=int(kb_id) if kb_id is not None else None,
+        system_short=system_short,
+        database_name=database_name,
+        env=env,
         status=status_value,
         keyword=keyword,
     )
@@ -255,6 +275,54 @@ async def get_asset_detail(
     try:
         asset = SqlAssetService(db).get_asset(
             asset_id=int(asset_id), owner_user_id=int(user.id)
+        )
+    except ValueError as exc:
+        _raise_from_value_error(str(exc))
+    return {"data": _serialize_asset(asset)}
+
+
+@router.put("/{asset_id}")
+async def update_asset(
+    asset_id: int,
+    payload: SqlAssetUpdateRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    try:
+        asset, version = SqlAssetService(db).update_asset_and_current_version(
+            asset_id=int(asset_id),
+            owner_user_id=int(user.id),
+            updated_by=getattr(user, "username", None),
+            asset_code=payload.asset_code,
+            name=payload.name,
+            description=payload.description,
+            intent_summary=payload.intent_summary,
+            asset_kind=payload.asset_kind,
+            match_keywords=list(payload.match_keywords or []),
+            match_examples=list(payload.match_examples or []),
+            template_sql=payload.template_sql,
+            version_label=payload.version_label,
+        )
+    except ValueError as exc:
+        _raise_from_value_error(str(exc))
+    return {
+        "data": {
+            "asset": _serialize_asset(asset),
+            "version": _serialize_asset_version(version),
+        }
+    }
+
+
+@router.delete("/{asset_id}")
+async def archive_asset(
+    asset_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    try:
+        asset = SqlAssetService(db).archive_asset(
+            asset_id=int(asset_id),
+            owner_user_id=int(user.id),
         )
     except ValueError as exc:
         _raise_from_value_error(str(exc))
@@ -407,6 +475,8 @@ async def execute_asset(
         run = await SqlAssetExecutionService(db).execute(
             asset=asset,
             version=version,
+            datasource_id=payload.datasource_id,
+            kb_id=payload.kb_id,
             owner_user_id=int(user.id),
             owner_user_name=getattr(user, "username", None),
             question=payload.question,

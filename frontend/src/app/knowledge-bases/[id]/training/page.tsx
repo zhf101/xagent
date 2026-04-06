@@ -1,5 +1,12 @@
-import { KnowledgeBaseTrainingView } from "@/components/gdp/vanna/knowledge-base-training-view"
+import { redirect } from "next/navigation"
 
-export default function KnowledgeBaseTrainingPage() {
-  return <KnowledgeBaseTrainingView />
+interface KnowledgeBaseTrainingPageProps {
+  params: Promise<{ id: string }>
+}
+
+export default async function KnowledgeBaseTrainingPage({
+  params,
+}: KnowledgeBaseTrainingPageProps) {
+  const { id } = await params
+  redirect(`/knowledge-bases/${id}/training/question-sql`)
 }

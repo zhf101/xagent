@@ -61,6 +61,25 @@ const clearDuplicateMessageCache = () => {
   recentMessages.clear()
 }
 
+const getTraceEventIdentity = (event: TraceEvent) => {
+  if (event.event_id) {
+    return event.event_id
+  }
+  return [
+    event.event_type || '',
+    event.step_id || '',
+    event.timestamp || '',
+  ].join('::')
+}
+
+const hasTraceEvent = (events: TraceEvent[] | undefined, target: TraceEvent) => {
+  if (!events || events.length === 0) {
+    return false
+  }
+  const targetId = getTraceEventIdentity(target)
+  return events.some(event => getTraceEventIdentity(event) === targetId)
+}
+
 // Function to start delayed playback
 let startDelayedPlayback = () => {
   // Will be initialized later
@@ -506,6 +525,10 @@ function appReducer(state: AppState, action: AppAction): AppState {
 
     case "ADD_MESSAGE": {
       const newMessage = action.payload
+      if (state.messages.some(message => message.id === newMessage.id)) {
+        return state
+      }
+
       let messageToAdd = newMessage
       let newTraceEvents = state.traceEvents
 
@@ -602,6 +625,9 @@ function appReducer(state: AppState, action: AppAction): AppState {
       // This ensures that events arriving after the result message (like react_task_end) are correctly displayed.
       const lastMsg = state.messages.length > 0 ? state.messages[state.messages.length - 1] : null
       if (lastMsg && lastMsg.role === "assistant" && lastMsg.isResult) {
+        if (hasTraceEvent(lastMsg.traceEvents, action.payload)) {
+          return state
+        }
         const updatedLastMsg = {
           ...lastMsg,
           traceEvents: [...(lastMsg.traceEvents || []), action.payload]
@@ -610,6 +636,9 @@ function appReducer(state: AppState, action: AppAction): AppState {
           ...state,
           messages: [...state.messages.slice(0, -1), updatedLastMsg]
         }
+      }
+      if (hasTraceEvent(state.traceEvents, action.payload)) {
+        return state
       }
       return { ...state, traceEvents: [...state.traceEvents, action.payload] }
 
@@ -842,6 +871,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
   const router = useRouter()
   const pendingOptimisticMessageId = useRef<string | null>(null)
   const lastConnectedTaskId = useRef<number | null>(null)
+  const processedMessageKeysRef = useRef<Set<string>>(new Set())
 
   // Ref to track current state for WebSocket message handler
   const stateRef = useRef(state)
@@ -988,6 +1018,27 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
   }, [isConnected, state.taskId, connectionError])
 
   const handleMessage = useCallback((message: WebSocketMessage, dispatch: React.Dispatch<AppAction>, currentState: AppState) => {
+    const messageData = message.data as any
+    const messageKey = [
+      message.type,
+      message.event_id || messageData?.event_id || '',
+      message.event_type || messageData?.event_type || '',
+      message.step_id || messageData?.step_id || '',
+      message.task_id || messageData?.task_id || '',
+      message.timestamp || '',
+    ].join('::')
+
+    if (processedMessageKeysRef.current.has(messageKey)) {
+      return
+    }
+    processedMessageKeysRef.current.add(messageKey)
+    if (processedMessageKeysRef.current.size > 5000) {
+      const firstKey = processedMessageKeysRef.current.values().next().value
+      if (firstKey) {
+        processedMessageKeysRef.current.delete(firstKey)
+      }
+    }
+
     // If we're in replay mode, don't process immediately - collect for delayed playback
     if (currentState.isReplaying) {
       // Add to replay cache
@@ -1027,7 +1078,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
         break
 
       case "trace_event":
-        const traceEventData = message.data as any
+        const traceEventData = messageData
 
         // Check if this has the expected structure with event_type
         // event_type can be in message.event_type (new format) or traceEventData.event_type (old format)
@@ -3278,7 +3329,6 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
 
       case "chat_message":
         console.trace('Original message:', JSON.stringify(message), 'Handler: handleMessage (chat_message)')
-        const messageData = message.data as any
         dispatch({
           type: "ADD_MESSAGE",
           payload: {
@@ -3844,6 +3894,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
       if (taskId) {
         historicalDataRequestMap.set(taskId, false)
       }
+      processedMessageKeysRef.current.clear()
       // Clear recentMessages cache when switching tasks to prevent false duplicates
       recentMessages.clear()
       isHistoricalDataLoading = false

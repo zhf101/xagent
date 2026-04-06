@@ -18,6 +18,14 @@ from ...core.model.embedding.base import BaseEmbedding
 logger = logging.getLogger(__name__)
 
 
+def _config_type_predicate(column: Any, *config_types: str) -> Any:
+    """Build a SQLAlchemy predicate that supports legacy and current config type names."""
+    normalized = [str(config_type).strip() for config_type in config_types if config_type]
+    if len(normalized) == 1:
+        return column == normalized[0]
+    return column.in_(normalized)
+
+
 def get_default_vision_model(user_id: Optional[int] = None) -> Optional[BaseLLM]:
     """Get the default vision model for a specific user."""
     try:
@@ -92,7 +100,11 @@ def get_default_model(user_id: Optional[int] = None) -> Optional[BaseLLM]:
                     .join(UserModel, UserDefaultModel.model_id == UserModel.model_id)
                     .filter(
                         UserDefaultModel.user_id == user_id,
-                        UserDefaultModel.config_type == "chat",
+                        _config_type_predicate(
+                            UserDefaultModel.config_type,
+                            "general",
+                            "chat",
+                        ),
                         UserModel.user_id == user_id,
                     )
                     .first()
@@ -105,7 +117,11 @@ def get_default_model(user_id: Optional[int] = None) -> Optional[BaseLLM]:
                 db.query(UserDefaultModel)
                 .join(UserModel, UserDefaultModel.model_id == UserModel.model_id)
                 .filter(
-                    UserDefaultModel.config_type == "chat",
+                    _config_type_predicate(
+                        UserDefaultModel.config_type,
+                        "general",
+                        "chat",
+                    ),
                     UserModel.is_owner == True,
                 )
                 .all()
@@ -117,7 +133,14 @@ def get_default_model(user_id: Optional[int] = None) -> Optional[BaseLLM]:
             shared_models = (
                 db.query(UserDefaultModel)
                 .join(UserModel, UserDefaultModel.model_id == UserModel.model_id)
-                .filter(UserDefaultModel.config_type == "chat", UserModel.is_shared)
+                .filter(
+                    _config_type_predicate(
+                        UserDefaultModel.config_type,
+                        "general",
+                        "chat",
+                    ),
+                    UserModel.is_shared,
+                )
                 .limit(1)
                 .all()
             )
@@ -150,7 +173,11 @@ def get_fast_model(user_id: Optional[int] = None) -> Optional[BaseLLM]:
                     .join(UserModel, UserDefaultModel.model_id == UserModel.model_id)
                     .filter(
                         UserDefaultModel.user_id == user_id,
-                        UserDefaultModel.config_type == "fast",
+                        _config_type_predicate(
+                            UserDefaultModel.config_type,
+                            "small_fast",
+                            "fast",
+                        ),
                         UserModel.user_id == user_id,
                     )
                     .first()

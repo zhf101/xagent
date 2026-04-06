@@ -113,14 +113,16 @@ async def validation_exception_handler(
 
 
 @app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception) -> None:
+async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     """全局异常处理器，确保所有错误都被记录"""
     import traceback
 
     logger.error(f"Unhandled exception in {request.url}: {str(exc)}")
     logger.error(f"Traceback: {traceback.format_exc()}")
-    # 重新抛出异常，让FastAPI默认处理
-    raise exc
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error"},
+    )
 
 
 # 添加CORS中间件

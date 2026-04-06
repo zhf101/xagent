@@ -73,6 +73,7 @@ class ToolRegistry:
                 special_image_tools,
                 sql_tool,
                 translate_json,
+                vanna_sql_tools,
                 vision_tool,
                 workspace_file_tool,
             )

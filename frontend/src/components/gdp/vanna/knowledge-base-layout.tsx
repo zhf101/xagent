@@ -2,11 +2,25 @@
 
 import React, { useEffect, useState } from "react"
 import { useParams, usePathname, useRouter } from "next/navigation"
-import { Database, Activity, BookOpen, CheckSquare, History, Play, ChevronLeft, MoreVertical, Settings2, ShieldCheck, Loader2 } from "lucide-react"
+import {
+  Braces,
+  ChevronLeft,
+  Database,
+  FileCode2,
+  History,
+  Loader2,
+  MessageSquare,
+  MoreVertical,
+  Play,
+  Settings2,
+  ShieldCheck,
+  Sparkles,
+} from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { cn } from "@/lib/utils"
 import { getVannaKnowledgeBase } from "./vanna-api"
+import { KnowledgeBaseSettingsSheet } from "./knowledge-base-settings-sheet"
 import type { VannaKnowledgeBaseRecord } from "./vanna-types"
 
 interface NavItem {
@@ -14,6 +28,7 @@ interface NavItem {
   label: string
   icon: React.ElementType
   href: string
+  matchPrefixes?: string[]
 }
 
 export function KnowledgeBaseLayout({ children }: { children: React.ReactNode }) {
@@ -23,6 +38,7 @@ export function KnowledgeBaseLayout({ children }: { children: React.ReactNode })
   const id = params.id as string
 
   const [kb, setKb] = useState<VannaKnowledgeBaseRecord | null>(null)
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false)
 
   useEffect(() => {
     if (!id) return
@@ -32,14 +48,54 @@ export function KnowledgeBaseLayout({ children }: { children: React.ReactNode })
   }, [id])
 
   const navItems: NavItem[] = [
-    { id: "overview", label: "工作台总览", icon: Activity, href: `/knowledge-bases/${id}` },
-    { id: "facts", label: "结构事实", icon: Database, href: `/knowledge-bases/${id}/facts` },
-    { id: "training", label: "训练知识", icon: BookOpen, href: `/knowledge-bases/${id}/training` },
-    { id: "review", label: "候评审核", icon: CheckSquare, href: `/knowledge-bases/${id}/review` },
-    { id: "runs", label: "运行记录", icon: History, href: `/knowledge-bases/${id}/runs` },
+    {
+      id: "facts",
+      label: "表结构信息",
+      icon: Database,
+      href: `/knowledge-bases/${id}/facts`,
+      matchPrefixes: [`/knowledge-bases/${id}/facts`, `/knowledge-bases/${id}/harvest`],
+    },
+    {
+      id: "question_sql",
+      label: "SQL 问答对",
+      icon: MessageSquare,
+      href: `/knowledge-bases/${id}/training/question-sql`,
+      matchPrefixes: [`/knowledge-bases/${id}/training/question-sql`],
+    },
+    {
+      id: "documentation",
+      label: "SQL 知识文档",
+      icon: FileCode2,
+      href: `/knowledge-bases/${id}/training/documentation`,
+      matchPrefixes: [`/knowledge-bases/${id}/training/documentation`],
+    },
+    {
+      id: "assets",
+      label: "SQL 资产",
+      icon: Sparkles,
+      href: `/knowledge-bases/${id}/assets`,
+      matchPrefixes: [`/knowledge-bases/${id}/assets`],
+    },
+    {
+      id: "train_method",
+      label: "Train 方法",
+      icon: Braces,
+      href: `/knowledge-bases/${id}/train`,
+      matchPrefixes: [`/knowledge-bases/${id}/train`],
+    },
+    {
+      id: "runs",
+      label: "Ask 记录",
+      icon: History,
+      href: `/knowledge-bases/${id}/runs`,
+      matchPrefixes: [`/knowledge-bases/${id}/runs`],
+    },
   ]
 
-  const activeItem = navItems.find(item => pathname === item.href) || navItems[0]
+  const activeItem =
+    navItems.find(item =>
+      (item.matchPrefixes || [item.href]).some(prefix => pathname.startsWith(prefix))
+    ) || navItems[0]
 
   return (
     <div className="flex flex-col h-screen w-full bg-zinc-50/50 dark:bg-zinc-950/50 overflow-hidden text-foreground font-sans">
@@ -92,7 +148,13 @@ export function KnowledgeBaseLayout({ children }: { children: React.ReactNode })
           </div>
 
           <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" className="rounded-full h-9 px-4 text-xs font-bold gap-2 bg-background border-dashed">
+            <Button
+              variant="outline"
+              size="sm"
+              className="rounded-full h-9 px-4 text-xs font-bold gap-2 bg-background border-dashed"
+              onClick={() => setIsSettingsOpen(true)}
+              disabled={!kb}
+            >
               <Settings2 className="w-3.5 h-3.5" /> 知识库设置
             </Button>
             <Button size="sm" className="rounded-full h-9 px-6 text-xs font-bold gap-2 shadow-lg shadow-primary/20" onClick={() => router.push(`/knowledge-bases/${id}/harvest`)}>
@@ -108,8 +170,8 @@ export function KnowledgeBaseLayout({ children }: { children: React.ReactNode })
         {/* 2. 固定标签页：类似快捷操作的 Tab */}
         <nav className="h-12 px-8 flex items-center gap-1 bg-zinc-50/50 dark:bg-zinc-900/20">
           {navItems.map((item) => {
-            const isActive = pathname === item.href
-            return (
+                const isActive = activeItem.id === item.id
+                return (
               <button
                 key={item.id}
                 onClick={() => router.push(item.href)}
@@ -137,6 +199,12 @@ export function KnowledgeBaseLayout({ children }: { children: React.ReactNode })
           {children}
         </div>
       </main>
+      <KnowledgeBaseSettingsSheet
+        kb={kb}
+        open={isSettingsOpen}
+        onOpenChange={setIsSettingsOpen}
+        onSaved={setKb}
+      />
     </div>
   )
 }

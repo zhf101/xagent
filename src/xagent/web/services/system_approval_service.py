@@ -9,8 +9,10 @@ from typing import Any, Iterable
 from sqlalchemy.orm import Session
 
 from ...core.database.types import DatabaseType, normalize_database_type
+from ...core.database.config import clean_database_name
 from ...core.gdp.http_asset_protocol import GdpHttpAssetStatus, GdpHttpAssetUpsertRequest
 from ...core.gdp.http_asset_validator import GdpHttpAssetValidator
+from ...core.vanna.index_service import IndexService
 from ..models.gdp_http_resource import GdpHttpResource
 from ..models.system_approval import (
     AssetChangeRequest,
@@ -20,6 +22,11 @@ from ..models.system_approval import (
 )
 from ..models.text2sql import DatabaseStatus, Text2SQLDatabase
 from ..models.user import User
+from ..models.vanna import (
+    VannaTrainingEntry,
+    VannaTrainingLifecycleStatus,
+    VannaTrainingQualityStatus,
+)
 
 SYSTEM_ROLE_MEMBER = "member"
 SYSTEM_ROLE_ADMIN = "system_admin"
@@ -36,6 +43,7 @@ REQUEST_TYPE_UPDATE = "update"
 REQUEST_TYPE_DELETE = "delete"
 ASSET_TYPE_DATASOURCE = "datasource"
 ASSET_TYPE_HTTP_RESOURCE = "http_resource"
+ASSET_TYPE_TRAINING_ENTRY = "training_entry"
 ACTIVE_LIFECYCLE_STATUS = "active"
 ARCHIVED_LIFECYCLE_STATUS = "archived"
 
@@ -68,6 +76,47 @@ def _serialize_datetime(value: datetime | None) -> str | None:
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc).isoformat()
+
+
+def _serialize_training_entry(entry: VannaTrainingEntry) -> dict[str, Any]:
+    return {
+        "id": int(entry.id),
+        "kb_id": int(entry.kb_id),
+        "datasource_id": int(entry.datasource_id),
+        "system_short": entry.system_short,
+        "env": entry.env,
+        "entry_code": entry.entry_code,
+        "entry_type": entry.entry_type,
+        "source_kind": entry.source_kind,
+        "source_ref": entry.source_ref,
+        "lifecycle_status": entry.lifecycle_status,
+        "quality_status": entry.quality_status,
+        "title": entry.title,
+        "question_text": entry.question_text,
+        "sql_text": entry.sql_text,
+        "sql_explanation": entry.sql_explanation,
+        "doc_text": entry.doc_text,
+        "schema_name": entry.schema_name,
+        "table_name": entry.table_name,
+        "business_domain": entry.business_domain,
+        "system_name": entry.system_name,
+        "subject_area": entry.subject_area,
+        "statement_kind": entry.statement_kind,
+        "tables_read_json": list(entry.tables_read_json or []),
+        "columns_read_json": list(entry.columns_read_json or []),
+        "output_fields_json": list(entry.output_fields_json or []),
+        "variables_json": list(entry.variables_json or []),
+        "tags_json": list(entry.tags_json or []),
+        "verification_result_json": dict(entry.verification_result_json or {}),
+        "quality_score": entry.quality_score,
+        "content_hash": entry.content_hash,
+        "create_user_id": int(entry.create_user_id),
+        "create_user_name": entry.create_user_name,
+        "verified_by": entry.verified_by,
+        "verified_at": _serialize_datetime(entry.verified_at),
+        "created_at": _serialize_datetime(entry.created_at),
+        "updated_at": _serialize_datetime(entry.updated_at),
+    }
 
 
 @dataclass
@@ -445,6 +494,11 @@ class SystemApprovalService:
         if request.status != REQUEST_STATUS_PENDING:
             raise SystemApprovalError("Only pending requests can be cancelled")
         request.status = REQUEST_STATUS_CANCELLED
+        self._apply_training_entry_terminal_state(
+            request=request,
+            lifecycle_status=VannaTrainingLifecycleStatus.ARCHIVED.value,
+            quality_status=VannaTrainingQualityStatus.UNVERIFIED.value,
+        )
         self._add_request_log(
             request=request,
             action="cancelled",
@@ -528,6 +582,11 @@ class SystemApprovalService:
         ):
             raise SystemApprovalError("No permission to reject this request")
         request.status = REQUEST_STATUS_REJECTED
+        self._apply_training_entry_terminal_state(
+            request=request,
+            lifecycle_status=VannaTrainingLifecycleStatus.ARCHIVED.value,
+            quality_status=VannaTrainingQualityStatus.REJECTED.value,
+        )
         request.rejected_by = actor.user_id
         request.rejected_at = utcnow()
         request.reject_reason = (reason or "").strip() or None
@@ -578,6 +637,7 @@ class SystemApprovalService:
             payload_snapshot = {
                 "name": str(payload.get("name") or "").strip(),
                 "system_short": system_short,
+                "database_name": clean_database_name(payload.get("database_name")),
                 "env": env,
                 "type": str(payload.get("type") or "").strip(),
                 "url": payload.get("url"),
@@ -641,6 +701,36 @@ class SystemApprovalService:
                 system_short=system_short if request_type != REQUEST_TYPE_DELETE else existing.system_short,
                 env=None,
                 display_name=tool_name,
+            ),
+        )
+
+    def submit_training_entry_request(
+        self,
+        *,
+        actor: ApprovalActor,
+        entry: VannaTrainingEntry,
+        request_type: str = REQUEST_TYPE_CREATE,
+    ) -> AssetChangeRequest:
+        if request_type != REQUEST_TYPE_CREATE:
+            raise SystemApprovalError("Training entries currently support create requests only")
+        if not entry.id:
+            raise SystemApprovalError("Training entry must be persisted before approval submission")
+        return self.create_asset_change_request(
+            actor=actor,
+            request_type=request_type,
+            asset_type=ASSET_TYPE_TRAINING_ENTRY,
+            system_short=entry.system_short,
+            env=entry.env,
+            payload_snapshot=_serialize_training_entry(entry),
+            asset_id=int(entry.id),
+            current_snapshot=_serialize_training_entry(entry),
+            current_version_marker=self._build_version_marker(entry),
+            change_summary=self._build_change_summary(
+                asset_type=ASSET_TYPE_TRAINING_ENTRY,
+                request_type=request_type,
+                system_short=entry.system_short,
+                env=entry.env,
+                display_name=entry.title or entry.entry_code,
             ),
         )
 
@@ -709,6 +799,14 @@ class SystemApprovalService:
                 .filter(GdpHttpResource.id == int(request.asset_id))
                 .first()
             )
+        if request.asset_type == ASSET_TYPE_TRAINING_ENTRY:
+            if request.asset_id is None:
+                return None
+            return (
+                self.db.query(VannaTrainingEntry)
+                .filter(VannaTrainingEntry.id == int(request.asset_id))
+                .first()
+            )
         raise SystemApprovalError(f"Unsupported asset_type: {request.asset_type}")
 
     def _project_request(
@@ -730,6 +828,12 @@ class SystemApprovalService:
                 current_asset=current_asset,
                 approver=approver,
             )
+        if request.asset_type == ASSET_TYPE_TRAINING_ENTRY:
+            return self._project_training_entry_request(
+                request=request,
+                current_asset=current_asset,
+                approver=approver,
+            )
         raise SystemApprovalError(f"Unsupported asset_type: {request.asset_type}")
 
     def _project_datasource_request(
@@ -746,6 +850,7 @@ class SystemApprovalService:
                 user_id=request.requested_by,
                 name=str(payload["name"]),
                 system_short=normalize_system_short(str(payload["system_short"])),
+                database_name=clean_database_name(payload.get("database_name")),
                 env=normalize_env(payload.get("env")) or "prod",
                 type=DatabaseType(normalize_database_type(str(payload["type"]))),
                 url=str(payload["url"]),
@@ -776,6 +881,7 @@ class SystemApprovalService:
 
         current_asset.name = str(payload["name"])
         current_asset.system_short = normalize_system_short(str(payload["system_short"]))
+        current_asset.database_name = clean_database_name(payload.get("database_name"))
         current_asset.env = normalize_env(payload.get("env")) or current_asset.env
         current_asset.type = DatabaseType(normalize_database_type(str(payload["type"])))
         current_asset.url = str(payload["url"])
@@ -886,6 +992,93 @@ class SystemApprovalService:
         user = self.db.query(User).filter(User.id == int(user_id)).first()
         return getattr(user, "username", None)
 
+    def _apply_training_entry_terminal_state(
+        self,
+        *,
+        request: AssetChangeRequest,
+        lifecycle_status: str,
+        quality_status: str,
+    ) -> None:
+        if request.asset_type != ASSET_TYPE_TRAINING_ENTRY or request.asset_id is None:
+            return
+        entry = (
+            self.db.query(VannaTrainingEntry)
+            .filter(VannaTrainingEntry.id == int(request.asset_id))
+            .first()
+        )
+        if entry is None:
+            return
+        entry.lifecycle_status = lifecycle_status
+        entry.quality_status = quality_status
+        IndexService(self.db).reindex_entry(entry_id=int(entry.id))
+
+    def _project_training_entry_request(
+        self,
+        *,
+        request: AssetChangeRequest,
+        current_asset: VannaTrainingEntry | None,
+        approver: ApprovalActor,
+    ) -> VannaTrainingEntry:
+        if request.request_type != REQUEST_TYPE_CREATE:
+            raise SystemApprovalError("Unsupported training entry request type")
+
+        payload = request.payload_snapshot or {}
+        approval_time = utcnow().replace(tzinfo=None)
+        entry = current_asset
+        if entry is None:
+            entry = self.db.query(VannaTrainingEntry).filter(
+                VannaTrainingEntry.entry_code == str(payload.get("entry_code") or "")
+            ).first()
+
+        if entry is None:
+            entry = VannaTrainingEntry(
+                kb_id=int(payload["kb_id"]),
+                datasource_id=int(payload["datasource_id"]),
+                system_short=str(payload["system_short"]),
+                env=str(payload["env"]),
+                entry_code=str(payload["entry_code"]),
+                entry_type=str(payload["entry_type"]),
+                source_kind=payload.get("source_kind"),
+                source_ref=payload.get("source_ref"),
+                create_user_id=int(payload["create_user_id"]),
+                create_user_name=payload.get("create_user_name"),
+            )
+            self.db.add(entry)
+            self.db.flush()
+
+        for field_name in (
+            "title",
+            "question_text",
+            "sql_text",
+            "sql_explanation",
+            "doc_text",
+            "schema_name",
+            "table_name",
+            "business_domain",
+            "system_name",
+            "subject_area",
+            "statement_kind",
+            "content_hash",
+            "source_kind",
+            "source_ref",
+        ):
+            setattr(entry, field_name, payload.get(field_name))
+
+        entry.tables_read_json = list(payload.get("tables_read_json") or [])
+        entry.columns_read_json = list(payload.get("columns_read_json") or [])
+        entry.output_fields_json = list(payload.get("output_fields_json") or [])
+        entry.variables_json = list(payload.get("variables_json") or [])
+        entry.tags_json = list(payload.get("tags_json") or [])
+        entry.verification_result_json = dict(payload.get("verification_result_json") or {})
+        entry.quality_score = payload.get("quality_score")
+        entry.lifecycle_status = VannaTrainingLifecycleStatus.PUBLISHED.value
+        entry.quality_status = VannaTrainingQualityStatus.VERIFIED.value
+        entry.verified_by = self._lookup_username(approver.user_id)
+        entry.verified_at = approval_time
+        self.db.flush()
+        IndexService(self.db).reindex_entry(entry_id=int(entry.id))
+        return entry
+
     def _build_version_marker(self, asset: Any | None) -> str | None:
         if asset is None:
             return None
@@ -909,6 +1102,7 @@ class SystemApprovalService:
 __all__ = [
     "ASSET_TYPE_DATASOURCE",
     "ASSET_TYPE_HTTP_RESOURCE",
+    "ASSET_TYPE_TRAINING_ENTRY",
     "ApprovalActor",
     "REQUEST_STATUS_APPROVED",
     "REQUEST_STATUS_PENDING",

@@ -55,6 +55,12 @@ class Text2SQLDatabase(Base):
         index=True,
         comment="系统简称",
     )
+    database_name = Column(
+        String(255),
+        nullable=True,
+        index=True,
+        comment="逻辑数据库名称",
+    )
     env = Column(
         String(32),
         nullable=False,
@@ -130,6 +136,7 @@ class Text2SQLDatabase(Base):
             "user_id": self.user_id,
             "name": self.name,
             "system_short": self.system_short,
+            "database_name": self.database_name,
             "env": self.env,
             "type": self.type.value,
             "url": self.url,
@@ -159,6 +166,7 @@ class Text2SQLDatabase(Base):
             user_id=data.get("user_id"),
             name=data.get("name"),
             system_short=data.get("system_short", "unknown"),
+            database_name=data.get("database_name"),
             env=data.get("env", "unknown"),
             type=DatabaseType(normalize_database_type(data.get("type", "sqlite"))),
             url=data.get("url"),

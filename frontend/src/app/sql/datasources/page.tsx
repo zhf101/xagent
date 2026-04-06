@@ -18,6 +18,9 @@ interface DatabaseProfile {
 interface SqlDatabaseItem {
   id: number
   name: string
+  system_short: string
+  database_name?: string | null
+  env: string
   type: string
   read_only: boolean
   status?: string
@@ -82,6 +85,9 @@ export default function SqlDataSourcesPage() {
     const keyword = searchQuery.toLowerCase()
     return (
       db.name?.toLowerCase().includes(keyword) ||
+      db.system_short?.toLowerCase().includes(keyword) ||
+      db.database_name?.toLowerCase().includes(keyword) ||
+      db.env?.toLowerCase().includes(keyword) ||
       db.type?.toLowerCase().includes(keyword) ||
       profileName.toLowerCase().includes(keyword)
     )
@@ -164,6 +170,7 @@ export default function SqlDataSourcesPage() {
                         )}
                       </div>
                       <div className="flex items-center gap-4 text-xs text-muted-foreground">
+                        <div>{db.system_short} / {db.database_name || "-"} / {db.env}</div>
                         <div className="flex items-center gap-1">
                           <span className="inline-block w-2 h-2 rounded-full" 
                             style={{ 

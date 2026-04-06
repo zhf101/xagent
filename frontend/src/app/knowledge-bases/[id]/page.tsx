@@ -1,5 +1,12 @@
-import { KnowledgeBaseOverview } from "@/components/gdp/vanna/knowledge-base-overview"
+import { redirect } from "next/navigation"
 
-export default function KnowledgeBaseOverviewPage() {
-  return <KnowledgeBaseOverview />
+interface KnowledgeBaseIndexPageProps {
+  params: Promise<{ id: string }>
+}
+
+export default async function KnowledgeBaseIndexPage({
+  params,
+}: KnowledgeBaseIndexPageProps) {
+  const { id } = await params
+  redirect(`/knowledge-bases/${id}/facts`)
 }

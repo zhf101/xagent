@@ -1,6 +1,7 @@
 "use client"
 
 import React, { useCallback, useEffect, useMemo, useState } from "react"
+import { useSearchParams } from "next/navigation"
 import { Check, ClipboardList, RefreshCw, X } from "lucide-react"
 
 import { apiRequest } from "@/lib/api-wrapper"
@@ -38,6 +39,31 @@ type AssetChangeRequestItem = {
 
 type ViewMode = "queue" | "mine"
 
+function buildUrl(
+  path: string,
+  query: Record<string, string | undefined>
+) {
+  const search = new URLSearchParams()
+  Object.entries(query).forEach(([key, value]) => {
+    if (value) {
+      search.set(key, value)
+    }
+  })
+  const queryString = search.toString()
+  return `${getApiUrl()}${path}${queryString ? `?${queryString}` : ""}`
+}
+
+function normalizeViewMode(value: string | null): ViewMode {
+  return value === "mine" ? "mine" : "queue"
+}
+
+function getAssetTypeLabel(assetType: string) {
+  if (assetType === "training_entry") return "训练知识"
+  if (assetType === "datasource") return "数据源"
+  if (assetType === "http_resource") return "HTTP 资产"
+  return assetType
+}
+
 function formatTimestamp(value?: string | null): string {
   if (!value) return "-"
   const date = new Date(value)
@@ -61,7 +87,12 @@ function getStatusBadgeVariant(status: string): "default" | "destructive" | "out
 }
 
 export default function ApprovalQueuePage() {
-  const [viewMode, setViewMode] = useState<ViewMode>("queue")
+  const searchParams = useSearchParams()
+  const assetTypeFilter = searchParams.get("asset_type") || undefined
+  const systemShortFilter = searchParams.get("system_short") || undefined
+  const initialViewMode = normalizeViewMode(searchParams.get("view"))
+
+  const [viewMode, setViewMode] = useState<ViewMode>(initialViewMode)
   const [loading, setLoading] = useState(true)
   const [actingId, setActingId] = useState<number | null>(null)
   const [keyword, setKeyword] = useState("")
@@ -71,9 +102,17 @@ export default function ApprovalQueuePage() {
   const loadData = useCallback(async () => {
     setLoading(true)
     try {
+      const queueUrl = buildUrl("/api/approval-queue", {
+        asset_type: assetTypeFilter,
+        system_short: systemShortFilter,
+      })
+      const myUrl = buildUrl("/api/asset-change-requests/my", {
+        asset_type: assetTypeFilter,
+        system_short: systemShortFilter,
+      })
       const [queueResponse, myResponse] = await Promise.all([
-        apiRequest(`${getApiUrl()}/api/approval-queue`),
-        apiRequest(`${getApiUrl()}/api/asset-change-requests/my`),
+        apiRequest(queueUrl),
+        apiRequest(myUrl),
       ])
 
       if (queueResponse.ok) {
@@ -97,11 +136,15 @@ export default function ApprovalQueuePage() {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [assetTypeFilter, systemShortFilter])
 
   useEffect(() => {
     void loadData()
   }, [loadData])
+
+  useEffect(() => {
+    setViewMode(initialViewMode)
+  }, [initialViewMode])
 
   const visibleItems = useMemo(() => {
     const source = viewMode === "queue" ? queueItems : myItems
@@ -186,7 +229,11 @@ export default function ApprovalQueuePage() {
           </div>
           <div>
             <h1 className="text-xl font-bold tracking-tight">资产审批队列</h1>
-            <p className="text-xs text-muted-foreground">按 system_short 处理资产创建、更新、删除审批</p>
+            <p className="text-xs text-muted-foreground">
+              按 system_short 处理资产创建、更新、删除审批
+              {assetTypeFilter ? ` · 当前筛选 ${getAssetTypeLabel(assetTypeFilter)}` : ""}
+              {systemShortFilter ? ` · ${systemShortFilter}` : ""}
+            </p>
           </div>
         </div>
         <div className="flex items-center gap-3">
@@ -261,7 +308,7 @@ export default function ApprovalQueuePage() {
                       <TableRow key={item.id}>
                         <TableCell className="font-mono text-xs">#{item.id}</TableCell>
                         <TableCell className="font-medium">{item.system_short}</TableCell>
-                        <TableCell>{item.asset_type}</TableCell>
+                        <TableCell>{getAssetTypeLabel(item.asset_type)}</TableCell>
                         <TableCell>{item.request_type}</TableCell>
                         <TableCell>{item.env || "-"}</TableCell>
                         <TableCell className="max-w-[420px]">

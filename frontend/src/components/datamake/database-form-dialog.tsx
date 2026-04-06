@@ -68,6 +68,7 @@ interface DatabaseDetail {
   id: number
   name: string
   system_short: string
+  database_name?: string | null
   env: string
   type: string
   url: string
@@ -96,6 +97,7 @@ type TestFeedback = {
 type DialogState = {
   name: string
   system_short: string
+  database_name: string
   env: string
   type: string
   read_only: boolean
@@ -104,6 +106,7 @@ type DialogState = {
 const EMPTY_DIALOG_STATE: DialogState = {
   name: "",
   system_short: "",
+  database_name: "",
   env: "",
   type: "",
   read_only: true,
@@ -295,6 +298,7 @@ export function DatabaseFormDialog({ open, onOpenChange, databaseId, onSuccess }
     setDialogState({
       name: "",
       system_short: "",
+      database_name: "",
       env: "",
       type: defaultType,
       read_only: true,
@@ -315,6 +319,7 @@ export function DatabaseFormDialog({ open, onOpenChange, databaseId, onSuccess }
     setDialogState({
       name: detail.name,
       system_short: detail.system_short,
+      database_name: detail.database_name ?? "",
       env: detail.env,
       type: detail.type,
       read_only: detail.read_only,
@@ -582,6 +587,7 @@ export function DatabaseFormDialog({ open, onOpenChange, databaseId, onSuccess }
       const requestPayload = {
         name: dialogState.name.trim(),
         system_short: dialogState.system_short.trim(),
+        database_name: dialogState.database_name.trim() || undefined,
         env: dialogState.env.trim(),
         type: dialogState.type,
         connection_mode: "form",
@@ -691,6 +697,23 @@ export function DatabaseFormDialog({ open, onOpenChange, databaseId, onSuccess }
                     onChange={event => setDialogState(current => ({ ...current, env: event.target.value }))}
                     placeholder="例如：prod / test / uat"
                   />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="database-logical-name">逻辑数据库名</Label>
+                  <Input
+                    id="database-logical-name"
+                    value={dialogState.database_name}
+                    onChange={event =>
+                      setDialogState(current => ({
+                        ...current,
+                        database_name: event.target.value,
+                      }))
+                    }
+                    placeholder="例如：crm_core；留空则尝试自动识别"
+                  />
+                  <div className="text-xs text-muted-foreground">
+                    跨环境复用要求 system_short 与 database_name 同时一致。
+                  </div>
                 </div>
                 <div className="grid gap-2">
                   <Label htmlFor="database-type">数据库类型</Label>

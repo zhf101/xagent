@@ -771,8 +771,8 @@ export function Sidebar({ className }: SidebarProps) {
         className="flex-1 min-h-0 overflow-y-auto px-3 pb-4 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:'none'] [scrollbar-width:'none']"
         onScroll={handleScroll}
       >
-        {/* Sticky Navigation Groups */}
-        <div className="sticky top-0 z-10 bg-card -mx-3 px-3 py-2">
+        {/* Navigation Groups */}
+        <div className="-mx-3 px-3 py-2">
           {/* Groups */}
           {navigationGroups.map((group, groupIndex) => (
             <div key={group.title} className={cn("mb-6", groupIndex === 0 && "mt-0")}>

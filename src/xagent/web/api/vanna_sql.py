@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import asdict
 from typing import Any, Optional
 
@@ -10,14 +11,23 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from ...core.vanna.ask_service import AskService
+from ...core.vanna.errors import VannaDatasourceNotFoundError, VannaGenerationError
 from ...core.vanna.index_service import IndexService
 from ...core.vanna.knowledge_base_service import KnowledgeBaseService
 from ...core.vanna.query_service import QueryService
+from ...core.vanna.schema_annotation_service import (
+    SchemaAnnotationService,
+    annotation_key,
+    effective_list_value,
+    effective_text_value,
+)
 from ...core.vanna.schema_harvest_service import SchemaHarvestService
 from ...core.vanna.sql_assets import SqlAssetService
 from ...core.vanna.train_service import TrainService
 from ..auth_dependencies import get_current_user
 from ..models.database import get_db
+from ..models.system_approval import AssetChangeRequest
+from ..services.system_approval_service import SystemApprovalError, SystemApprovalService
 from ..models.user import User
 from ..models.vanna import (
     VannaAskRun,
@@ -26,6 +36,7 @@ from ..models.vanna import (
     VannaSqlAsset,
     VannaSqlAssetVersion,
     VannaSchemaColumn,
+    VannaSchemaColumnAnnotation,
     VannaSchemaHarvestJob,
     VannaSchemaTable,
     VannaTrainingEntry,
@@ -65,6 +76,15 @@ class TrainRequest(BaseModel):
     title: str | None = None
     bootstrap_schema: bool = False
     publish: bool = True
+
+
+class SchemaColumnAnnotationUpsertRequest(BaseModel):
+    business_description: str | None = None
+    comment_override: str | None = None
+    default_value_override: str | None = None
+    allowed_values_override_json: list[str] | None = None
+    sample_values_override_json: list[str] | None = None
+    update_source: str = Field(default="manual", max_length=32)
 
 
 class AskRequest(BaseModel):
@@ -112,6 +132,14 @@ class PromoteSqlAssetRequest(BaseModel):
     parameter_schema_json: list[dict[str, Any]] = Field(default_factory=list)
     render_config_json: dict[str, Any] = Field(default_factory=dict)
     version_label: str | None = Field(default=None, max_length=64)
+
+
+class TrainingEntryUpdateRequest(BaseModel):
+    question: str | None = None
+    sql: str | None = None
+    sql_explanation: str | None = None
+    title: str | None = None
+    documentation: str | None = None
 
 
 def _serialize_kb(row: VannaKnowledgeBase) -> dict[str, Any]:
@@ -168,6 +196,58 @@ def _serialize_harvest_job(row: VannaSchemaHarvestJob) -> dict[str, Any]:
 
 
 def _serialize_schema_column(row: VannaSchemaColumn) -> dict[str, Any]:
+    return _serialize_schema_column_with_annotation(row=row, annotation=None)
+
+
+def _serialize_schema_column_annotation(
+    row: VannaSchemaColumnAnnotation | None,
+) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    return {
+        "id": int(row.id),
+        "kb_id": int(row.kb_id),
+        "datasource_id": int(row.datasource_id),
+        "schema_name": row.schema_name or None,
+        "table_name": row.table_name,
+        "column_name": row.column_name,
+        "business_description": row.business_description,
+        "comment_override": row.comment_override,
+        "default_value_override": row.default_value_override,
+        "allowed_values_override_json": list(row.allowed_values_override_json or []),
+        "sample_values_override_json": list(row.sample_values_override_json or []),
+        "update_source": row.update_source,
+        "create_user_id": int(row.create_user_id),
+        "create_user_name": row.create_user_name,
+        "updated_by_user_id": int(row.updated_by_user_id),
+        "updated_by_user_name": row.updated_by_user_name,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
+
+
+def _serialize_schema_column_with_annotation(
+    *,
+    row: VannaSchemaColumn,
+    annotation: VannaSchemaColumnAnnotation | None,
+) -> dict[str, Any]:
+    effective_default_raw = effective_text_value(
+        annotation.default_value_override if annotation else None,
+        row.default_raw,
+    )
+    effective_column_comment = effective_text_value(
+        annotation.comment_override if annotation else None,
+        row.column_comment,
+    )
+    effective_allowed_values_json = effective_list_value(
+        annotation.allowed_values_override_json if annotation else None,
+        list(row.allowed_values_json or []),
+    )
+    effective_sample_values_json = effective_list_value(
+        annotation.sample_values_override_json if annotation else None,
+        list(row.sample_values_json or []),
+    )
+
     return {
         "id": int(row.id),
         "table_id": int(row.table_id),
@@ -197,6 +277,26 @@ def _serialize_schema_column(row: VannaSchemaColumn) -> dict[str, Any]:
         "stats_json": dict(row.stats_json or {}),
         "semantic_tags_json": list(row.semantic_tags_json or []),
         "content_hash": row.content_hash,
+        "business_description": annotation.business_description if annotation else None,
+        "comment_override": annotation.comment_override if annotation else None,
+        "default_value_override": (
+            annotation.default_value_override if annotation else None
+        ),
+        "allowed_values_override_json": list(
+            annotation.allowed_values_override_json or []
+        )
+        if annotation
+        else [],
+        "sample_values_override_json": list(
+            annotation.sample_values_override_json or []
+        )
+        if annotation
+        else [],
+        "annotation": _serialize_schema_column_annotation(annotation),
+        "effective_default_raw": effective_default_raw,
+        "effective_column_comment": effective_column_comment,
+        "effective_allowed_values_json": effective_allowed_values_json,
+        "effective_sample_values_json": effective_sample_values_json,
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
     }
@@ -267,6 +367,18 @@ def _serialize_ask_run(row: VannaAskRun) -> dict[str, Any]:
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
     }
+
+
+def _hash_entry_payload(*parts: str) -> str:
+    return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
+
+
+def _build_entry_code(*, entry_type: str, kb_id: int, content_hash: str) -> str:
+    if entry_type == "question_sql":
+        return f"question-sql:{int(kb_id)}:{content_hash}"
+    if entry_type == "documentation":
+        return f"documentation:{int(kb_id)}:{content_hash}"
+    raise ValueError(f"Unsupported entry_type for editing: {entry_type}")
 
 
 def _get_owned_entry_or_404(
@@ -474,6 +586,7 @@ async def list_schema_columns(
     user: User = Depends(get_current_user),
 ) -> dict[str, Any]:
     """列出字段事实。"""
+    annotation_service = SchemaAnnotationService(db)
     query = (
         db.query(VannaSchemaColumn)
         .join(VannaKnowledgeBase, VannaSchemaColumn.kb_id == VannaKnowledgeBase.id)
@@ -495,7 +608,65 @@ async def list_schema_columns(
         VannaSchemaColumn.ordinal_position.asc(),
         VannaSchemaColumn.id.asc(),
     ).all()
-    return {"data": [_serialize_schema_column(row) for row in rows]}
+    annotation_map = annotation_service.build_annotation_map_for_columns(rows)
+    return {
+        "data": [
+            _serialize_schema_column_with_annotation(
+                row=row,
+                annotation=annotation_map.get(
+                    annotation_key(
+                        kb_id=int(row.kb_id),
+                        schema_name=row.schema_name,
+                        table_name=str(row.table_name),
+                        column_name=str(row.column_name),
+                    )
+                ),
+            )
+            for row in rows
+        ]
+    }
+
+
+@vanna_router.put("/schema-columns/{column_id}/annotation")
+async def upsert_schema_column_annotation(
+    column_id: int,
+    payload: SchemaColumnAnnotationUpsertRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """更新字段级人工补充/覆写事实。"""
+    column_row = (
+        db.query(VannaSchemaColumn)
+        .join(VannaKnowledgeBase, VannaSchemaColumn.kb_id == VannaKnowledgeBase.id)
+        .filter(
+            VannaSchemaColumn.id == int(column_id),
+            VannaKnowledgeBase.owner_user_id == int(user.id),
+        )
+        .first()
+    )
+    if column_row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="schema column was not found",
+        )
+
+    annotation = SchemaAnnotationService(db).upsert_for_column(
+        column_row=column_row,
+        business_description=payload.business_description,
+        comment_override=payload.comment_override,
+        default_value_override=payload.default_value_override,
+        allowed_values_override_json=payload.allowed_values_override_json,
+        sample_values_override_json=payload.sample_values_override_json,
+        update_source=payload.update_source,
+        user_id=int(user.id),
+        user_name=getattr(user, "username", None),
+    )
+    return {
+        "data": _serialize_schema_column_with_annotation(
+            row=column_row,
+            annotation=annotation,
+        )
+    }
 
 
 @vanna_router.post("/train")
@@ -528,6 +699,15 @@ async def train_vanna_entry(
             publish=bool(payload.publish),
         )
         index_service.reindex_entry(entry_id=int(entry.id))
+        if not payload.publish:
+            approval_service = SystemApprovalService(db)
+            try:
+                approval_service.submit_training_entry_request(
+                    actor=approval_service.to_actor(user),
+                    entry=entry,
+                )
+            except SystemApprovalError as exc:
+                _raise_from_approval_error(str(exc))
         return {"data": _serialize_entry(entry)}
 
     if payload.documentation:
@@ -545,6 +725,15 @@ async def train_vanna_entry(
             publish=bool(payload.publish),
         )
         index_service.reindex_entry(entry_id=int(entry.id))
+        if not payload.publish:
+            approval_service = SystemApprovalService(db)
+            try:
+                approval_service.submit_training_entry_request(
+                    actor=approval_service.to_actor(user),
+                    entry=entry,
+                )
+            except SystemApprovalError as exc:
+                _raise_from_approval_error(str(exc))
         return {"data": _serialize_entry(entry)}
 
     raise HTTPException(
@@ -584,6 +773,17 @@ async def list_training_entries(
     return {"data": [_serialize_entry(row) for row in rows]}
 
 
+@vanna_router.get("/entries/{entry_id}")
+async def get_training_entry(
+    entry_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """读取单条训练条目。"""
+    entry = _get_owned_entry_or_404(db=db, user_id=int(user.id), entry_id=int(entry_id))
+    return {"data": _serialize_entry(entry)}
+
+
 @vanna_router.post("/entries/{entry_id}/publish")
 async def publish_training_entry(
     entry_id: int,
@@ -594,6 +794,93 @@ async def publish_training_entry(
     entry = _get_owned_entry_or_404(db=db, user_id=int(user.id), entry_id=int(entry_id))
     entry.lifecycle_status = "published"
     _sync_entry_chunks(db=db, entry=entry)
+    db.refresh(entry)
+    return {"data": _serialize_entry(entry)}
+
+
+@vanna_router.put("/entries/{entry_id}")
+async def update_training_entry(
+    entry_id: int,
+    payload: TrainingEntryUpdateRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """更新训练条目内容。"""
+    entry = _get_owned_entry_or_404(db=db, user_id=int(user.id), entry_id=int(entry_id))
+
+    if entry.entry_type == "question_sql":
+        question = (payload.question or "").strip()
+        sql = (payload.sql or "").strip()
+        if not question or not sql:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="question and sql are required for question_sql entries",
+            )
+        content_hash = _hash_entry_payload(question, sql)
+        next_entry_code = _build_entry_code(
+            entry_type="question_sql",
+            kb_id=int(entry.kb_id),
+            content_hash=content_hash,
+        )
+        duplicate = (
+            db.query(VannaTrainingEntry)
+            .filter(
+                VannaTrainingEntry.entry_code == next_entry_code,
+                VannaTrainingEntry.id != int(entry.id),
+            )
+            .first()
+        )
+        if duplicate is not None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="A training entry with the same question/sql already exists",
+            )
+        entry.entry_code = next_entry_code
+        entry.content_hash = content_hash
+        entry.title = question[:255]
+        entry.question_text = question
+        entry.sql_text = sql
+        entry.sql_explanation = payload.sql_explanation
+    elif entry.entry_type == "documentation":
+        title = (payload.title or "").strip()
+        documentation = (payload.documentation or "").strip()
+        if not title or not documentation:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="title and documentation are required for documentation entries",
+            )
+        content_hash = _hash_entry_payload(title, documentation)
+        next_entry_code = _build_entry_code(
+            entry_type="documentation",
+            kb_id=int(entry.kb_id),
+            content_hash=content_hash,
+        )
+        duplicate = (
+            db.query(VannaTrainingEntry)
+            .filter(
+                VannaTrainingEntry.entry_code == next_entry_code,
+                VannaTrainingEntry.id != int(entry.id),
+            )
+            .first()
+        )
+        if duplicate is not None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="A training entry with the same title/documentation already exists",
+            )
+        entry.entry_code = next_entry_code
+        entry.content_hash = content_hash
+        entry.title = title[:255]
+        entry.doc_text = documentation
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Editing is not supported for entry_type={entry.entry_type}",
+        )
+
+    db.commit()
+    db.refresh(entry)
+    IndexService(db).reindex_entry(entry_id=int(entry.id))
     db.refresh(entry)
     return {"data": _serialize_entry(entry)}
 
@@ -612,6 +899,55 @@ async def archive_training_entry(
     return {"data": _serialize_entry(entry)}
 
 
+@vanna_router.delete("/entries/{entry_id}")
+async def delete_training_entry(
+    entry_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """删除训练条目。"""
+    entry = _get_owned_entry_or_404(db=db, user_id=int(user.id), entry_id=int(entry_id))
+
+    promoted_asset = (
+        db.query(VannaSqlAsset)
+        .filter(VannaSqlAsset.origin_training_entry_id == int(entry.id))
+        .first()
+    )
+    if promoted_asset is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This training entry has already been promoted to SQL assets and cannot be deleted",
+        )
+
+    linked_ask_run = (
+        db.query(VannaAskRun)
+        .filter(VannaAskRun.auto_train_entry_id == int(entry.id))
+        .first()
+    )
+    if linked_ask_run is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This training entry is linked to ask runs and cannot be deleted",
+        )
+
+    (
+        db.query(VannaEmbeddingChunk)
+        .filter(VannaEmbeddingChunk.entry_id == int(entry.id))
+        .delete(synchronize_session=False)
+    )
+    (
+        db.query(AssetChangeRequest)
+        .filter(
+            AssetChangeRequest.asset_type == "training_entry",
+            AssetChangeRequest.asset_id == str(entry.id),
+        )
+        .delete(synchronize_session=False)
+    )
+    db.delete(entry)
+    db.commit()
+    return {"data": {"id": int(entry_id), "deleted": True}}
+
+
 @vanna_router.post("/ask")
 async def ask_vanna_sql(
     payload: AskRequest,
@@ -619,19 +955,32 @@ async def ask_vanna_sql(
     user: User = Depends(get_current_user),
 ) -> dict[str, Any]:
     """执行 Vanna ask。"""
-    result = await AskService(db).ask(
-        datasource_id=int(payload.datasource_id),
-        owner_user_id=int(user.id),
-        create_user_name=getattr(user, "username", None),
-        question=payload.question,
-        kb_id=payload.kb_id,
-        task_id=payload.task_id,
-        top_k_sql=payload.top_k_sql,
-        top_k_schema=payload.top_k_schema,
-        top_k_doc=payload.top_k_doc,
-        auto_run=bool(payload.auto_run),
-        auto_train_on_success=bool(payload.auto_train_on_success),
-    )
+    try:
+        result = await AskService(db).ask(
+            datasource_id=int(payload.datasource_id),
+            owner_user_id=int(user.id),
+            create_user_name=getattr(user, "username", None),
+            question=payload.question,
+            kb_id=payload.kb_id,
+            task_id=payload.task_id,
+            top_k_sql=payload.top_k_sql,
+            top_k_schema=payload.top_k_schema,
+            top_k_doc=payload.top_k_doc,
+            auto_run=bool(payload.auto_run),
+            auto_train_on_success=bool(payload.auto_train_on_success),
+        )
+    except VannaDatasourceNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except VannaGenerationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    except ValueError as exc:
+        _raise_from_value_error(str(exc))
     return {
         "data": {
             "ask_run_id": int(result.ask_run_id),
@@ -662,6 +1011,12 @@ def _raise_from_value_error(message: str) -> None:
     _raise_vanna_bad_request(message)
 
 
+def _raise_from_approval_error(message: str) -> None:
+    if "not found" in message.lower() or message.startswith("Unknown system_short"):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=message)
+    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message)
+
+
 @vanna_router.post("/query")
 async def query_vanna_sql(
     payload: QueryRequest,
@@ -669,25 +1024,38 @@ async def query_vanna_sql(
     user: User = Depends(get_current_user),
 ) -> dict[str, Any]:
     """统一 query：先 asset-first，未命中再 ask-fallback。"""
-    result = await QueryService(db).query(
-        datasource_id=int(payload.datasource_id),
-        owner_user_id=int(user.id),
-        create_user_name=getattr(user, "username", None),
-        question=payload.question,
-        kb_id=payload.kb_id,
-        task_id=payload.task_id,
-        explicit_params=dict(payload.explicit_params or {}),
-        context=dict(payload.context or {}),
-        auto_run=bool(payload.auto_run),
-        auto_train_on_success=bool(payload.auto_train_on_success),
-        auto_infer=bool(payload.auto_infer),
-        top_k_assets=int(payload.top_k_assets),
-        asset_match_min_score=payload.asset_match_min_score,
-        asset_match_min_margin=payload.asset_match_min_margin,
-        top_k_sql=payload.top_k_sql,
-        top_k_schema=payload.top_k_schema,
-        top_k_doc=payload.top_k_doc,
-    )
+    try:
+        result = await QueryService(db).query(
+            datasource_id=int(payload.datasource_id),
+            owner_user_id=int(user.id),
+            create_user_name=getattr(user, "username", None),
+            question=payload.question,
+            kb_id=payload.kb_id,
+            task_id=payload.task_id,
+            explicit_params=dict(payload.explicit_params or {}),
+            context=dict(payload.context or {}),
+            auto_run=bool(payload.auto_run),
+            auto_train_on_success=bool(payload.auto_train_on_success),
+            auto_infer=bool(payload.auto_infer),
+            top_k_assets=int(payload.top_k_assets),
+            asset_match_min_score=payload.asset_match_min_score,
+            asset_match_min_margin=payload.asset_match_min_margin,
+            top_k_sql=payload.top_k_sql,
+            top_k_schema=payload.top_k_schema,
+            top_k_doc=payload.top_k_doc,
+        )
+    except VannaDatasourceNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except VannaGenerationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    except ValueError as exc:
+        _raise_from_value_error(str(exc))
     return {"data": asdict(result)}
 
 

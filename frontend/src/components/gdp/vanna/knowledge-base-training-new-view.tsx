@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import React, { useEffect, useMemo, useState } from "react"
 import { useParams, useRouter } from "next/navigation"
 import {
   BookOpen,
@@ -17,14 +17,59 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
-import { cn } from "@/lib/utils"
+import { useI18n } from "@/contexts/i18n-context"
 
-import { getVannaKnowledgeBase, trainVannaEntry } from "./vanna-api"
+import {
+  getTrainingEntry,
+  getVannaKnowledgeBase,
+  trainVannaEntry,
+  updateTrainingEntry,
+} from "./vanna-api"
 import type { VannaKnowledgeBaseRecord } from "./vanna-types"
 
-type NewTrainingType = "question_sql" | "documentation"
+export type NewTrainingType = "question_sql" | "documentation"
 
-export function KnowledgeBaseTrainingNewView() {
+interface KnowledgeBaseTrainingNewViewProps {
+  type: NewTrainingType
+  entryId?: number
+}
+
+function getTypeCopy(
+  type: NewTrainingType,
+  t: (key: string, vars?: Record<string, string | number>) => string
+) {
+  if (type === "question_sql") {
+    return {
+      Icon: MessageSquare,
+      typeLabel: t("kb.training.types.question_sql"),
+      title: t("kb.trainingNew.questionSql.title"),
+      description: t("kb.trainingNew.questionSql.description"),
+      detailTitle: t("kb.trainingNew.questionSql.detailTitle"),
+      scopeSuffix: t("kb.trainingNew.scope.questionSqlSuffix"),
+    }
+  }
+
+  return {
+    Icon: BookOpen,
+    typeLabel: t("kb.training.types.documentation"),
+    title: t("kb.trainingNew.documentation.title"),
+    description: t("kb.trainingNew.documentation.description"),
+    detailTitle: t("kb.trainingNew.documentation.detailTitle"),
+    scopeSuffix: t("kb.trainingNew.scope.documentationSuffix"),
+  }
+}
+
+function getListHref(kbId: number, type: NewTrainingType) {
+  return type === "question_sql"
+    ? `/knowledge-bases/${kbId}/training/question-sql`
+    : `/knowledge-bases/${kbId}/training/documentation`
+}
+
+export function KnowledgeBaseTrainingNewView({
+  type,
+  entryId,
+}: KnowledgeBaseTrainingNewViewProps) {
+  const { t } = useI18n()
   const params = useParams()
   const router = useRouter()
   const kbId = Number(params.id)
@@ -32,11 +77,13 @@ export function KnowledgeBaseTrainingNewView() {
   const [loading, setLoading] = useState(true)
   const [submitting, setSubmitting] = useState(false)
   const [kb, setKb] = useState<VannaKnowledgeBaseRecord | null>(null)
-  const [type, setType] = useState<NewTrainingType>("question_sql")
+  const [entryLoading, setEntryLoading] = useState(false)
   const [question, setQuestion] = useState("")
   const [sql, setSql] = useState("")
   const [title, setTitle] = useState("")
   const [documentation, setDocumentation] = useState("")
+
+  const copy = useMemo(() => getTypeCopy(type, t), [type, t])
 
   useEffect(() => {
     async function loadKb() {
@@ -45,7 +92,11 @@ export function KnowledgeBaseTrainingNewView() {
         setKb(await getVannaKnowledgeBase(kbId))
       } catch (error) {
         console.error(error)
-        toast.error(error instanceof Error ? error.message : "知识库加载失败")
+        toast.error(
+          error instanceof Error
+            ? error.message
+            : t("kb.trainingNew.feedback.loadFailed")
+        )
       } finally {
         setLoading(false)
       }
@@ -54,17 +105,64 @@ export function KnowledgeBaseTrainingNewView() {
     if (Number.isFinite(kbId)) {
       void loadKb()
     }
-  }, [kbId])
+  }, [kbId, t])
+
+  useEffect(() => {
+    if (!entryId || type !== "question_sql") {
+      return
+    }
+
+    const targetEntryId = entryId
+    let cancelled = false
+
+    async function loadEntry() {
+      setEntryLoading(true)
+      try {
+        const entry = await getTrainingEntry(targetEntryId)
+        if (cancelled) {
+          return
+        }
+        setQuestion(entry.question_text || "")
+        setSql(entry.sql_text || "")
+      } catch (error) {
+        console.error(error)
+        if (!cancelled) {
+          toast.error(error instanceof Error ? error.message : "加载 SQL 问答对失败")
+        }
+      } finally {
+        if (!cancelled) {
+          setEntryLoading(false)
+        }
+      }
+    }
+
+    void loadEntry()
+
+    return () => {
+      cancelled = true
+    }
+  }, [entryId, type])
 
   async function handleSubmit(publish: boolean) {
     if (!kb) {
       return
     }
+
     setSubmitting(true)
     try {
-      if (type === "question_sql") {
+      if (type === "question_sql" && entryId) {
+        const targetEntryId = entryId
         if (!question.trim() || !sql.trim()) {
-          toast.error("请填写用户问题和标准 SQL")
+          toast.error(t("kb.trainingNew.feedback.questionSqlRequired"))
+          return
+        }
+        await updateTrainingEntry(targetEntryId, {
+          question: question.trim(),
+          sql: sql.trim(),
+        })
+      } else if (type === "question_sql") {
+        if (!question.trim() || !sql.trim()) {
+          toast.error(t("kb.trainingNew.feedback.questionSqlRequired"))
           return
         }
         await trainVannaEntry({
@@ -75,7 +173,7 @@ export function KnowledgeBaseTrainingNewView() {
         })
       } else {
         if (!title.trim() || !documentation.trim()) {
-          toast.error("请填写文档标题和正文")
+          toast.error(t("kb.trainingNew.feedback.documentationRequired"))
           return
         }
         await trainVannaEntry({
@@ -85,11 +183,28 @@ export function KnowledgeBaseTrainingNewView() {
           publish,
         })
       }
-      toast.success(publish ? "训练知识已发布" : "训练知识已保存为候选")
-      router.push(`/knowledge-bases/${kb.id}/training`)
+
+      toast.success(
+        entryId
+          ? "SQL 问答对已更新"
+          : publish
+          ? t("kb.trainingNew.feedback.publishSuccess")
+          : t("kb.trainingNew.feedback.saveCandidateSuccess")
+      )
+      router.push(
+        entryId
+          ? getListHref(kb.id, type)
+          : publish
+          ? getListHref(kb.id, type)
+          : `/approval-queue?view=mine&asset_type=training_entry&system_short=${kb.system_short}`
+      )
     } catch (error) {
       console.error(error)
-      toast.error(error instanceof Error ? error.message : "保存训练知识失败")
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : t("kb.trainingNew.feedback.saveFailed")
+      )
     } finally {
       setSubmitting(false)
     }
@@ -107,6 +222,8 @@ export function KnowledgeBaseTrainingNewView() {
     return null
   }
 
+  const Icon = copy.Icon
+
   return (
     <div className="flex h-screen w-full flex-col overflow-hidden bg-zinc-50/50 text-foreground">
       <header className="z-10 flex h-16 shrink-0 items-center justify-between border-b bg-background px-8 shadow-sm">
@@ -115,20 +232,18 @@ export function KnowledgeBaseTrainingNewView() {
             variant="ghost"
             size="icon"
             className="h-9 w-9 rounded-full"
-            onClick={() => router.push(`/knowledge-bases/${kb.id}/training`)}
+            onClick={() => router.push(getListHref(kb.id, type))}
           >
             <ChevronLeft className="h-5 w-5" />
           </Button>
           <div className="flex items-center gap-3">
             <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/10">
-              {type === "question_sql" ? (
-                <MessageSquare className="h-4 w-4 text-primary" />
-              ) : (
-                <BookOpen className="h-4 w-4 text-primary" />
-              )}
+              <Icon className="h-4 w-4 text-primary" />
             </div>
             <div className="flex flex-col">
-              <h1 className="text-base font-bold tracking-tight">录入训练知识</h1>
+              <h1 className="text-base font-bold tracking-tight">
+                {entryId && type === "question_sql" ? "修改 SQL 问答对" : copy.title}
+              </h1>
               <div className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">
                 {kb.kb_code}
               </div>
@@ -136,94 +251,53 @@ export function KnowledgeBaseTrainingNewView() {
           </div>
         </div>
         <div className="flex items-center gap-3">
-          <Button
-            variant="outline"
-            className="h-10 rounded-full px-6 font-bold"
-            onClick={() => void handleSubmit(false)}
-            disabled={submitting}
-          >
-            {submitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-            保存为 Candidate
-          </Button>
+          {entryId ? null : (
+            <Button
+              variant="outline"
+              className="h-10 rounded-full px-6 font-bold"
+              onClick={() => void handleSubmit(false)}
+              disabled={submitting}
+            >
+              {submitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+              {t("kb.trainingNew.actions.saveCandidate")}
+            </Button>
+          )}
           <Button
             className="h-10 rounded-full bg-primary px-8 font-bold shadow-lg shadow-primary/20"
             onClick={() => void handleSubmit(true)}
-            disabled={submitting}
+            disabled={submitting || entryLoading}
           >
             {submitting ? (
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
             ) : (
               <Save className="mr-2 h-4 w-4" />
             )}
-            直接发布
+            {entryId ? "保存修改" : t("kb.trainingNew.actions.publish")}
           </Button>
         </div>
       </header>
 
       <main className="flex flex-1 justify-center overflow-y-auto bg-white p-8 dark:bg-zinc-950">
         <div className="w-full max-w-4xl space-y-10">
-          <div className="space-y-4">
-            <Label className="text-xs font-black uppercase tracking-widest text-muted-foreground">
-              选择知识类型
-            </Label>
-            <div className="grid grid-cols-2 gap-4">
-              <button
-                type="button"
-                onClick={() => setType("question_sql")}
-                className={cn(
-                  "flex items-start gap-4 rounded-[2rem] border-2 p-6 text-left transition-all",
-                  type === "question_sql"
-                    ? "border-primary bg-primary/5 shadow-xl ring-4 ring-primary/5"
-                    : "border-transparent bg-zinc-50 hover:bg-zinc-100"
-                )}
-              >
-                <div
-                  className={cn(
-                    "rounded-2xl p-3",
-                    type === "question_sql" ? "bg-primary text-white" : "bg-muted"
-                  )}
-                >
-                  <MessageSquare className="h-6 w-6" />
-                </div>
-                <div className="space-y-1">
-                  <div className="text-lg font-black">Question SQL</div>
-                  <p className="text-xs leading-relaxed text-muted-foreground">
-                    录入真实业务问题与标准 SQL，作为生成 SQL 的 few-shot 样例。
-                  </p>
-                </div>
-              </button>
-              <button
-                type="button"
-                onClick={() => setType("documentation")}
-                className={cn(
-                  "flex items-start gap-4 rounded-[2rem] border-2 p-6 text-left transition-all",
-                  type === "documentation"
-                    ? "border-primary bg-primary/5 shadow-xl ring-4 ring-primary/5"
-                    : "border-transparent bg-zinc-50 hover:bg-zinc-100"
-                )}
-              >
-                <div
-                  className={cn(
-                    "rounded-2xl p-3",
-                    type === "documentation" ? "bg-primary text-white" : "bg-muted"
-                  )}
-                >
-                  <BookOpen className="h-6 w-6" />
-                </div>
-                <div className="space-y-1">
-                  <div className="text-lg font-black">Documentation</div>
-                  <p className="text-xs leading-relaxed text-muted-foreground">
-                    录入业务规则、口径定义和术语解释，补足结构事实无法表达的业务语义。
-                  </p>
-                </div>
-              </button>
+          <section className="rounded-[2rem] border bg-zinc-50/70 p-6 shadow-sm">
+            <div className="flex items-start gap-4">
+              <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-[1.25rem] bg-primary text-primary-foreground shadow-lg shadow-primary/15">
+                <Icon className="h-6 w-6" />
+              </div>
+              <div className="space-y-2">
+                <Badge variant="outline">{copy.typeLabel}</Badge>
+                <div className="text-xl font-black">{copy.title}</div>
+                <p className="text-sm leading-relaxed text-muted-foreground">
+                  {copy.description}
+                </p>
+              </div>
             </div>
-          </div>
+          </section>
 
-          <div className="space-y-8 pb-20">
+          <section className="space-y-8 pb-20">
             <div className="flex items-center gap-2 border-b-2 pb-2">
               <Sparkles className="h-5 w-5 text-primary" />
-              <h2 className="text-xl font-black">填写知识详情</h2>
+              <h2 className="text-xl font-black">{copy.detailTitle}</h2>
               <Badge variant="outline">
                 {kb.system_short}/{kb.env}
               </Badge>
@@ -234,21 +308,25 @@ export function KnowledgeBaseTrainingNewView() {
                 <>
                   <div className="col-span-2 space-y-3">
                     <Label className="text-xs font-black uppercase tracking-wider">
-                      用户问题 *
+                      {t("kb.trainingNew.form.question")} *
                     </Label>
                     <Input
                       value={question}
                       onChange={event => setQuestion(event.target.value)}
                       className="h-12 rounded-2xl text-lg font-bold"
-                      placeholder="例如：查询近一个月销售额最高的前 10 名客户"
+                      placeholder={t("kb.trainingNew.placeholders.question")}
+                      disabled={entryLoading}
                     />
                   </div>
                   <div className="col-span-2 space-y-3">
                     <div className="flex items-center justify-between">
                       <Label className="text-xs font-black uppercase tracking-wider">
-                        标准 SQL *
+                        {t("kb.trainingNew.form.standardSql")} *
                       </Label>
-                      <Badge variant="outline" className="border-none bg-zinc-900 text-[10px] text-zinc-100">
+                      <Badge
+                        variant="outline"
+                        className="border-none bg-zinc-900 text-[10px] text-zinc-100"
+                      >
                         SQL
                       </Badge>
                     </div>
@@ -256,7 +334,8 @@ export function KnowledgeBaseTrainingNewView() {
                       value={sql}
                       onChange={event => setSql(event.target.value)}
                       className="min-h-[220px] rounded-3xl border-none bg-zinc-900 p-6 font-mono text-sm text-zinc-100 shadow-2xl focus-visible:ring-primary"
-                      placeholder="SELECT ..."
+                      placeholder={t("kb.trainingNew.placeholders.sql")}
+                      disabled={entryLoading}
                     />
                   </div>
                 </>
@@ -264,46 +343,46 @@ export function KnowledgeBaseTrainingNewView() {
                 <>
                   <div className="col-span-2 space-y-3">
                     <Label className="text-xs font-black uppercase tracking-wider">
-                      文档标题 *
+                      {t("kb.trainingNew.form.documentTitle")} *
                     </Label>
                     <Input
                       value={title}
                       onChange={event => setTitle(event.target.value)}
                       className="h-12 rounded-2xl text-lg font-bold"
-                      placeholder="例如：客户分级定义与计算逻辑"
+                      placeholder={t("kb.trainingNew.placeholders.documentTitle")}
                     />
                   </div>
                   <div className="col-span-2 space-y-3">
                     <Label className="text-xs font-black uppercase tracking-wider">
-                      文档正文 *
+                      {t("kb.trainingNew.form.documentBody")} *
                     </Label>
                     <Textarea
                       value={documentation}
                       onChange={event => setDocumentation(event.target.value)}
                       className="min-h-[320px] rounded-3xl border-none bg-zinc-50 p-6 leading-relaxed shadow-inner focus-visible:ring-primary"
-                      placeholder="请输入业务详细说明..."
+                      placeholder={t("kb.trainingNew.placeholders.documentation")}
                     />
                   </div>
                 </>
               )}
 
               <div className="col-span-2 rounded-3xl border-2 border-dashed border-zinc-100 p-6">
-                <div className="text-sm font-bold">写入范围说明</div>
+                <div className="text-sm font-bold">
+                  {t("kb.trainingNew.scope.title")}
+                </div>
                 <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
-                  当前版本会把知识写入与数据源强绑定的知识库中，并自动继承
-                  {" "}
+                  {t("kb.trainingNew.scope.descriptionPrefix")}{" "}
                   <span className="font-mono">{kb.system_short}</span>
                   {" / "}
                   <span className="font-mono">{kb.env}</span>
                   {" "}
-                  宿主标识。Question SQL 会写入问题和 SQL，Documentation 会写入标题和文档正文。
+                  {copy.scopeSuffix}
                 </p>
               </div>
             </div>
-          </div>
+          </section>
         </div>
       </main>
     </div>
   )
 }
-

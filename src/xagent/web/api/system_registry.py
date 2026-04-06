@@ -18,6 +18,7 @@ from ..services.system_approval_service import (
     ARCHIVED_LIFECYCLE_STATUS,
     ASSET_TYPE_DATASOURCE,
     ASSET_TYPE_HTTP_RESOURCE,
+    ASSET_TYPE_TRAINING_ENTRY,
     REQUEST_STATUS_PENDING,
     REQUEST_TYPE_CREATE,
     REQUEST_TYPE_DELETE,
@@ -54,7 +55,7 @@ class SystemMemberRoleUpdateRequest(BaseModel):
 
 class AssetChangeRequestCreateRequest(BaseModel):
     request_type: Literal["create", "update", "delete"]
-    asset_type: Literal["datasource", "http_resource"]
+    asset_type: Literal["datasource", "http_resource", "training_entry"]
     asset_id: int | None = Field(default=None, ge=1)
     payload_snapshot: dict[str, Any] = Field(default_factory=dict)
 
@@ -307,7 +308,7 @@ def create_asset_change_request(
                 existing=existing,
                 request_type=payload.request_type,
             )
-        else:
+        elif payload.asset_type == ASSET_TYPE_HTTP_RESOURCE:
             existing = (
                 _load_active_http_asset_or_404(db, payload.asset_id)
                 if payload.asset_id is not None
@@ -322,6 +323,10 @@ def create_asset_change_request(
                 ),
                 existing=existing,
                 request_type=payload.request_type,
+            )
+        else:
+            raise SystemApprovalError(
+                "Training entry requests must be submitted from the Vanna training API"
             )
     except SystemApprovalError as exc:
         raise _service_error_to_http(exc) from exc

@@ -122,7 +122,7 @@ class AssetChangeRequest(Base):  # type: ignore
         String(32), nullable=False, index=True, comment="create/update/delete"
     )
     asset_type = Column(
-        String(32), nullable=False, index=True, comment="datasource/sql_asset/http_resource"
+        String(32), nullable=False, index=True, comment="datasource/http_resource/training_entry"
     )
     asset_id = Column(String(128), nullable=True, index=True, comment="Target asset ID")
     system_short = Column(

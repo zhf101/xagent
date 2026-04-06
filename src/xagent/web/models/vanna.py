@@ -15,6 +15,7 @@ from typing import Any, Dict
 
 from sqlalchemy import JSON, Boolean, Column
 from sqlalchemy import DateTime, Float, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import UniqueConstraint
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.sql import func
 from sqlalchemy.types import UserDefinedType
@@ -130,6 +131,9 @@ class VannaKnowledgeBase(Base):
         index=True,
         comment="系统简称",
     )
+    database_name = Column(
+        String(255), nullable=True, index=True, comment="逻辑数据库名称"
+    )
     env = Column(
         String(32),
         nullable=False,
@@ -192,6 +196,7 @@ class VannaKnowledgeBase(Base):
             "datasource_id": self.datasource_id,
             "datasource_name": self.datasource_name,
             "system_short": self.system_short,
+            "database_name": self.database_name,
             "env": self.env,
             "db_type": self.db_type,
             "dialect": self.dialect,
@@ -464,6 +469,99 @@ class VannaSchemaColumn(Base):
     )
     content_hash = Column(
         String(64), nullable=True, index=True, comment="内容哈希"
+    )
+    created_at = Column(
+        DateTime, default=func.now(), nullable=False, comment="创建时间"
+    )
+    updated_at = Column(
+        DateTime,
+        default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+        comment="更新时间",
+    )
+
+
+class VannaSchemaColumnAnnotation(Base):
+    """字段级人工补充/覆写事实。"""
+
+    __tablename__ = "vanna_schema_column_annotations"
+    __table_args__ = (
+        UniqueConstraint(
+            "kb_id",
+            "schema_name",
+            "table_name",
+            "column_name",
+            name="uq_vanna_schema_column_annotation_key",
+        ),
+        Index(
+            "ix_vanna_schema_column_annotations_kb_table",
+            "kb_id",
+            "schema_name",
+            "table_name",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True, comment="字段注释ID")
+    kb_id = Column(
+        Integer,
+        ForeignKey("vanna_knowledge_bases.id"),
+        nullable=False,
+        index=True,
+        comment="知识库ID",
+    )
+    datasource_id = Column(
+        Integer,
+        ForeignKey("text2sql_databases.id"),
+        nullable=False,
+        index=True,
+        comment="数据源ID",
+    )
+    system_short = Column(
+        String(64), nullable=False, index=True, comment="系统简称"
+    )
+    env = Column(
+        String(32), nullable=False, index=True, comment="环境（如prod/dev）"
+    )
+    schema_name = Column(
+        String(255),
+        nullable=False,
+        default="",
+        comment="Schema名称，空字符串表示默认schema",
+    )
+    table_name = Column(
+        String(255), nullable=False, index=True, comment="表名称"
+    )
+    column_name = Column(
+        String(255), nullable=False, index=True, comment="字段名称"
+    )
+    business_description = Column(Text, nullable=True, comment="业务说明")
+    comment_override = Column(Text, nullable=True, comment="字段注释覆写")
+    default_value_override = Column(Text, nullable=True, comment="默认值覆写")
+    allowed_values_override_json = Column(
+        JSON, nullable=True, comment="取值范围覆写（JSON格式）"
+    )
+    sample_values_override_json = Column(
+        JSON, nullable=True, comment="示例值覆写（JSON格式）"
+    )
+    update_source = Column(
+        String(32),
+        nullable=False,
+        default="manual",
+        index=True,
+        comment="更新来源（manual/ai_suggest/imported）",
+    )
+    create_user_id = Column(
+        Integer, nullable=False, index=True, comment="创建用户ID"
+    )
+    create_user_name = Column(
+        String(255), nullable=True, comment="创建用户名"
+    )
+    updated_by_user_id = Column(
+        Integer, nullable=False, index=True, comment="最后更新用户ID"
+    )
+    updated_by_user_name = Column(
+        String(255), nullable=True, comment="最后更新用户名"
     )
     created_at = Column(
         DateTime, default=func.now(), nullable=False, comment="创建时间"
@@ -866,6 +964,9 @@ class VannaSqlAsset(Base):
     system_short = Column(
         String(64), nullable=False, index=True, comment="系统简称"
     )
+    database_name = Column(
+        String(255), nullable=True, index=True, comment="逻辑数据库名称"
+    )
     env = Column(
         String(32), nullable=False, index=True, comment="环境"
     )
@@ -921,6 +1022,7 @@ class VannaSqlAsset(Base):
             "asset_kind": self.asset_kind,
             "status": self.status,
             "system_short": self.system_short,
+            "database_name": self.database_name,
             "env": self.env,
             "match_keywords": list(self.match_keywords_json or []),
             "match_examples": list(self.match_examples_json or []),

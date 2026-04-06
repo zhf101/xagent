@@ -4,8 +4,15 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
+from .schema_annotation_service import (
+    SchemaAnnotationService,
+    annotation_key_for_column,
+    effective_list_value,
+    effective_text_value,
+)
 from ...web.models.vanna import (
     VannaSchemaColumn,
+    VannaSchemaColumnAnnotation,
     VannaSchemaTable,
     VannaTrainingEntry,
     VannaTrainingLifecycleStatus,
@@ -18,12 +25,16 @@ class SchemaSummaryService:
 
     def __init__(self, db: Session):
         self.db = db
+        self.annotation_service = SchemaAnnotationService(db)
 
     def build_table_summary(
         self,
         *,
         table_row: VannaSchemaTable,
         column_rows: list[VannaSchemaColumn],
+        annotation_map: dict[
+            tuple[int, str, str, str], VannaSchemaColumnAnnotation
+        ] | None = None,
     ) -> str:
         lines = [f"表 {table_row.schema_name or 'default'}.{table_row.table_name}:"]
 
@@ -46,15 +57,33 @@ class SchemaSummaryService:
             )
 
         for column in column_rows:
+            annotation = (annotation_map or {}).get(annotation_key_for_column(column))
+            effective_default = effective_text_value(
+                annotation.default_value_override if annotation else None,
+                column.default_raw,
+            )
+            effective_allowed_values = effective_list_value(
+                annotation.allowed_values_override_json if annotation else None,
+                list(column.allowed_values_json or []),
+            )
+            effective_comment = effective_text_value(
+                annotation.comment_override if annotation else None,
+                column.column_comment,
+            )
+            business_description = (
+                annotation.business_description if annotation else None
+            )
             tags: list[str] = []
             if column.value_source_kind == "boolean":
                 tags.append("布尔字段")
-            if column.default_raw:
-                tags.append(f"默认值 {column.default_raw}")
-            if column.allowed_values_json:
-                tags.append(f"可选值 {list(column.allowed_values_json)}")
-            if column.column_comment:
-                tags.append(column.column_comment)
+            if effective_default:
+                tags.append(f"默认值 {effective_default}")
+            if effective_allowed_values:
+                tags.append(f"可选值 {list(effective_allowed_values)}")
+            if effective_comment:
+                tags.append(effective_comment)
+            if business_description:
+                tags.append(f"业务说明 {business_description}")
             if tags:
                 lines.append(f"- 字段 {column.column_name}: {'，'.join(tags)}")
 
@@ -77,9 +106,13 @@ class SchemaSummaryService:
             )
             .all()
         )
+        annotation_map = self.annotation_service.build_annotation_map_for_columns(
+            column_rows
+        )
         summary_text = self.build_table_summary(
             table_row=table_row,
             column_rows=column_rows,
+            annotation_map=annotation_map,
         )
         entry_code = (
             f"schema-summary:"
