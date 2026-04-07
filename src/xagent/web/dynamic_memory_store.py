@@ -7,7 +7,7 @@ from typing import Optional, Union
 
 from ..core.memory.in_memory import InMemoryMemoryStore
 from ..core.memory.lancedb import LanceDBMemoryStore
-from ..core.model.embedding import DashScopeEmbedding
+from ..core.model.embedding import OpenAIEmbedding
 from ..core.storage.manager import get_storage_root
 from .models.database import get_db
 from .models.model import Model as DBModel
@@ -135,16 +135,20 @@ class DynamicMemoryStoreManager:
                 os.makedirs(new_dir, exist_ok=True)
                 db_dir = str(new_dir)
 
-            if embedding_model.model_provider == "dashscope":
+            if embedding_model.model_provider == "openai":
                 lancedb_store = LanceDBMemoryStore(
                     db_dir=db_dir,
-                    embedding_model=DashScopeEmbedding(
+                    embedding_model=OpenAIEmbedding(
+                        model=str(embedding_model.model_name),
                         api_key=str(embedding_model.api_key),
+                        base_url=str(embedding_model.base_url)
+                        if embedding_model.base_url
+                        else None,
                         dimension=int(embedding_model.dimension or 1024),
                     ),
                     similarity_threshold=self._similarity_threshold or 1.5,
                 )
-                logger.info("Created LanceDB store with DashScope embedding model")
+                logger.info("Created LanceDB store with OpenAI-compatible embedding model")
                 return UserIsolatedMemoryStore(lancedb_store)
             else:
                 # Fallback to in-memory if embedding type not supported

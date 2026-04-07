@@ -5,7 +5,6 @@ from sqlalchemy.orm import Session
 from xagent.core.model.model import (
     ChatModelConfig,
     EmbeddingModelConfig,
-    ImageModelConfig,
     ModelConfig,
     RerankModelConfig,
     VectorDBConfig,
@@ -76,14 +75,6 @@ class SQLAlchemyModelHub:
                     "category": "llm",
                 }
             )
-        elif isinstance(model, ImageModelConfig):
-            db_data.update(
-                {
-                    "model_provider": model.model_provider,
-                    "max_tokens": model.default_max_tokens,
-                    "category": "image",
-                }
-            )
         elif isinstance(model, EmbeddingModelConfig):
             db_data.update(
                 {
@@ -95,7 +86,7 @@ class SQLAlchemyModelHub:
         elif isinstance(model, RerankModelConfig):
             db_data.update(
                 {
-                    "model_provider": "none",
+                    "model_provider": model.model_provider,
                     "category": "rerank",
                 }
             )
@@ -153,12 +144,6 @@ class SQLAlchemyModelHub:
                 default_temperature=db_model.temperature,
                 default_max_tokens=db_model.max_tokens,
             )
-        elif db_model.category == "image":
-            return ImageModelConfig(
-                **common,
-                model_provider=db_model.model_provider,
-                default_max_tokens=db_model.max_tokens,
-            )
         elif db_model.category == "embedding":
             return EmbeddingModelConfig(
                 **common,
@@ -166,7 +151,10 @@ class SQLAlchemyModelHub:
                 model_provider=db_model.model_provider,
             )
         elif db_model.category == "rerank":
-            return RerankModelConfig(**common)
+            return RerankModelConfig(
+                **common,
+                model_provider=db_model.model_provider,
+            )
         elif db_model.category == "vector_db":
             return self._load_vector_db_config(db_model, common)
         else:
@@ -199,11 +187,6 @@ class SQLAlchemyModelHub:
                     default_temperature=db_model.temperature,
                     default_max_tokens=db_model.max_tokens,
                 )
-            elif db_model.category == "image":
-                config = ImageModelConfig(
-                    **common_fields,
-                    model_provider=db_model.model_provider,
-                )
             elif db_model.category == "embedding":
                 config = EmbeddingModelConfig(
                     **common_fields,
@@ -211,7 +194,10 @@ class SQLAlchemyModelHub:
                     dimension=db_model.dimension,
                 )
             elif db_model.category == "rerank":
-                config = RerankModelConfig(**common_fields)
+                config = RerankModelConfig(
+                    **common_fields,
+                    model_provider=db_model.model_provider,
+                )
             elif db_model.category == "vector_db":
                 config = self._load_vector_db_config(db_model, common_fields)
 

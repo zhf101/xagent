@@ -1,4 +1,4 @@
-from importlib import resources
+from pathlib import Path
 from typing import Any
 
 from alembic.config import Config as AlembicConfig
@@ -10,7 +10,7 @@ def create_alembic_config(engine: Engine) -> Any:
     cfg: Any = AlembicConfig()
 
     # Basic configuration
-    migrations_path = resources.files("xagent") / "migrations"
+    migrations_path = Path(__file__).resolve().parents[1] / "migrations"
     cfg.set_main_option("script_location", str(migrations_path))
     cfg.set_main_option("prepend_sys_path", ".")
     cfg.set_main_option("version_path_separator", "os")

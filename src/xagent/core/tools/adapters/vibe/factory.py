@@ -61,15 +61,12 @@ class ToolRegistry:
             # 在本项目里，很多工具模块的注册副作用就发生在 import 阶段。
             from . import (  # noqa: F401 - imports trigger @register_tool decorators
                 agent_tool,
-                audio_tool,
                 basic_tools,
                 browser_tools,
-                image_tool,
                 knowledge_tools,
                 mcp_tools,
                 pptx_tool,
                 skill_tools,
-                special_image_tools,
                 sql_tool,
                 translate_json,
                 vision_tool,
@@ -178,6 +175,16 @@ class ToolFactory:
         """
         # Auto-discover tools from @register_tool decorators
         tools = await ToolRegistry.create_registered_tools(config)
+
+        # 当前分支只保留文本类能力，显式移除图片生成和音频相关工具。
+        from .base import ToolCategory
+
+        disabled_categories = {ToolCategory.IMAGE, ToolCategory.AUDIO}
+        tools = [
+            tool
+            for tool in tools
+            if tool.metadata.category not in disabled_categories
+        ]
 
         # Filter tools by allowed_tools if specified
         allowed_tools = config.get_allowed_tools()

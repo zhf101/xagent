@@ -70,13 +70,6 @@ class WebToolConfig(BaseToolConfig):
 
         # Cache for loaded configurations
         self._cached_vision_config: Optional[Any] = None
-        self._cached_image_configs: Optional[Dict[str, Any]] = None
-        self._cached_image_generate_model: Optional[Any] = None
-        self._cached_image_edit_model: Optional[Any] = None
-        self._cached_asr_models: Optional[Dict[str, Any]] = None
-        self._cached_asr_model: Optional[Any] = None
-        self._cached_tts_models: Optional[Dict[str, Any]] = None
-        self._cached_tts_model: Optional[Any] = None
         self._cached_mcp_configs: Optional[List[Dict[str, Any]]] = None
         self._cached_embedding_model: Optional[str] = None
 
@@ -146,24 +139,6 @@ class WebToolConfig(BaseToolConfig):
         if self._cached_vision_config is None:
             self._cached_vision_config = self._load_vision_model()
         return self._cached_vision_config
-
-    def get_image_models(self) -> Dict[str, Any]:
-        """Load image models from database."""
-        if self._cached_image_configs is None:
-            self._cached_image_configs = self._load_image_models()
-        return self._cached_image_configs
-
-    def get_image_generate_model(self) -> Optional[Any]:
-        """Get default image generation model from database."""
-        if self._cached_image_generate_model is None:
-            self._cached_image_generate_model = self._load_image_generate_model()
-        return self._cached_image_generate_model
-
-    def get_image_edit_model(self) -> Optional[Any]:
-        """Get default image editing model from database."""
-        if self._cached_image_edit_model is None:
-            self._cached_image_edit_model = self._load_image_edit_model()
-        return self._cached_image_edit_model
 
     def get_mcp_server_configs(self) -> List[Dict[str, Any]]:
         """Load MCP server configurations from database."""
@@ -249,118 +224,9 @@ class WebToolConfig(BaseToolConfig):
             logger.warning(f"Failed to load vision model: {e}")
             return None
 
-    def _load_image_models(self) -> Dict[str, Any]:
-        """Load image models from database via model service."""
-        try:
-            from ...web.services.model_service import get_image_models
-
-            return get_image_models(self.db, self._user_id)
-
-        except Exception as e:
-            logger = logging.getLogger(__name__)
-            logger.warning(f"Failed to load image models: {e}")
-
-            return {}
-
-    def _load_image_generate_model(self) -> Optional[Any]:
-        """Load default image generation model from database via model service."""
-        try:
-            from ...web.services.model_service import get_default_image_generate_model
-
-            return get_default_image_generate_model(self._user_id)
-
-        except Exception as e:
-            logger = logging.getLogger(__name__)
-            logger.warning(f"Failed to load default image generation model: {e}")
-            return None
-
-    def _load_image_edit_model(self) -> Optional[Any]:
-        """Load default image editing model from database via model service."""
-        try:
-            from ...web.services.model_service import get_default_image_edit_model
-
-            return get_default_image_edit_model(self._user_id)
-
-        except Exception as e:
-            logger = logging.getLogger(__name__)
-            logger.warning(f"Failed to load default image editing model: {e}")
-            return None
-
-    def get_asr_models(self) -> Dict[str, Any]:
-        """Load ASR models from database."""
-        if self._cached_asr_models is None:
-            self._cached_asr_models = self._load_asr_models()
-        return self._cached_asr_models
-
-    def _load_asr_models(self) -> Dict[str, Any]:
-        """Load ASR models from database via model service."""
-        try:
-            from ...web.services.model_service import get_asr_models
-
-            return get_asr_models(self.db, self._user_id)
-
-        except Exception as e:
-            logger = logging.getLogger(__name__)
-            logger.warning(f"Failed to load ASR models: {e}")
-            return {}
-
-    def get_asr_model(self) -> Optional[Any]:
-        """Get default ASR model from database."""
-        if self._cached_asr_model is None:
-            self._cached_asr_model = self._load_asr_model()
-        return self._cached_asr_model
-
-    def _load_asr_model(self) -> Optional[Any]:
-        """Load default ASR model from database via model service."""
-        try:
-            from ...web.services.model_service import get_default_asr_model
-
-            return get_default_asr_model(self._user_id)
-
-        except Exception as e:
-            logger = logging.getLogger(__name__)
-            logger.warning(f"Failed to load default ASR model: {e}")
-            return None
-
-    def get_tts_models(self) -> Dict[str, Any]:
-        """Load TTS models from database."""
-        if self._cached_tts_models is None:
-            self._cached_tts_models = self._load_tts_models()
-        return self._cached_tts_models
-
-    def _load_tts_models(self) -> Dict[str, Any]:
-        """Load TTS models from database via model service."""
-        try:
-            from ...web.services.model_service import get_tts_models
-
-            return get_tts_models(self.db, self._user_id)
-
-        except Exception as e:
-            logger = logging.getLogger(__name__)
-            logger.warning(f"Failed to load TTS models: {e}")
-            return {}
-
-    def get_tts_model(self) -> Optional[Any]:
-        """Get default TTS model from database."""
-        if self._cached_tts_model is None:
-            self._cached_tts_model = self._load_tts_model()
-        return self._cached_tts_model
-
     def get_llm(self) -> Optional[Any]:
         """Get LLM from constructor parameter."""
         return self._explicit_llm
-
-    def _load_tts_model(self) -> Optional[Any]:
-        """Load default TTS model from database via model service."""
-        try:
-            from ...web.services.model_service import get_default_tts_model
-
-            return get_default_tts_model(self._user_id)
-
-        except Exception as e:
-            logger = logging.getLogger(__name__)
-            logger.warning(f"Failed to load default TTS model: {e}")
-            return None
 
     def _load_mcp_server_configs(self) -> List[Dict[str, Any]]:
         """Load MCP server configurations from database with user context."""

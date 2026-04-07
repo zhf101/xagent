@@ -11,8 +11,8 @@ from sqlalchemy.orm import Session
 from xagent.core.model.model import (
     ChatModelConfig,
     EmbeddingModelConfig,
-    ImageModelConfig,
     ModelConfig,
+    RerankModelConfig,
 )
 from xagent.core.model.providers import default_base_url_for_provider
 from xagent.core.utils.security import redact_sensitive_text
@@ -38,6 +38,9 @@ logger = logging.getLogger(__name__)
 # Create router
 model_router = APIRouter(prefix="/api/models", tags=["models"])
 
+ALLOWED_MODEL_CATEGORIES = {"llm", "embedding", "rerank"}
+ALLOWED_MODEL_PROVIDERS = {"openai"}
+
 
 def _decode_model_identifier(model_id: str) -> str:
     """Decode a model identifier from the URL path."""
@@ -54,6 +57,11 @@ def _resolve_accessible_model(
     model_storage = CoreStorage(db, DBModel)
     db_model = model_storage.get_db_model(decoded_model_id)
     if not db_model:
+        raise HTTPException(status_code=404, detail="Model not found")
+    if (
+        str(db_model.category) not in ALLOWED_MODEL_CATEGORIES
+        or str(db_model.model_provider) not in ALLOWED_MODEL_PROVIDERS
+    ):
         raise HTTPException(status_code=404, detail="Model not found")
 
     user_model = (
@@ -100,11 +108,7 @@ def _is_default_config_type_compatible(model: Any, config_type: str) -> bool:
         "visual": "llm",
         "compact": "llm",
         "embedding": "embedding",
-        "image": "image",
-        "image_edit": "image",
-        "asr": "speech",
-        "tts": "speech",
-        "speech": "speech",
+        "rerank": "rerank",
     }
 
     expected_category = category_by_config_type.get(config_type)
@@ -112,6 +116,29 @@ def _is_default_config_type_compatible(model: Any, config_type: str) -> bool:
         return False
     current_category = str(getattr(model, "category", ""))
     return current_category == expected_category
+
+
+def _validate_supported_model_or_400(category: str, provider: str) -> None:
+    normalized_category = category.strip().lower()
+    normalized_provider = provider.strip().lower()
+
+    if normalized_category not in ALLOWED_MODEL_CATEGORIES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Unsupported model category: "
+                f"{category}. Supported categories: {sorted(ALLOWED_MODEL_CATEGORIES)}"
+            ),
+        )
+
+    if normalized_provider not in ALLOWED_MODEL_PROVIDERS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Unsupported model provider: "
+                f"{provider}. Supported providers: {sorted(ALLOWED_MODEL_PROVIDERS)}"
+            ),
+        )
 
 
 @model_router.post("/", response_model=ModelWithAccessInfo)
@@ -135,6 +162,8 @@ async def create_model(
 
     if model_storage.exists(model.model_id):
         raise HTTPException(status_code=400, detail="Model ID already exists")
+
+    _validate_supported_model_or_400(model.category, model.model_provider)
 
     # Only admin can share models with all users
     if model.share_with_users and not user.is_admin:
@@ -169,22 +198,8 @@ async def create_model(
             description=model.description,
             dimension=model.dimension,
         )
-    elif model.category == "image":
-        config = ImageModelConfig(
-            id=model.model_id,
-            model_name=model.model_name,
-            model_provider=model.model_provider,
-            base_url=base_url,
-            api_key=model.api_key,
-            default_temperature=model.temperature,
-            timeout=180.0,
-            abilities=model.abilities,
-            description=model.description,
-        )
-    elif model.category == "speech":
-        from xagent.core.model.model import SpeechModelConfig
-
-        config = SpeechModelConfig(
+    elif model.category == "rerank":
+        config = RerankModelConfig(
             id=model.model_id,
             model_name=model.model_name,
             model_provider=model.model_provider,
@@ -193,10 +208,6 @@ async def create_model(
             timeout=180.0,
             abilities=model.abilities,
             description=model.description,
-            language=model.language,
-            voice=model.voice,
-            format=model.format,
-            sample_rate=model.sample_rate,
         )
     else:
         raise HTTPException(status_code=400, detail="Invalid model category")
@@ -278,6 +289,7 @@ async def list_models(
         db.query(DBModel, UserModel)
         .join(UserModel, DBModel.id == UserModel.model_id)
         .filter(UserModel.user_id == user.id)
+        .filter(DBModel.category.in_(sorted(ALLOWED_MODEL_CATEGORIES)))
     )
     if model_provider:
         query = query.filter(DBModel.model_provider == model_provider)
@@ -334,10 +346,7 @@ async def get_user_default_models(
             "visual",
             "compact",
             "embedding",
-            "image",
-            "image_edit",
-            "asr",
-            "tts",
+            "rerank",
         ]
 
         # Get user's own defaults
@@ -526,6 +535,10 @@ async def update_model(
     # Get the database model
     db_model = user_model.model
 
+    updated_category = model_update.category or str(db_model.category)
+    updated_provider = model_update.model_provider or str(db_model.model_provider)
+    _validate_supported_model_or_400(updated_category, updated_provider)
+
     # Handle admin sharing updates
     if model_update.share_with_users is not None:
         # Only check admin permission when enabling sharing (share_with_users=True)
@@ -649,6 +662,7 @@ async def test_models(
                 DBModel.model_id.in_(test_request.model_ids),
                 DBModel.is_active,
                 UserModel.user_id == user.id,
+                DBModel.category == "llm",
             )
             .all()
         )
@@ -657,7 +671,11 @@ async def test_models(
         models = (
             db.query(DBModel)
             .join(UserModel, DBModel.id == UserModel.model_id)
-            .filter(DBModel.is_active, UserModel.user_id == user.id)
+            .filter(
+                DBModel.is_active,
+                UserModel.user_id == user.id,
+                DBModel.category == "llm",
+            )
             .all()
         )
 
@@ -732,12 +750,6 @@ async def get_available_model_providers() -> dict:
                 "description": "OpenAI API compatible models",
                 "examples": ["gpt-4", "gpt-4o", "gpt-3.5-turbo"],
             },
-            {
-                "type": "zhipu",
-                "name": "Zhipu AI",
-                "description": "Zhipu AI models",
-                "examples": ["glm-4", "glm-4-air", "glm-3-turbo"],
-            },
         ]
     }
 
@@ -755,6 +767,7 @@ async def list_model_categories(
         .join(UserModel, DBModel.id == UserModel.model_id)
         .filter(UserModel.user_id == user.id)
         .filter(DBModel.is_active)
+        .filter(DBModel.category.in_(sorted(ALLOWED_MODEL_CATEGORIES)))
         .distinct()
         .all()
     )
@@ -777,6 +790,7 @@ async def list_model_providers(
         .join(UserModel, DBModel.id == UserModel.model_id)
         .filter(UserModel.user_id == user.id)
         .filter(DBModel.is_active)
+        .filter(DBModel.model_provider.in_(sorted(ALLOWED_MODEL_PROVIDERS)))
         .distinct()
         .all()
     )
@@ -799,6 +813,7 @@ async def list_model_abilities(
         .join(UserModel, DBModel.id == UserModel.model_id)
         .filter(UserModel.user_id == user.id)
         .filter(DBModel.is_active)
+        .filter(DBModel.category.in_(sorted(ALLOWED_MODEL_CATEGORIES)))
         .all()
     )
 
@@ -825,6 +840,7 @@ async def get_models_summary(
         .join(UserModel, DBModel.id == UserModel.model_id)
         .filter(UserModel.user_id == user.id)
         .filter(DBModel.is_active)
+        .filter(DBModel.category.in_(sorted(ALLOWED_MODEL_CATEGORIES)))
         .all()
     )
 
@@ -862,6 +878,7 @@ async def get_default_model(
     config_type_map = {
         "llm": "general",
         "embedding": "embedding",
+        "rerank": "rerank",
     }
 
     config_type = config_type_map.get(model_provider, "general")
@@ -1246,19 +1263,7 @@ async def set_user_default_model(
     if not model:
         raise HTTPException(status_code=404, detail="Model not found")
 
-    # For speech models, automatically determine config_type based on actual abilities
-    # This prevents ASR and TTS models from conflicting with each other
-    if model.category == "speech" and model.abilities:
-        if "asr" in model.abilities and "tts" not in model.abilities:
-            config_type = "asr"  # Only ASR ability
-        elif "tts" in model.abilities and "asr" not in model.abilities:
-            config_type = "tts"  # Only TTS ability
-        elif "asr" in model.abilities and "tts" in model.abilities:
-            config_type = "speech"  # Both abilities
-        else:
-            config_type = config.config_type  # Fallback to user-specified
-    else:
-        config_type = config.config_type
+    config_type = config.config_type
 
     if not _is_default_config_type_compatible(model, config_type):
         raise HTTPException(
@@ -1426,7 +1431,12 @@ async def list_public_providers(
     """List all available model providers (no authentication required)."""
 
     providers = (
-        db.query(DBModel.model_provider).filter(DBModel.is_active).distinct().all()
+        db.query(DBModel.model_provider)
+        .filter(DBModel.is_active)
+        .filter(DBModel.category.in_(sorted(ALLOWED_MODEL_CATEGORIES)))
+        .filter(DBModel.model_provider.in_(sorted(ALLOWED_MODEL_PROVIDERS)))
+        .distinct()
+        .all()
     )
 
     return {
@@ -1440,11 +1450,16 @@ async def get_public_summary(
 ) -> dict:
     """Get public summary of available models (no authentication required)."""
 
-    total_models = db.query(DBModel).filter(DBModel.is_active).count()
+    total_models = (
+        db.query(DBModel)
+        .filter(DBModel.is_active)
+        .filter(DBModel.category.in_(sorted(ALLOWED_MODEL_CATEGORIES)))
+        .count()
+    )
 
     # Count by category
     category_counts = {}
-    for cat in ["llm", "embedding", "rerank", "image"]:
+    for cat in ["llm", "embedding", "rerank"]:
         count = (
             db.query(DBModel)
             .filter(DBModel.category == cat)
@@ -1485,8 +1500,7 @@ async def fetch_provider_models(
 ) -> dict:
     """Fetch available models from a specific provider.
 
-    Requires the provider's API key. For providers like Azure OpenAI,
-    base_url is also required.
+    Requires the provider's API key.
     """
 
     # Validate provider
@@ -1499,13 +1513,6 @@ async def fetch_provider_models(
         raise HTTPException(
             status_code=400,
             detail=f"Unsupported provider: {provider}. Supported providers: {list(PROVIDER_FETCHERS.keys())}",
-        )
-
-    # For Azure OpenAI, base_url is required
-    if provider.lower() == "azure_openai" and not base_url:
-        raise HTTPException(
-            status_code=400,
-            detail="base_url is required for Azure OpenAI provider",
         )
 
     try:
@@ -1607,61 +1614,3 @@ async def fetch_multiple_providers_models(
     return {
         "results": results,
     }
-
-
-@model_router.get("/xinference/tts-models")
-async def list_xinference_tts_models(
-    base_url: str = Query(..., description="Xinference server base URL"),
-    api_key: Optional[str] = Query(None, description="Optional API key"),
-) -> dict:
-    """Get available TTS models from Xinference server.
-
-    Returns a list of TTS/audio models running on the Xinference server,
-    along with their model abilities that can be used for the 'abilities' field
-    when registering a model.
-
-    For TTS models, use abilities: ["tts"]
-    For ASR models, use abilities: ["asr"]
-    For models with both capabilities, use: ["tts", "asr"]
-    """
-    try:
-        from xagent.core.model.tts.xinference import XinferenceTTS
-
-        models = XinferenceTTS.list_available_models(base_url=base_url, api_key=api_key)
-
-        # Map model abilities to xagent abilities format
-        result_models = []
-        for model in models:
-            model_ability = model.get("model_ability", [])
-
-            # Determine xagent abilities based on model capabilities
-            abilities = []
-            if any(ability.startswith("text2audio") for ability in model_ability):
-                abilities.append("tts")
-            if any(ability.startswith("audio2text") for ability in model_ability):
-                abilities.append("asr")
-
-            result_models.append(
-                {
-                    "id": model["id"],
-                    "model_uid": model["model_uid"],
-                    "model_type": model["model_type"],
-                    "model_ability": model_ability,
-                    "description": model["description"],
-                    "abilities": abilities,  # Suggested abilities for xagent
-                    "category": "speech",
-                    "model_provider": "xinference",
-                }
-            )
-
-        return {
-            "models": result_models,
-            "count": len(result_models),
-        }
-
-    except Exception as e:
-        logger.error(f"Error fetching Xinference TTS models: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to fetch TTS models from Xinference: {str(e)}",
-        )

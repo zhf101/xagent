@@ -35,25 +35,26 @@ class ModelConfig(BaseModel):
 
 
 class ChatModelConfig(ModelConfig):
-    model_provider: str = "openai"  # openai, zhipu, dashscope, etc.
+    model_provider: str = "openai"
     default_temperature: Optional[float] = None
     default_max_tokens: Optional[int] = None
     thinking_mode: bool = False
 
 
 class ImageModelConfig(ModelConfig):
-    model_provider: str = "openai"  # openai, zhipu, dashscope, etc.
+    model_provider: str = "openai"
     default_temperature: Optional[float] = None
     default_max_tokens: Optional[int] = None
 
 
 class EmbeddingModelConfig(ModelConfig):
-    model_provider: str = "dashscope"  # openai, zhipu, dashscope, etc.
+    model_provider: str = "openai"
     dimension: Optional[int] = None
     instruct: Optional[str] = None
 
 
 class RerankModelConfig(ModelConfig):
+    model_provider: str = "openai"
     top_n: Optional[int] = None
     instruct: Optional[str] = None
 
@@ -61,7 +62,7 @@ class RerankModelConfig(ModelConfig):
 class SpeechModelConfig(ModelConfig):
     """Configuration for speech models (ASR and TTS)."""
 
-    model_provider: str = "xinference"  # xinference, etc.
+    model_provider: str = "openai"
     language: Optional[str] = None  # Default language code (e.g., 'zh', 'en')
     # TTS-specific configuration
     voice: Optional[str] = (

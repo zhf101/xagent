@@ -8,16 +8,17 @@ from sqlalchemy.orm import Session
 
 from ...core.model.chat.basic.adapter import create_base_llm
 from ...core.model.chat.basic.base import BaseLLM
-from ...core.model.chat.basic.claude import ClaudeLLM
-from ...core.model.chat.basic.gemini import GeminiLLM
 from ...core.model.chat.basic.openai import OpenAILLM
-from ...core.model.chat.basic.zhipu import ZhipuLLM
+from ...core.model.embedding.adapter import create_embedding_adapter
+from ...core.model.embedding.base import BaseEmbedding
 from ...core.model.model import (
     ChatModelConfig,
     EmbeddingModelConfig,
     ModelConfig,
     RerankModelConfig,
 )
+from ...core.model.rerank.adapter import create_rerank_adapter
+from ...core.model.rerank.base import BaseRerank
 from ..models.model import Model
 from ..models.user import UserDefaultModel, UserModel
 
@@ -25,41 +26,59 @@ logger = logging.getLogger(__name__)
 
 
 def _create_llm_instance(db_model: Model) -> BaseLLM:
-    if db_model.category == "llm":
-        config: ModelConfig = ChatModelConfig(
-            id=db_model.model_id,
-            model_name=db_model.model_name,
-            model_provider=db_model.model_provider,
-            api_key=db_model.api_key,
-            base_url=db_model.base_url,
-            default_temperature=db_model.temperature,
-            abilities=db_model.abilities,
-            description=db_model.description,
-        )
-    elif db_model.category == "embedding":
-        config = EmbeddingModelConfig(
-            id=db_model.model_id,
-            model_name=db_model.model_name,
-            model_provider=db_model.model_provider,
-            dimension=db_model.dimension,
-            api_key=db_model.api_key,
-            base_url=db_model.base_url,
-            abilities=db_model.abilities,
-            description=db_model.description,
-        )
-    elif db_model.category == "rerank":
-        config = RerankModelConfig(
-            id=db_model.model_id,
-            model_name=db_model.model_name,
-            api_key=db_model.api_key,
-            base_url=db_model.base_url,
-            abilities=db_model.abilities,
-            description=db_model.description,
-        )
-    else:
+    """Build a chat model instance from a DB row."""
+    if db_model.category != "llm":
         raise ValueError(f"Unknown model category: {db_model.category}")
 
+    config: ModelConfig = ChatModelConfig(
+        id=db_model.model_id,
+        model_name=db_model.model_name,
+        model_provider=db_model.model_provider,
+        api_key=db_model.api_key,
+        base_url=db_model.base_url,
+        default_temperature=db_model.temperature,
+        abilities=db_model.abilities,
+        description=db_model.description,
+    )
+
     return create_base_llm(config)
+
+
+def _create_embedding_instance(db_model: Model) -> BaseEmbedding:
+    """Build an embedding adapter from a DB row."""
+    if db_model.category != "embedding":
+        raise ValueError(f"Unknown model category: {db_model.category}")
+
+    config = EmbeddingModelConfig(
+        id=db_model.model_id,
+        model_name=db_model.model_name,
+        model_provider=db_model.model_provider,
+        dimension=db_model.dimension,
+        api_key=db_model.api_key,
+        base_url=db_model.base_url,
+        abilities=db_model.abilities,
+        description=db_model.description,
+    )
+
+    return create_embedding_adapter(config)
+
+
+def _create_rerank_instance(db_model: Model) -> BaseRerank:
+    """Build a rerank adapter from a DB row."""
+    if db_model.category != "rerank":
+        raise ValueError(f"Unknown model category: {db_model.category}")
+
+    config = RerankModelConfig(
+        id=db_model.model_id,
+        model_name=db_model.model_name,
+        model_provider=db_model.model_provider,
+        api_key=db_model.api_key,
+        base_url=db_model.base_url,
+        abilities=db_model.abilities,
+        description=db_model.description,
+    )
+
+    return create_rerank_adapter(config)
 
 
 class CoreStorage:
@@ -97,14 +116,6 @@ class CoreStorage:
                 default_temperature=db_model.temperature,
                 default_max_tokens=db_model.max_tokens,
             )
-        elif db_model.category == "image":
-            from ...core.model.model import ImageModelConfig
-
-            return ImageModelConfig(
-                **common,
-                model_provider=db_model.model_provider,
-                default_max_tokens=db_model.max_tokens,
-            )
         elif db_model.category == "embedding":
             return EmbeddingModelConfig(
                 **common,
@@ -112,11 +123,7 @@ class CoreStorage:
                 dimension=db_model.dimension,
             )
         elif db_model.category == "rerank":
-            return RerankModelConfig(**common)
-        elif db_model.category == "speech":
-            from ...core.model.model import SpeechModelConfig
-
-            return SpeechModelConfig(
+            return RerankModelConfig(
                 **common,
                 model_provider=db_model.model_provider,
             )
@@ -169,31 +176,12 @@ class CoreStorage:
         elif isinstance(model, RerankModelConfig):
             db_data.update(
                 {
-                    "model_provider": "none",
+                    "model_provider": model.model_provider,
                     "category": "rerank",
                 }
             )
         else:
-            # Try ImageModelConfig or SpeechModelConfig
-            from ...core.model.model import ImageModelConfig, SpeechModelConfig
-
-            if isinstance(model, ImageModelConfig):
-                db_data.update(
-                    {
-                        "model_provider": model.model_provider,
-                        "max_tokens": model.default_max_tokens,
-                        "category": "image",
-                    }
-                )
-            elif isinstance(model, SpeechModelConfig):
-                db_data.update(
-                    {
-                        "model_provider": model.model_provider,
-                        "category": "speech",
-                    }
-                )
-            else:
-                raise ValueError(f"Unsupported model type: {type(model)}")
+            raise ValueError(f"Unsupported model type: {type(model)}")
 
         db_model = self.Model(**db_data)
         self.db.add(db_model)
@@ -821,48 +809,6 @@ def create_llm_from_env() -> Optional[BaseLLM]:
             )
         except Exception as e:
             logger.error(f"Error creating OpenAI LLM from env: {e}")
-
-    # Try Zhipu
-    zhipu_key = os.getenv("ZHIPU_API_KEY")
-    if zhipu_key:
-        try:
-            model_name = os.getenv("ZHIPU_MODEL_NAME", "glm-4")
-            base_url = os.getenv("ZHIPU_BASE_URL")
-            return ZhipuLLM(
-                model_name=model_name,
-                api_key=zhipu_key,
-                base_url=base_url,
-            )
-        except Exception as e:
-            logger.error(f"Error creating Zhipu LLM from env: {e}")
-
-    # Try Gemini
-    gemini_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-    if gemini_key:
-        try:
-            model_name = os.getenv("GEMINI_MODEL_NAME", "gemini-2.0-flash-exp")
-            base_url = os.getenv("GEMINI_BASE_URL")
-            return GeminiLLM(
-                model_name=model_name,
-                api_key=gemini_key,
-                base_url=base_url,
-            )
-        except Exception as e:
-            logger.error(f"Error creating Gemini LLM from env: {e}")
-
-    # Try Claude
-    claude_key = os.getenv("ANTHROPIC_API_KEY") or os.getenv("CLAUDE_API_KEY")
-    if claude_key:
-        try:
-            model_name = os.getenv("CLAUDE_MODEL_NAME", "claude-3-5-sonnet-20241022")
-            base_url = os.getenv("CLAUDE_BASE_URL")
-            return ClaudeLLM(
-                model_name=model_name,
-                api_key=claude_key,
-                base_url=base_url,
-            )
-        except Exception as e:
-            logger.error(f"Error creating Claude LLM from env: {e}")
 
     return None
 
