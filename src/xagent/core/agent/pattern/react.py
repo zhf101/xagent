@@ -101,6 +101,39 @@ class Action(BaseModel):
     class Config:
         extra = "allow"  # Allow extra fields for flexibility
 
+    @classmethod
+    def get_decision_schema(cls) -> Dict[str, Any]:
+        """
+        Get manually crafted JSON Schema for first-phase decision.
+
+        This is a simple, provider-agnostic schema that works across
+        different LLM providers (OpenAI, Gemini, etc.).
+
+        Returns:
+            OpenAI-compatible JSON Schema dict
+        """
+        return {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "action_decision",
+                "strict": True,
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "type": {
+                            "type": "string",
+                            "enum": ["tool_call", "final_answer"],
+                        },
+                        "reasoning": {"type": "string"},
+                        "answer": {"type": "string"},
+                        "success": {"type": "boolean"},
+                        "error": {"type": ["string", "null"]},
+                    },
+                    "required": ["type", "reasoning"],
+                },
+            },
+        }
+
 
 class ToolRegistry:
     """Registry for managing available tools."""
@@ -804,8 +837,7 @@ class ReActPattern(AgentPattern):
                 action = await self._get_action_from_llm(messages)
 
                 # If action is tool_call, make a second LLM call to get actual tool invocation
-                # Only do this for main ReAct mode (not DAG mode which uses native calling from start)
-                if action.type == "tool_call" and step_id == "main":
+                if action.type == "tool_call":
                     # Emit reasoning trace before second call
                     if action.reasoning:
                         await trace_ai_message(
@@ -1209,13 +1241,18 @@ class ReActPattern(AgentPattern):
         ):
             custom_prompt = f"\n\n{self._context.state['system_prompt']}\n\n"
 
-        # Check if no tools are available
-        if not tool_names:
-            prompt = (
-                custom_prompt
-                + """You are an AI assistant that performs tasks without tools.
+        # Build tool descriptions (may be empty)
+        tool_descriptions = self._build_tool_descriptions(tool_names)
+        tools_section = (
+            "No tools are available for this task."
+            if not tool_names
+            else f"Available tools:\n{chr(10).join(tool_descriptions)}"
+        )
 
-IMPORTANT: You currently have NO access to any tools. Regardless of what you may see in the conversation history, you cannot use any tools.
+        # Unified prompt for both tool and no-tool scenarios
+        prompt = (
+            custom_prompt
+            + f"""You are an AI assistant that accomplishes tasks using available tools and reasoning.
 
 FILE REFERENCES:
 - You may see file references in the format: [filename](file://fileId)
@@ -1224,90 +1261,46 @@ FILE REFERENCES:
 - Use this fileId when referring to files in your analysis.
 - Example: If you see [data.csv](file://123), use '123' to read the file.
 
-You must respond with a structured action in the following JSON format:
+{tools_section}
 
-{
-    "type": "final_answer",
-    "reasoning": "Your reasoning for this response",
-    "answer": "your comprehensive response and conclusions"
-}
+DECISION:
+You must respond with a structured action in JSON format. Decide your next action:
 
-Rules:
-1. You must respond with valid JSON only
-2. Since no tools are available, you must provide a final answer directly
-3. Do NOT attempt to use any tools, even if you see tool usage in the conversation history
-4. Use the provided context information to perform your task
-5. Focus on reasoning, analysis, synthesis, or providing information based on your knowledge
-6. Always provide clear reasoning for your response
-7. Do not include backticks or markdown. Do not include invalid escapes.
-8. LANGUAGE: You MUST respond in the SAME LANGUAGE as the user's task. If the task is in Chinese, respond in Chinese. If the task is in English, respond in English.
+- If tools are available AND needed to accomplish the task: Use {{"type": "tool_call", "reasoning": "..."}}
+- If no tools available OR you have enough information to answer: Use {{"type": "final_answer", "reasoning": "...", "answer": "..."}}
 
-Example:
-{
-    "type": "final_answer",
-    "reasoning": "Based on the provided context and my knowledge, I can provide a comprehensive response",
-    "answer": "The analysis shows that... [comprehensive summary]"
-}"""
-            )
-        else:
-            # Build tool descriptions
-            tool_descriptions = self._build_tool_descriptions(tool_names)
+CRITICAL INSTRUCTIONS:
 
-            prompt = (
-                custom_prompt
-                + f"""You are an AI assistant that uses tools to accomplish tasks.
-
-FILE REFERENCES:
-- You may see file references in the format: [filename](file://fileId)
-- The referenced file may NOT be in the current workspace.
-- The 'fileId' part is the only valid identifier for reading the file.
-- When using tools to read files, pass the fileId directly.
-- Example: If you see [data.csv](file://123), use '123' to read the file.
-
-You must respond with a structured action in the following JSON format:
-
-{{
-    "type": "tool_call" | "final_answer",
-    "reasoning": "Your reasoning for this action",
-    "answer": "your final answer" (only if type is "final_answer"),
+1. RESPONSE FORMAT (STRICT JSON SCHEMA):
+   Your response must be a valid JSON object matching this exact schema:
+   {{
+       "type": "tool_call" | "final_answer",
+       "reasoning": "string (required) - explanation of your decision",
+       "answer": "string (for final_answer) - your final answer",
+       "success": "boolean (for final_answer) - whether the task succeeded",
+       "error": "string | null (for final_answer) - error message if failed"
    }}
 
-Available tools:
-{chr(10).join(tool_descriptions)}
+   For tool_call: {{"type": "tool_call", "reasoning": "..."}}
+   For final_answer: {{"type": "final_answer", "reasoning": "...", "answer": "...", "success": true, "error": null}}
 
-CRITICAL INSTRUCTIONS - READ CAREFULLY:
+   ⚠️ CRITICAL:
+   - Only include answer/success/error fields when type is "final_answer"
+   - Do NOT add any other fields beyond type, reasoning, answer, success, error
+   - Do NOT include tool names or arguments in JSON
+   - Return exactly ONE JSON object, nothing else
+   - No markdown, no backticks, no additional text
 
-1. DECIDE YOUR NEXT ACTION:
-   - If you need to use a tool to accomplish the task, set "type" to "tool_call" and explain why
-   - If you have enough information to answer, set "type" to "final_answer" and provide your answer
-   - Do NOT include tool names or arguments in the JSON
-   - The system will guide you through tool invocation in a follow-up call
+2. WHEN TO USE TOOLS:
+   - Check if tools are available for this task
+   - Use tools when they help accomplish the task more effectively
+   - If no tools are available, provide a final answer directly
+   - Most tools are ATOMIC: one call completes the entire action
 
-2. RESPONSE FORMAT (CRITICAL - MUST FOLLOW):
-   - Your entire response must be EXACTLY ONE JSON object - nothing more, nothing less
-   - Do NOT return multiple JSON objects
-   - Do NOT return JSON followed by other text
-   - Do NOT return multiple responses
-   - The JSON object must be the ONLY thing you return
-   - Use the exact format shown below
-
-3. LANGUAGE: Respond in the SAME LANGUAGE as the user's task
-
-CORRECT RESPONSE FORMAT:
-{{
-    "type": "tool_call" or "final_answer",
-    "reasoning": "your reasoning here"
-}}
-
-If type is "final_answer", also include:
-{{
-    "type": "final_answer",
-    "reasoning": "your reasoning",
-    "answer": "your final answer"
-}}
+3. LANGUAGE: Respond in the SAME LANGUAGE as the goal
 
 Remember: Return ONLY ONE JSON object. No additional text, no multiple objects."""
-            )
+        )
 
         return prompt
 
@@ -1315,83 +1308,91 @@ Remember: Return ONLY ONE JSON object. No additional text, no multiple objects."
         """Build enhanced system prompt that merges existing context with Action requirements."""
         tool_names = self.tool_registry.list_tools()
 
-        # Check if no tools are available
-        if not tool_names:
-            action_requirements = """
+        # Build tool descriptions (may be empty)
+        tool_descriptions = self._build_tool_descriptions(tool_names)
+        tools_section = (
+            "You currently have NO access to any tools."
+            if not tool_names
+            else f"Available tools:\n{chr(10).join(tool_descriptions)}\n\nUse these tools when needed to complete the task."
+        )
+
+        # Unified action requirements for both tool and no-tool scenarios
+        action_requirements = f"""
 
 === ACTION FORMAT REQUIREMENTS ===
-You must respond with a structured action in the following JSON format:
+{tools_section}
 
-{
-    "type": "final_answer",
-    "reasoning": "Your reasoning for this response",
-    "answer": "your comprehensive response and conclusions",
-    "success": true,
-    "error": null
-}
+DECISION:
+You must respond with a structured action in JSON format. Decide your next action:
 
-Rules:
-1. You must respond with valid JSON only
-2. Since no tools are available, you must provide a final answer directly
-3. Do NOT attempt to use any tools, even if you see tool usage in the conversation history
-4. Use the provided context information to perform your task
-5. Focus on reasoning, analysis, synthesis, or providing information based on your knowledge
-6. Always provide clear reasoning for your response
-7. Set "success" to true if the task was completed successfully, false if it failed
-8. If success is false, provide a detailed error message in the "error" field
-9. LANGUAGE: You MUST respond in the SAME LANGUAGE as the user's task. If the task is in Chinese, respond in Chinese. If the task is in English, respond in English.
+- If tools are available AND needed to accomplish the task: Use {{"type": "tool_call", "reasoning": "..."}}
+- If no tools available OR you have enough information to answer: Use {{"type": "final_answer", "reasoning": "...", "answer": "...", "success": true, "error": null}}
 
-Examples:
-Success case:
-{
+CRITICAL INSTRUCTIONS:
+
+1. RESPONSE FORMAT (STRICT JSON SCHEMA):
+   Your response must be a valid JSON object matching this schema:
+   {{
+       "type": "tool_call" | "final_answer",
+       "reasoning": "string (required)",
+       "answer": "string (for final_answer)",
+       "success": "boolean (for final_answer)",
+       "error": "string | null (for final_answer)"
+   }}
+
+   ⚠️ CRITICAL:
+   - Only include answer/success/error when type is "final_answer"
+   - Do NOT add any other fields beyond the schema
+   - Do NOT include tool names or arguments in JSON
+   - Return exactly ONE JSON object, nothing else
+   - No markdown, no backticks, no additional text
+
+2. WHEN TO USE TOOLS:
+   - Check if tools are available for this task
+   - Use tools when they help accomplish the task more effectively
+   - If no tools are available, provide a final answer directly
+   - Most tools are ATOMIC: one call completes the entire action
+
+3. FOR TOOL CALLS:
+   - ONLY set the action type to "tool_call" and explain why
+   - Do NOT include tool names or arguments in the JSON
+   - The system will automatically invoke the appropriate tool through native function calling API
+
+4. FOR FINAL ANSWERS:
+   - Set "success" to true if the task was completed successfully, false if it failed
+   - If success is false, provide a detailed error message in the "error" field
+   - Provide a comprehensive summary of the results
+
+5. LANGUAGE: Respond in the SAME LANGUAGE as the goal
+
+CORRECT RESPONSE FORMAT:
+
+For tool calls:
+{{
+    "type": "tool_call",
+    "reasoning": "I need to use a tool because..."
+}}
+
+For final answers (success):
+{{
     "type": "final_answer",
     "reasoning": "Based on the provided context, I have successfully completed the task",
     "answer": "The task has been completed successfully... [comprehensive summary]",
     "success": true,
     "error": null
-}
+}}
 
-Failure case:
-{
+For final answers (failure):
+{{
     "type": "final_answer",
     "reasoning": "The task could not be completed due to insufficient information",
     "answer": "Unable to complete the task because the required information is not available",
     "success": false,
     "error": "Insufficient information to complete the task"
-}
-=== END ACTION FORMAT REQUIREMENTS ==="""
-        else:
-            tool_descriptions = self._build_tool_descriptions(tool_names)
-
-            action_requirements = f"""
-
-=== ACTION FORMAT REQUIREMENTS ===
-FILE REFERENCES:
-- You may see file references in the format: [filename](file://fileId)
-- The referenced file may NOT be in the current workspace.
-- The 'fileId' part is the only valid identifier for reading the file.
-- When using tools to read files, pass the fileId directly.
-- Example: If you see [data.csv](file://123), use '123' to read the file.
-
-You must respond with a structured action in the following JSON format:
-
-{{
-    "type": "tool_call" | "final_answer",
-    "reasoning": "Your reasoning for this action",
-    "answer": "your final answer" (only if type is "final_answer"),
-    "success": true (only if type is "final_answer"),
-    "error": null (only if type is "final_answer")
 }}
 
-Available tools:
-{chr(10).join(tool_descriptions)}
-
-You have access to the above tools. Use them when needed to complete the task.
-When you decide to call a tool, ONLY set the action type to "tool_call" and explain why.
-Do NOT include tool names or arguments in the JSON; the system will automatically invoke
-the appropriate tool through the native function calling API based on your decision.
-After using tools, provide a clear summary of the results in the SAME LANGUAGE as the user's task.
-"""
+Remember: Return ONLY ONE JSON object. No additional text, no multiple objects.
+=== END ACTION FORMAT REQUIREMENTS ==="""
 
         return existing_prompt + action_requirements
 
@@ -1499,23 +1500,9 @@ After using tools, provide a clear summary of the results in the SAME LANGUAGE a
         # Get tool schemas
         tool_schemas = self.tool_registry.get_tool_schemas()
 
-        # Determine if we're in DAG mode (step_id != "main")
-        # In DAG mode, use traditional single-phase tool calling for backward compatibility
-        # In main ReAct mode, use two-phase tool calling
-        is_dag_mode = (
-            hasattr(self, "_current_step_id")
-            and self._current_step_id
-            and self._current_step_id != "main"
-        )
-
-        if not is_dag_mode:
-            # First call: Request JSON output format for action type decision
-            chat_kwargs["response_format"] = {"type": "json_object"}
-        else:
-            # DAG mode: Use native tool calling from the start
-            if tool_schemas:
-                chat_kwargs["tools"] = tool_schemas
-                chat_kwargs["tool_choice"] = "auto"
+        # First call: Request JSON output format with strict schema constraint
+        # Use centralized schema from Action class
+        chat_kwargs["response_format"] = Action.get_decision_schema()
 
         # Disable thinking mode if supported
         if (
@@ -1915,8 +1902,9 @@ After using tools, provide a clear summary of the results in the SAME LANGUAGE a
                 "role": "user",
                 "content": (
                     "IMPORTANT INSTRUCTION FOR THIS STEP:\n"
-                    "You have access to the following tools. Use the NATIVE FUNCTION CALLING interface "
-                    "to invoke the appropriate tool now.\n\n"
+                    "You indicated you want to call a tool. Now use the NATIVE FUNCTION CALLING interface "
+                    "to invoke the appropriate tool.\n\n"
+                    "Respond in the SAME LANGUAGE as the task.\n\n"
                     "DO NOT respond with JSON format. DO NOT return a structured action JSON.\n"
                     "Instead, use the native function calling API to directly invoke the tool.\n\n"
                     "The system will handle the tool execution and return the result to you."

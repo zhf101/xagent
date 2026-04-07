@@ -174,11 +174,13 @@ def scan_user_directory(user_root: Path, db_session) -> dict:
     }
 
 
-def backfill_all_users(dry_run: bool = False, user_id: int = None, db_session=None):
+def backfill_all_users(
+    dry_run: bool = False, user_id: int | None = None, db_session=None
+):
     """Backfill files for all users or a specific user."""
-    from xagent.web.config import UPLOADS_DIR
+    from xagent.config import get_uploads_dir
 
-    uploads_dir = Path(UPLOADS_DIR)
+    uploads_dir = get_uploads_dir()
     if not uploads_dir.exists():
         logger.error(f"Uploads directory not found: {uploads_dir}")
         return

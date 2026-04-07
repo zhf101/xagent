@@ -19,6 +19,7 @@ from typing import Any, ClassVar, Dict, List, Optional, Tuple
 import lancedb
 from lancedb.db import DBConnection
 
+from ...config import get_lancedb_path, get_storage_root
 from .base import VectorStore
 
 logger = logging.getLogger(__name__)
@@ -73,16 +74,36 @@ class LanceDBConnectionManager:
             Priority: legacy_location (if has data) > ~/.xagent/data/lancedb
             Result is cached after first call.
         """
+        # TODO: This function has confusing logic and potential issues.
+        #
+        # Problems:
+        # 1. get_lancedb_path() returns a relative path by default ("data/lancedb"),
+        #    but can be overridden by LANCEDB_PATH env var to any absolute path.
+        #    Using it for both legacy_dir and new_dir is semantically wrong.
+        #
+        # 2. legacy_dir combines project root with get_lancedb_path(), which means
+        #    if LANCEDB_PATH is set to an absolute path, the result is nonsensical.
+        #
+        # 3. There's a broader inconsistency: LANCEDB_DIR env var (used elsewhere)
+        #    vs LANCEDB_PATH (used by config module). See issue #252:
+        #    https://github.com/xorbitsai/xagent/issues/252
+        #
+        # The proper fix requires refactoring how LanceDB paths are configured
+        # across the codebase. For now, keep the existing behavior.
+        #
         # Check legacy location (project root) first for backward compatibility
         legacy_dir = (
-            Path(__file__).parent.parent.parent.parent.parent / "data" / "lancedb"
+            Path(__file__).parent.parent.parent.parent.parent / get_lancedb_path()
         )
         if legacy_dir.is_dir() and list(legacy_dir.iterdir()):
             logger.info(f"Using legacy LanceDB location: {legacy_dir}")
             return str(legacy_dir)
 
-        # Use new default location
-        new_dir = Path.home() / ".xagent" / "data" / "lancedb"
+        # Use new default location from unified config module
+        # Note: get_lancedb_path() returns relative path, so we combine with
+        # get_storage_root() to get absolute path.
+        # The former is: new_dir = Path.home() / ".xagent" / "data" / "lancedb"
+        new_dir = get_storage_root() / get_lancedb_path()
         new_dir.mkdir(parents=True, exist_ok=True)
         return str(new_dir)
 

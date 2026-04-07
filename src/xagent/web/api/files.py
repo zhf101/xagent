@@ -10,12 +10,12 @@ from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from ...config import get_uploads_dir
 from ...core.tools.adapters.vibe.file_tool import read_file
 from ..auth_dependencies import get_current_user
 from ..config import (
     BINARY_EXTENSIONS,
     MAX_FILE_SIZE,
-    UPLOADS_DIR,
     get_upload_path,
     is_allowed_file,
 )
@@ -94,8 +94,9 @@ def _build_unique_file_path(path: Path) -> Path:
 
 def _ensure_under_uploads(path: Path, user_id: int) -> None:
     resolved_path = path.resolve()
-    uploads_root = UPLOADS_DIR.resolve()
-    user_root = (UPLOADS_DIR / f"user_{user_id}").resolve()
+    uploads_dir = get_uploads_dir()
+    uploads_root = uploads_dir.resolve()
+    user_root = (uploads_dir / f"user_{user_id}").resolve()
     try:
         resolved_path.relative_to(uploads_root)
         resolved_path.relative_to(user_root)
@@ -131,7 +132,7 @@ def _to_unix_timestamp(path: Path, fallback: Any) -> int:
 
 
 def _extract_relative_path(storage_path: Path, user_id: int) -> str:
-    user_root = UPLOADS_DIR / f"user_{user_id}"
+    user_root = get_uploads_dir() / f"user_{user_id}"
     try:
         return str(storage_path.relative_to(user_root))
     except ValueError:
@@ -143,10 +144,10 @@ def _collect_backfill_user_ids(user: User) -> list[int]:
         return [_user_id_value(user)]
 
     user_ids: list[int] = []
-    if not UPLOADS_DIR.exists():
+    if not get_uploads_dir().exists():
         return user_ids
 
-    for child in UPLOADS_DIR.iterdir():
+    for child in get_uploads_dir().iterdir():
         if not child.is_dir() or not child.name.startswith("user_"):
             continue
         try:
@@ -161,7 +162,7 @@ def _infer_backfill_task_id(
 ) -> Optional[int]:
     from ..models.task import Task
 
-    user_root = UPLOADS_DIR / f"user_{user_id}"
+    user_root = get_uploads_dir() / f"user_{user_id}"
     try:
         rel_parts = file_path.relative_to(user_root).parts
     except ValueError:
@@ -189,7 +190,7 @@ def _infer_backfill_task_id(
 
 
 def _backfill_uploaded_file_records(db: Session, user: User) -> None:
-    if not UPLOADS_DIR.exists():
+    if not get_uploads_dir().exists():
         return
 
     target_user_ids = _collect_backfill_user_ids(user)
@@ -205,7 +206,7 @@ def _backfill_uploaded_file_records(db: Session, user: User) -> None:
 
     created = 0
     for target_user_id in target_user_ids:
-        user_root = UPLOADS_DIR / f"user_{target_user_id}"
+        user_root = get_uploads_dir() / f"user_{target_user_id}"
         if not user_root.exists() or not user_root.is_dir():
             continue
 

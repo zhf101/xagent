@@ -19,7 +19,7 @@ from typing import Optional, Tuple
 
 from sqlalchemy.orm import Session
 
-from ..config import UPLOADS_DIR
+from ...config import get_uploads_dir
 
 logger = logging.getLogger(__name__)
 
@@ -144,7 +144,7 @@ def resolve_legacy_file_path(file_path: str, user_id: int) -> Optional[Path]:
     Returns:
         Resolved absolute Path if found, None otherwise
     """
-    user_root = UPLOADS_DIR / f"user_{user_id}"
+    user_root = get_uploads_dir() / f"user_{user_id}"
     if not user_root.exists():
         return None
 
@@ -176,11 +176,11 @@ def resolve_legacy_file_path_cross_user(file_path: str) -> Optional[Tuple[Path, 
     Returns:
         Tuple of (resolved_path, user_id) if found, None otherwise
     """
-    if not UPLOADS_DIR.exists():
+    if not get_uploads_dir().exists():
         return None
 
     # Try to find the file in any user directory
-    for user_dir in UPLOADS_DIR.iterdir():
+    for user_dir in get_uploads_dir().iterdir():
         if not user_dir.is_dir() or not user_dir.name.startswith("user_"):
             continue
 

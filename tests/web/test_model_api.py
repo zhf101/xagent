@@ -2,7 +2,6 @@
 
 import os
 import tempfile
-from unittest.mock import patch
 from urllib.parse import quote
 
 import pytest
@@ -60,8 +59,11 @@ def test_db():
     temp_db_path = os.path.join(temp_dir, "test.db")
     SQLALCHEMY_DATABASE_URL = f"sqlite:///{temp_db_path}"
 
-    with patch("xagent.web.models.database.try_upgrade_db"):
-        init_db(db_url=SQLALCHEMY_DATABASE_URL)
+    # Note: Previously mocked try_upgrade_db to skip db migrations.
+    # Now removed the mock to test the complete init_db() flow.
+    # For new databases (like this temp one), try_upgrade_db only stamps
+    # the latest revision without running migrations, which is safe and correct.
+    init_db(db_url=SQLALCHEMY_DATABASE_URL)
 
     engine = get_engine()
 

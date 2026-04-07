@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, Mapping, Optional, Type
 
 from pydantic import BaseModel, Field
 
+from .....config import get_uploads_dir
 from .base import AbstractBaseTool, ToolCategory, ToolVisibility
 
 logger = logging.getLogger(__name__)
@@ -73,7 +74,7 @@ class CreateAgentTool(AbstractBaseTool):
         db: Any,
         user_id: int,
         task_id: Optional[str] = None,
-        workspace_base_dir: str = "uploads",
+        workspace_base_dir: Optional[str] = None,
     ):
         """
         Initialize the create agent tool.
@@ -87,6 +88,8 @@ class CreateAgentTool(AbstractBaseTool):
         self._db = db
         self._user_id = user_id
         self._task_id = task_id
+        if workspace_base_dir is None:
+            workspace_base_dir = str(get_uploads_dir())
         self._workspace_base_dir = workspace_base_dir
         self._visibility = ToolVisibility.PUBLIC
 
@@ -317,7 +320,7 @@ class AgentTool(AbstractBaseTool):
         db: Any,
         user_id: int,
         task_id: Optional[str] = None,
-        workspace_base_dir: str = "uploads",
+        workspace_base_dir: Optional[str] = None,
     ):
         """
         Initialize an agent tool.
@@ -337,6 +340,8 @@ class AgentTool(AbstractBaseTool):
         self._db = db
         self._user_id = user_id
         self._task_id = task_id or f"agent_tool_{agent_id}"
+        if workspace_base_dir is None:
+            workspace_base_dir = str(get_uploads_dir())
         self._workspace_base_dir = workspace_base_dir
         self._visibility = ToolVisibility.PUBLIC
 
@@ -559,7 +564,7 @@ def get_published_agents_tools(
     db: Any,
     user_id: int,
     task_id: Optional[str] = None,
-    workspace_base_dir: str = "uploads",
+    workspace_base_dir: Optional[str] = None,
     excluded_agent_id: Optional[int] = None,
     include_draft: bool = False,
     draft_agent_ids_to_include: Optional[list[int]] = None,
@@ -579,7 +584,11 @@ def get_published_agents_tools(
     Returns:
         List of AgentTool instances
     """
+    from .....config import get_uploads_dir
     from .....web.models.agent import Agent, AgentStatus
+
+    if workspace_base_dir is None:
+        workspace_base_dir = str(get_uploads_dir())
 
     tools: list[AbstractBaseTool] = []
 
@@ -686,7 +695,7 @@ async def create_agent_tools(config: "WebToolConfig") -> list[AbstractBaseTool]:
             db=db,
             user_id=user_id,
             task_id=config.get_task_id(),
-            workspace_base_dir="uploads",
+            workspace_base_dir=None,  # Will use get_uploads_dir() default
             excluded_agent_id=excluded_agent_id,
             include_draft=False,  # Only PUBLISHED agents
         )
@@ -711,7 +720,7 @@ async def create_create_agent_tool(config: "WebToolConfig") -> list[AbstractBase
             db=db,
             user_id=user_id,
             task_id=config.get_task_id(),
-            workspace_base_dir="uploads",
+            workspace_base_dir=None,  # Will use get_uploads_dir() default
         )
         logger.debug(f"Created CreateAgentTool for user {user_id}")
         return [tool]

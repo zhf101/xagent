@@ -10,6 +10,7 @@ from typing import Any, Mapping, Optional, Type
 
 from pydantic import BaseModel, Field
 
+from .....config import get_uploads_dir
 from ....workspace import TaskWorkspace
 from ...core.logo_overlay import LogoOverlayCore
 from .base import AbstractBaseTool, ToolCategory, ToolVisibility
@@ -95,7 +96,7 @@ class LogoOverlayTool(AbstractBaseTool):
         elif self._workspace:
             output_dir = self._workspace.output_dir
         else:
-            output_dir = Path("uploads") / "output"
+            output_dir = get_uploads_dir() / "output"
 
         # Resolve image paths if workspace is available
         base_image_uri = self._resolve_image_path(overlay_args.base_image_uri)

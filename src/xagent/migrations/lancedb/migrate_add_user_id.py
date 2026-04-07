@@ -27,15 +27,14 @@ logger = logging.getLogger(__name__)
 
 def get_lancedb_path() -> str:
     """Get LanceDB database path from configuration."""
-    import os
-
     from dotenv import load_dotenv
+
+    from xagent.config import get_lancedb_path as get_config_lancedb_path
 
     load_dotenv()
 
-    # Default path or from environment
-    db_path = os.getenv("LANCEDB_PATH", "./data/lancedb")
-    return db_path
+    # Use centralized config function
+    return str(get_config_lancedb_path())
 
 
 def get_embeddings_tables(conn: DBConnection) -> list[str]:

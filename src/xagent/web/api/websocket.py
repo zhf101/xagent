@@ -22,8 +22,8 @@ from fastapi import (
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
+from ...config import get_external_upload_dirs, get_uploads_dir
 from ..auth_dependencies import get_user_from_websocket_token
-from ..config import ALLOWED_EXTERNAL_UPLOAD_DIRS, UPLOADS_DIR
 from ..models.database import get_db
 from ..models.task import Task
 from ..models.uploaded_file import UploadedFile
@@ -212,11 +212,11 @@ def _resolve_output_storage_path(raw_path: str) -> Optional[tuple[Any, str]]:
     if path_candidate.exists() and path_candidate.is_file():
         resolved = path_candidate.resolve()
     else:
-        resolved = (UPLOADS_DIR / raw_path.lstrip("/")).resolve()
+        resolved = (get_uploads_dir() / raw_path.lstrip("/")).resolve()
         if not resolved.exists() or not resolved.is_file():
             return None
 
-    uploads_root = UPLOADS_DIR.resolve()
+    uploads_root = get_uploads_dir().resolve()
     try:
         relative_path = str(resolved.relative_to(uploads_root))
     except ValueError:
@@ -252,10 +252,10 @@ def _resolve_legacy_preview_storage_path(raw_path: str) -> Optional[tuple[Path, 
         normalized = candidate.lstrip("/")
         if not normalized:
             continue
-        glob_matches = list(UPLOADS_DIR.glob(f"user_*/{normalized}"))
+        glob_matches = list(get_uploads_dir().glob(f"user_*/{normalized}"))
         if glob_matches:
             resolved_path = glob_matches[0].resolve()
-            relative_path = str(resolved_path.relative_to(UPLOADS_DIR.resolve()))
+            relative_path = str(resolved_path.relative_to(get_uploads_dir().resolve()))
             return resolved_path, relative_path
 
     return None
@@ -2836,7 +2836,7 @@ async def handle_build_preview_execution(
             allowed_skills=skills if skills is not None else None,
             allowed_tools=allowed_tools,
             task_id=preview_task_id,
-            workspace_base_dir=str(UPLOADS_DIR / "build_preview"),
+            workspace_base_dir=str(get_uploads_dir() / "build_preview"),
             vision_model=vision_llm,  # Pass vision model for tool creation
         )
 
@@ -2887,9 +2887,9 @@ async def handle_build_preview_execution(
         # Build allowed external directories
         allowed_external_dirs = []
         if user and user.id:
-            user_upload_dir = UPLOADS_DIR / f"user_{user.id}"
+            user_upload_dir = get_uploads_dir() / f"user_{user.id}"
             allowed_external_dirs.append(str(user_upload_dir))
-        allowed_external_dirs.extend([str(d) for d in ALLOWED_EXTERNAL_UPLOAD_DIRS])
+        allowed_external_dirs.extend([str(d) for d in get_external_upload_dirs()])
 
         # Create agent service (using WebSocket tracer)
         if not hasattr(websocket.state, "preview_memory"):
@@ -2910,7 +2910,7 @@ async def handle_build_preview_execution(
             use_dag_pattern=use_dag_pattern,
             id=preview_task_id,
             enable_workspace=True,
-            workspace_base_dir=str(UPLOADS_DIR / "build_preview"),
+            workspace_base_dir=str(get_uploads_dir() / "build_preview"),
             allowed_external_dirs=allowed_external_dirs,
             task_id=preview_task_id,
             tracer=preview_tracer,

@@ -6,7 +6,6 @@ which lists all tools that can be used by agents.
 """
 
 import tempfile
-from unittest.mock import patch
 
 import pytest
 from fastapi import FastAPI
@@ -60,8 +59,7 @@ def test_db():
     temp_db_path = os.path.join(temp_dir, "test.db")
     SQLALCHEMY_DATABASE_URL = f"sqlite:///{temp_db_path}"
 
-    with patch("xagent.web.models.database.try_upgrade_db"):
-        init_db(db_url=SQLALCHEMY_DATABASE_URL)
+    init_db(db_url=SQLALCHEMY_DATABASE_URL)
 
     engine = get_engine()
 
@@ -246,7 +244,9 @@ class TestToolsAvailableAPI:
         # Should return 401 (older FastAPI) or 403 (newer FastAPI) without auth
         assert response.status_code in [401, 403]
 
-    def test_get_available_tools_falls_back_to_other_when_metadata_missing(self):
+    def test_get_available_tools_falls_back_to_other_when_metadata_missing(
+        self, monkeypatch
+    ):
         login_response = client.post(
             "/api/auth/login", json={"username": "admin", "password": "admin123"}
         )
@@ -268,13 +268,18 @@ class TestToolsAvailableAPI:
             description = ""
             metadata = _Metadata()
 
-        with patch(
+        # Mock async create_all_tools to return test tools
+        async def mock_create_all_tools(config):
+            return [_ToolWithoutMetadata(), _ToolWithMetadata()]
+
+        monkeypatch.setattr(
             "xagent.core.tools.adapters.vibe.factory.ToolFactory.create_all_tools",
-            return_value=[_ToolWithoutMetadata(), _ToolWithMetadata()],
-        ):
-            response = client.get(
-                "/api/tools/available", headers={"Authorization": f"Bearer {token}"}
-            )
+            mock_create_all_tools,
+        )
+
+        response = client.get(
+            "/api/tools/available", headers={"Authorization": f"Bearer {token}"}
+        )
 
         assert response.status_code == 200
         payload = response.json()

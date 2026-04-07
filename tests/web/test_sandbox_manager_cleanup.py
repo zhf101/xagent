@@ -120,7 +120,7 @@ async def test_cleanup_deletes_on_volumes_change(
             {"SANDBOX_IMAGE": "img:v1", "SANDBOX_CPUS": "1", "SANDBOX_MEMORY": "512"},
             clear=True,
         ),
-        patch("xagent.web.sandbox_manager.UPLOADS_DIR", new_uploads),
+        patch("xagent.web.sandbox_manager.get_uploads_dir", return_value=new_uploads),
     ):
         await manager.cleanup()
 
@@ -155,7 +155,7 @@ async def test_cleanup_stops_when_config_matches(
             {"SANDBOX_IMAGE": "img:v1", "SANDBOX_CPUS": "1", "SANDBOX_MEMORY": "512"},
             clear=True,
         ),
-        patch("xagent.web.sandbox_manager.UPLOADS_DIR", uploads),
+        patch("xagent.web.sandbox_manager.get_uploads_dir", return_value=uploads),
     ):
         await manager.cleanup()
 

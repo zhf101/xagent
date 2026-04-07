@@ -8,14 +8,12 @@ and configuration management.
 # mypy: ignore-errors
 
 import logging
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
-if TYPE_CHECKING:
-    pass
-
-from ....workspace import TaskWorkspace
+from .....config import get_uploads_dir
+from .....core.workspace import TaskWorkspace
 from .base import Tool
 from .config import BaseToolConfig
 
@@ -259,7 +257,7 @@ class ToolFactory:
                 logger.debug(f"Using MockWorkspace for task_id='{task_id}'")
                 return MockWorkspace(
                     id=task_id or "_mock_",
-                    base_dir=workspace_config.get("base_dir", "./uploads"),
+                    base_dir=workspace_config.get("base_dir") or str(get_uploads_dir()),
                 )
 
             # Real task - create actual workspace
@@ -267,7 +265,7 @@ class ToolFactory:
 
             workspace_manager = WorkspaceManager()
             workspace = workspace_manager.get_or_create_workspace(
-                workspace_config.get("base_dir", "./workspace"),
+                workspace_config.get("base_dir") or str(get_uploads_dir()),
                 task_id or "default",
             )
             return workspace

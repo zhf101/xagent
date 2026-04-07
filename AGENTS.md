@@ -56,6 +56,53 @@ Xagent has one main entrypoint:
 - Langfuse integration for tracing and monitoring
 - Execution history and message tracking
 
+### Configuration System
+
+**IMPORTANT**: All path-related and configuration settings SHALL try their best to use the unified configuration module at `src/xagent/config.py`.
+
+**Core Principles:**
+1. **Single source of truth** - All configuration goes through `config.py`
+2. **No hardcoded paths** - Never use string literals like `"uploads"` or `"./data"`
+3. **Environment variable support** - All paths must be configurable via `XAGENT_*` env vars
+4. **No circular dependencies** - `config.py` has no dependencies on other core submodules
+
+**Import Style:**
+- **Source code** (`src/xagent/`): Use relative imports
+  ```python
+  from ..config import get_uploads_dir, get_storage_root
+  ```
+- **Test files** (`tests/`): Use absolute imports
+  ```python
+  from xagent.config import get_uploads_dir, get_storage_root
+  ```
+
+**Configuration Pattern:**
+```python
+def get_<config_name>() -> ReturnType:
+    """Get <config> with environment variable override.
+
+    Priority:
+        1. <ENV_VAR> environment variable
+        2. Computed default
+
+    Returns:
+        Description of return value
+    """
+    env_value = os.getenv(ENV_VAR)
+    if env_value:
+        return <process_env_value>(env_value)
+
+    # Default computation
+    return <compute_default>()
+```
+
+**Adding New Configuration:**
+1. Add function to `src/xagent/config.py`
+2. Add env var constant: `<ENV_VAR> = "XAGENT_<NAME>"`
+3. Follow env var → default priority pattern
+4. Update `example.env` with documentation
+5. Add tests to `tests/core/test_config.py`
+
 ### Available Tools
 
 Xagent has two categories of tools:

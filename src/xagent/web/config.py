@@ -1,47 +1,17 @@
-"""File storage configuration for xagent web application"""
+"""File storage configuration for xagent web application
 
-import logging
-import os
+This module now imports configuration functions from the core config module
+to ensure consistency across all xagent components. Paths are computed
+dynamically to support environment variable changes at runtime.
+"""
+
 import re
 from pathlib import Path
-from typing import List, Optional
+from typing import Optional
 
-# Get the base directory for web application
-WEB_DIR = Path(__file__).parent
+from ..config import get_uploads_dir
 
-# File storage configuration
-# Support XAGENT_UPLOADS_DIR environment variable, default to WEB_DIR/uploads for backward compatibility
-_UPLOADS_DIR = os.getenv("XAGENT_UPLOADS_DIR")
-if _UPLOADS_DIR:
-    UPLOADS_DIR = Path(_UPLOADS_DIR)
-else:
-    UPLOADS_DIR = WEB_DIR / "uploads"
-
-STATIC_DIR = WEB_DIR / "static"
-
-# Ensure uploads directory exists
-UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
-
-# External upload directories (for accessing knowledge base files from other projects)
-# Format: comma-separated list of directory paths
-# Example: /path/to/FenixAOS/src/fenixaos/web/uploads,/another/path/uploads
-_EXTERNAL_UPLOAD_DIRS = os.getenv("XAGENT_EXTERNAL_UPLOAD_DIRS", "")
-ALLOWED_EXTERNAL_UPLOAD_DIRS: List[Path] = []
-
-if _EXTERNAL_UPLOAD_DIRS:
-    logger = logging.getLogger(__name__)
-    for dir_path in _EXTERNAL_UPLOAD_DIRS.split(","):
-        dir_path = dir_path.strip()
-        if dir_path:
-            path = Path(dir_path)
-            if path.exists():
-                ALLOWED_EXTERNAL_UPLOAD_DIRS.append(path)
-                logger.info(f"Added external upload directory: {path}")
-            else:
-                logger.warning(f"External upload directory does not exist: {path}")
-
-# File storage paths for AI tools
-FILE_STORAGE_BASE_DIR = UPLOADS_DIR
+# File storage paths for AI tools (computed dynamically when needed)
 FILE_STORAGE_URL_BASE = "/uploads"
 
 # Binary file extensions that should not be previewed as text
@@ -139,7 +109,7 @@ def sanitize_path_component(name: str, component_type: str = "path") -> str:
         component_type: Type of component for error messages (e.g., "collection", "folder").
 
     Returns:
-        Sanitized path component name.
+        Sanitized path component.
 
     Raises:
         ValueError: If the name is invalid (empty, too long, contains path separators,
@@ -230,12 +200,15 @@ def get_upload_path(
     Returns:
         Path object for the file location
     """
+    # Get uploads directory dynamically
+    uploads_dir = get_uploads_dir()
+
     # SECURITY: Extract only basename to prevent path traversal attacks
     safe_filename = Path(filename).name
 
     if user_id:
         # Create user-specific directory structure
-        user_dir = UPLOADS_DIR / f"user_{user_id}"
+        user_dir = uploads_dir / f"user_{user_id}"
 
         if collection:
             # SECURITY: Sanitize collection name to prevent path traversal attacks
@@ -268,13 +241,13 @@ def get_upload_path(
         # SECURITY: Sanitize folder name to prevent path traversal attacks
         safe_folder = sanitize_path_component(folder, "folder")
         # Create task-specific folder structure (backward compatibility)
-        task_dir = UPLOADS_DIR / f"task_{task_id}" / safe_folder
+        task_dir = uploads_dir / f"task_{task_id}" / safe_folder
         if create_if_not_exists:
             task_dir.mkdir(parents=True, exist_ok=True)
         return task_dir / safe_filename
     else:
         # Default behavior
-        return UPLOADS_DIR / safe_filename
+        return uploads_dir / safe_filename
 
 
 def get_file_url(

@@ -105,13 +105,19 @@ def temp_uploads():
                 "xagent.web.services.kb_collection_service.get_upload_path",
                 side_effect=patched_get_upload_path,
             ),
-            patch("xagent.web.services.kb_collection_service.UPLOADS_DIR", temp_path),
-            patch("xagent.web.services.kb_file_service.UPLOADS_DIR", temp_path),
             patch(
                 "xagent.web.config.get_upload_path",
                 side_effect=patched_get_upload_path,
             ),
-            patch("xagent.web.config.UPLOADS_DIR", temp_path),
+            patch("xagent.config.get_uploads_dir", return_value=Path(temp_path)),
+            patch(
+                "xagent.web.services.kb_file_service.get_uploads_dir",
+                return_value=Path(temp_path),
+            ),
+            patch(
+                "xagent.web.services.kb_collection_service.get_uploads_dir",
+                return_value=Path(temp_path),
+            ),
         ):
             yield temp_path
 

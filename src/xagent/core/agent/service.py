@@ -5,6 +5,7 @@ import logging
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from ...config import get_uploads_dir
 from ..memory import MemoryStore
 from ..memory.in_memory import InMemoryMemoryStore
 from ..model.chat.basic.base import BaseLLM
@@ -33,7 +34,7 @@ class AgentService:
         tracer: Optional[Tracer] = None,
         id: Optional[str] = None,
         workspace: Optional[TaskWorkspace] = None,
-        workspace_base_dir: str = "uploads",
+        workspace_base_dir: Optional[str] = None,
         enable_workspace: bool = True,
         allowed_external_dirs: Optional[List[str]] = None,
         task_id: Optional[str] = None,
@@ -93,6 +94,8 @@ class AgentService:
         if not id:
             raise ValueError("ID is required for AgentService")
         self.id = id
+        if workspace_base_dir is None:
+            workspace_base_dir = str(get_uploads_dir())
         self.workspace_base_dir = workspace_base_dir
         self.enable_workspace = enable_workspace
         self.allowed_external_dirs = allowed_external_dirs

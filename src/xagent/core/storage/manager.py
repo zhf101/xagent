@@ -4,13 +4,31 @@ This module provides a centralized way to manage storage root directories
 and related storage paths across the entire application.
 """
 
-import os
 import threading
 from pathlib import Path
 from typing import Generator, Optional
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
+
+# Alias to avoid naming conflict with this module's get_storage_root()
+from ...config import (
+    get_database_url,
+    get_default_sqlite_db_path,
+)
+from ...config import get_storage_root as get_config_storage_root
+
+__all__ = [
+    "StorageRootManager",
+    "get_storage_root",
+    "get_upload_dir",
+    "initialize_storage_manager",
+    "get_default_sqlite_db_path",  # re-expose for backward compatibility
+    "get_default_db_url",
+    "create_db_session",
+    "get_db_session",
+    "Base",
+]
 
 
 class StorageRootManager:
@@ -31,7 +49,7 @@ class StorageRootManager:
         if storage_root is not None:
             self._storage_root = Path(storage_root)
         else:
-            self._storage_root = Path.home() / ".xagent"
+            self._storage_root = get_config_storage_root()
 
         # Initialize upload directory
         if upload_dir is not None:
@@ -106,28 +124,12 @@ def initialize_storage_manager(
     _storage_manager = StorageRootManager(storage_root, upload_dir)
 
 
-def get_default_sqlite_db_path() -> str:
-    import os
-
-    storage_root = get_storage_root()
-    return os.path.join(storage_root, "xagent.db")
-
-
-def get_default_db_url() -> str:
-    database_url = os.getenv("DATABASE_URL")
-    if database_url is not None:
-        return database_url
-
-    db_path = get_default_sqlite_db_path()
-    return f"sqlite:///{db_path}"
-
-
 # Create base model class
 Base = declarative_base()
 
 
 def create_db_session() -> Session:
-    database_url = get_default_db_url()
+    database_url = get_database_url()
     connect_args = {"check_same_thread": False} if "sqlite" in database_url else {}
     # Create database engine
     engine = create_engine(database_url, connect_args=connect_args)
@@ -145,3 +147,15 @@ def get_db_session() -> Generator[Session, None, None]:
         yield db
     finally:
         db.close()
+
+
+def get_default_db_url() -> str:
+    """Get the default database URL.
+
+    Deprecated: Use get_database_url() from xagent.config instead.
+    This function is kept for backward compatibility.
+
+    Returns:
+        Database connection string
+    """
+    return get_database_url()

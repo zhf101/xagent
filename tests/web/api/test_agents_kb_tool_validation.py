@@ -3,7 +3,6 @@
 import os
 import shutil
 import tempfile
-from unittest.mock import patch
 
 import pytest
 from fastapi import FastAPI
@@ -41,8 +40,10 @@ def _test_db():
     temp_db_path = os.path.join(temp_dir, "test.db")
     db_url = f"sqlite:///{temp_db_path}"
 
-    with patch("xagent.web.models.database.try_upgrade_db"):
-        init_db(db_url=db_url)
+    # Note: Previously mocked try_upgrade_db to skip db migrations.
+    # For new databases, try_upgrade_db only stamps the latest revision,
+    # which is safe for tests and provides better coverage.
+    init_db(db_url=db_url)
 
     yield
 

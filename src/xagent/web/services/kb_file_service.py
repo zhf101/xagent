@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
+from ...config import get_uploads_dir
 from ...core.tools.core.RAG_tools.LanceDB.schema_manager import ensure_documents_table
 from ...core.tools.core.RAG_tools.utils.lancedb_query_utils import query_to_list
 from ...core.tools.core.RAG_tools.utils.string_utils import (
@@ -16,7 +17,6 @@ from ...core.tools.core.RAG_tools.utils.string_utils import (
 )
 from ...core.tools.core.RAG_tools.utils.user_permissions import UserPermissions
 from ...providers.vector_store.lancedb import get_connection_from_env
-from ..config import UPLOADS_DIR
 from ..models.uploaded_file import UploadedFile
 
 logger = logging.getLogger(__name__)
@@ -148,7 +148,7 @@ def delete_uploaded_file_if_orphaned(
     if file_record is None:
         return False
 
-    uploads_root = UPLOADS_DIR.resolve()
+    uploads_root = get_uploads_dir().resolve()
     file_path = Path(str(file_record.storage_path))
     try:
         resolved_path = file_path.resolve()

@@ -9,13 +9,13 @@ from typing import Any, Dict, List, Optional, cast
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
+from ...config import get_external_upload_dirs, get_uploads_dir
 from ...core.agent.service import AgentService
 from ...core.agent.trace import Tracer
 from ...core.model.chat.basic.base import BaseLLM
 from ...core.model.chat.basic.openai import OpenAILLM
 from ...core.model.provider_availability import ensure_provider_enabled
 from ..auth_dependencies import get_current_user
-from ..config import ALLOWED_EXTERNAL_UPLOAD_DIRS, UPLOADS_DIR
 from ..dynamic_memory_store import get_memory_store
 from ..models.agent import Agent
 from ..models.database import get_db
@@ -127,7 +127,7 @@ async def create_default_tools(
         user_id=int(user.id),
         is_admin=bool(user.is_admin),
         workspace_config={
-            "base_dir": str(UPLOADS_DIR / f"user_{user.id}"),
+            "base_dir": str(get_uploads_dir() / f"user_{user.id}"),
             "task_id": task_id,
         },
         include_mcp_tools=False,  # Exclude MCP tools for default agent
@@ -733,12 +733,12 @@ class AgentServiceManager:
                     # Build allowed external directories (user's upload directory for knowledge base files)
                     allowed_external_dirs = []
                     if user and user.id:
-                        user_upload_dir = UPLOADS_DIR / f"user_{user.id}"
+                        user_upload_dir = get_uploads_dir() / f"user_{user.id}"
                         allowed_external_dirs.append(str(user_upload_dir))
 
                     # Add configured external upload directories (for knowledge base files from other projects)
                     allowed_external_dirs.extend(
-                        [str(d) for d in ALLOWED_EXTERNAL_UPLOAD_DIRS]
+                        [str(d) for d in get_external_upload_dirs()]
                     )
 
                     # Create AgentService first (this creates the workspace)
@@ -759,7 +759,7 @@ class AgentServiceManager:
                         else "standard",
                         enable_workspace=True,  # Enable workspace functionality
                         workspace_base_dir=str(
-                            UPLOADS_DIR / f"user_{user.id}"
+                            get_uploads_dir() / f"user_{user.id}"
                         ),  # Use user-isolated base directory
                         allowed_external_dirs=allowed_external_dirs,  # Add allowed external directories
                         task_id=str(task_id),  # Pass task_id for proper tracing
@@ -946,14 +946,14 @@ class AgentServiceManager:
         workspace_ids = []
         if user_id:
             workspace_ids.append(
-                (f"web_task_{task_id}", str(UPLOADS_DIR / f"user_{user_id}"))
+                (f"web_task_{task_id}", str(get_uploads_dir() / f"user_{user_id}"))
             )
-        workspace_ids.append((f"web_task_{task_id}", str(UPLOADS_DIR)))
+        workspace_ids.append((f"web_task_{task_id}", str(get_uploads_dir())))
 
         # Build allowed external directories (user's upload directory for knowledge base files)
         allowed_external_dirs = []
         if user_id:
-            user_upload_dir = UPLOADS_DIR / f"user_{user_id}"
+            user_upload_dir = get_uploads_dir() / f"user_{user_id}"
             if user_upload_dir.exists():
                 allowed_external_dirs.append(str(user_upload_dir))
                 logger.info(
@@ -961,10 +961,11 @@ class AgentServiceManager:
                 )
 
         # Add configured external upload directories (for knowledge base files from other projects)
-        allowed_external_dirs.extend([str(d) for d in ALLOWED_EXTERNAL_UPLOAD_DIRS])
-        if ALLOWED_EXTERNAL_UPLOAD_DIRS:
+        external_upload_dirs = get_external_upload_dirs()
+        allowed_external_dirs.extend([str(d) for d in external_upload_dirs])
+        if external_upload_dirs:
             logger.info(
-                f"Added {len(ALLOWED_EXTERNAL_UPLOAD_DIRS)} external upload directories from config"
+                f"Added {len(external_upload_dirs)} external upload directories from config"
             )
 
         for workspace_id, base_dir in workspace_ids:
@@ -1042,10 +1043,10 @@ class AgentServiceManager:
                 # Build allowed external directories
                 allowed_external_dirs = []
                 if user and user.id:
-                    user_upload_dir = UPLOADS_DIR / f"user_{user.id}"
+                    user_upload_dir = get_uploads_dir() / f"user_{user.id}"
                     allowed_external_dirs.append(str(user_upload_dir))
                 allowed_external_dirs.extend(
-                    [str(d) for d in ALLOWED_EXTERNAL_UPLOAD_DIRS]
+                    [str(d) for d in get_external_upload_dirs()]
                 )
 
                 # Create AgentService with Text2SQL agent type
@@ -1070,7 +1071,7 @@ class AgentServiceManager:
                     max_iterations=config.get("max_iterations", 3),
                     read_only=config.get("read_only", True),
                     available_tables=config.get("available_tables"),
-                    workspace_base_dir=str(UPLOADS_DIR / f"user_{user.id}"),
+                    workspace_base_dir=str(get_uploads_dir() / f"user_{user.id}"),
                     allowed_external_dirs=allowed_external_dirs,
                 )
 
@@ -1276,10 +1277,10 @@ class AgentServiceManager:
                 # Build allowed external directories
                 allowed_external_dirs = []
                 if user_id is not None:
-                    user_upload_dir = UPLOADS_DIR / f"user_{user_id}"
+                    user_upload_dir = get_uploads_dir() / f"user_{user_id}"
                     allowed_external_dirs.append(str(user_upload_dir))
                 allowed_external_dirs.extend(
-                    [str(d) for d in ALLOWED_EXTERNAL_UPLOAD_DIRS]
+                    [str(d) for d in get_external_upload_dirs()]
                 )
 
                 # Create agent with basic configuration
@@ -1300,7 +1301,7 @@ class AgentServiceManager:
                             tracer=tracer,
                             enable_workspace=True,
                             workspace_base_dir=str(
-                                UPLOADS_DIR / f"user_{user_id}"
+                                get_uploads_dir() / f"user_{user_id}"
                             ),  # Use user-isolated base directory
                             allowed_external_dirs=allowed_external_dirs,
                             task_id=str(task_id),

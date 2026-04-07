@@ -56,8 +56,10 @@ def test_db():
     temp_db_path = os.path.join(temp_dir, "test.db")
     SQLALCHEMY_DATABASE_URL = f"sqlite:///{temp_db_path}"
 
-    with patch("xagent.web.models.database.try_upgrade_db"):
-        init_db(db_url=SQLALCHEMY_DATABASE_URL)
+    # Note: Previously mocked try_upgrade_db to skip db migrations.
+    # For new databases, try_upgrade_db only stamps the latest revision,
+    # which is safe for tests and provides better coverage.
+    init_db(db_url=SQLALCHEMY_DATABASE_URL)
 
     engine = get_engine()
 

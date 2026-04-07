@@ -10,10 +10,10 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from ...config import get_uploads_dir
 from ...core.agent.service import AgentService
 from ...core.memory.in_memory import InMemoryMemoryStore
 from ..auth_dependencies import get_current_user
-from ..config import UPLOADS_DIR
 from ..models.agent import Agent, AgentStatus
 from ..models.database import get_db
 from ..models.model import Model as DBModel
@@ -192,7 +192,7 @@ def _save_logo(base64_data: Optional[str], agent_id: int) -> Optional[str]:
             ext = "png"
 
         # Create uploads directory if needed
-        upload_dir = UPLOADS_DIR / "agent_logos"
+        upload_dir = get_uploads_dir() / "agent_logos"
         upload_dir.mkdir(parents=True, exist_ok=True)
 
         # Save file
@@ -793,7 +793,7 @@ async def preview_agent(
             else None,
             allowed_skills=request.skills if request.skills is not None else None,
             task_id=preview_task_id,
-            workspace_base_dir="uploads/preview",
+            workspace_base_dir=str(get_uploads_dir() / "preview"),
         )
 
         # Determine execution mode (default to "graph")
@@ -823,7 +823,7 @@ async def preview_agent(
             use_dag_pattern=use_dag_pattern,
             id=preview_task_id,
             enable_workspace=True,  # Both patterns support workspace
-            workspace_base_dir="uploads/preview",
+            workspace_base_dir=str(get_uploads_dir() / "preview"),
             task_id=preview_task_id,  # Add task_id for proper tool initialization
             tracer=None,  # No tracer for preview - don't log to database
         )

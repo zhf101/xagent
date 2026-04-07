@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 from uuid import uuid4
 
+from ..config import get_uploads_dir
+
 logger = logging.getLogger(__name__)
 
 # Context variable for auto-registration mode
@@ -47,10 +49,12 @@ class TaskWorkspace:
     def __init__(
         self,
         id: str,
-        base_dir: str = "uploads",
+        base_dir: Optional[str] = None,
         allowed_external_dirs: Optional[List[str]] = None,
     ):
         self.id = id
+        if base_dir is None:
+            base_dir = str(get_uploads_dir())
         self.base_dir = Path(base_dir)
         self.db_session = None  # Optional database session for file registration
         self._recently_registered_files: Dict[str, str] = {}  # path -> file_id mapping
@@ -857,7 +861,7 @@ class TaskWorkspace:
 # Simple workspace management functions
 def create_workspace(
     id: str,
-    base_dir: str = "uploads",
+    base_dir: Optional[str] = None,
     allowed_external_dirs: Optional[List[str]] = None,
 ) -> TaskWorkspace:
     """
@@ -865,28 +869,32 @@ def create_workspace(
 
     Args:
         id: Workspace identifier
-        base_dir: Base directory for workspaces
+        base_dir: Base directory for workspaces (uses default if None)
         allowed_external_dirs: List of allowed external directories
 
     Returns:
         TaskWorkspace instance
     """
+    if base_dir is None:
+        base_dir = str(get_uploads_dir())
     return TaskWorkspace(id, base_dir, allowed_external_dirs)
 
 
 def get_workspace_output_files(
-    id: str, base_dir: str = "uploads"
+    id: str, base_dir: Optional[str] = None
 ) -> List[Dict[str, Any]]:
     """
     Get output files for a specific workspace.
 
     Args:
         id: Workspace identifier
-        base_dir: Base directory for workspaces
+        base_dir: Base directory for workspaces (uses default if None)
 
     Returns:
         List of output file information
     """
+    if base_dir is None:
+        base_dir = str(get_uploads_dir())
     workspace = TaskWorkspace(id, base_dir)
     return workspace.get_output_files()
 

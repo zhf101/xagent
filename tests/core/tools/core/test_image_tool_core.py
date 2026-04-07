@@ -82,6 +82,35 @@ def image_tool_core(mock_image_models, mock_workspace):
     )
 
 
+@pytest.fixture
+def edit_image_tool(mock_image_models, mock_workspace):
+    """Create ImageGenerationToolCore configured for edit operations."""
+    mock_image_models["model1"].edit_image = AsyncMock(
+        return_value={
+            "image_url": "https://example.com/edited_image.jpg",
+            "usage": {"input_tokens": 15, "output_tokens": 25},
+            "request_id": "edit_req1",
+        }
+    )
+    mock_image_models["model1"].has_ability = Mock(return_value=True)
+    return ImageGenerationToolCore(
+        mock_image_models, {"model1": "Test model 1"}, mock_workspace
+    )
+
+
+def _setup_edit_http_mock(mock_get):
+    """Configure mock HTTP response for image download in edit tests."""
+    mock_response = Mock()
+    mock_response.status = 200
+
+    async def mock_iter_chunked(chunk_size):
+        for chunk in [b"fake_edited_image_data"]:
+            yield chunk
+
+    mock_response.content.iter_chunked = mock_iter_chunked
+    mock_get.return_value.__aenter__.return_value = mock_response
+
+
 class TestImageGenerationToolCore:
     """Test cases for ImageGenerationToolCore class"""
 
@@ -451,6 +480,7 @@ class TestImageGenerationToolCore:
         mock_image_models["model1"].edit_image.assert_called_once_with(
             prompt="Make it look like a painting",
             image_url="https://example.com/original.jpg",
+            size="1024*1024",
             negative_prompt="",
         )
 
@@ -546,5 +576,59 @@ class TestImageGenerationToolCore:
                 "https://example.com/image1.jpg",
                 "https://example.com/image2.jpg",
             ],
+            size="1024*1024",
             negative_prompt="",
         )
+
+    @pytest.mark.parametrize(
+        "edit_kwargs,expected_kwargs",
+        [
+            ({"size": "2048*2048"}, {"size": "2048*2048"}),
+            ({"width": 1920, "height": 1080}, {"width": 1920, "height": 1080}),
+            ({"resolution": "1920x1080"}, {"resolution": "1920x1080"}),
+            ({"aspect_ratio": "16:9"}, {"aspect_ratio": "16:9"}),
+            (
+                {"size": "2048*2048", "aspect_ratio": "1:1"},
+                {"size": "2048*2048", "aspect_ratio": "1:1"},
+            ),
+        ],
+        ids=["size", "width_height", "resolution", "aspect_ratio", "size_and_aspect"],
+    )
+    @pytest.mark.asyncio
+    @patch("aiohttp.ClientSession.get")
+    async def test_edit_image_size_parameters(
+        self, mock_get, edit_image_tool, mock_image_models, edit_kwargs, expected_kwargs
+    ):
+        """Test image editing with various size parameter combinations."""
+        _setup_edit_http_mock(mock_get)
+
+        result = await edit_image_tool.edit_image(
+            prompt="Make it look like a painting",
+            image_url="https://example.com/original.jpg",
+            **edit_kwargs,
+        )
+
+        assert result["success"] is True
+        mock_image_models["model1"].edit_image.assert_called_once()
+        call_kwargs = mock_image_models["model1"].edit_image.call_args.kwargs
+        for key, value in expected_kwargs.items():
+            assert call_kwargs[key] == value
+
+    @pytest.mark.asyncio
+    @patch("aiohttp.ClientSession.get")
+    async def test_edit_image_default_size_is_passed(
+        self, mock_get, edit_image_tool, mock_image_models
+    ):
+        """Test that default size is passed to the model (consistent with generate_image)."""
+        _setup_edit_http_mock(mock_get)
+
+        result = await edit_image_tool.edit_image(
+            prompt="Make it look like a painting",
+            image_url="https://example.com/original.jpg",
+        )
+
+        assert result["success"] is True
+        mock_image_models["model1"].edit_image.assert_called_once()
+        call_kwargs = mock_image_models["model1"].edit_image.call_args.kwargs
+        assert "size" in call_kwargs
+        assert call_kwargs["size"] == "1024*1024"

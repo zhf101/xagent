@@ -2,7 +2,6 @@
 
 import os
 import tempfile
-from unittest.mock import patch
 
 import pytest
 from fastapi import FastAPI
@@ -54,8 +53,7 @@ def test_db():
     temp_db_path = os.path.join(temp_dir, "test.db")
     database_url = f"sqlite:///{temp_db_path}"
 
-    with patch("xagent.web.models.database.try_upgrade_db"):
-        init_db(db_url=database_url)
+    init_db(db_url=database_url)
 
     engine = get_engine()
     yield

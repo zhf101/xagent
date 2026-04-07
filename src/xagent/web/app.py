@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from ..config import get_uploads_dir
 from .api.admin_users import router as admin_users_router
 from .api.agents import router as agents_router
 from .api.auth import auth_router
@@ -33,7 +34,6 @@ from .api.tools import tools_router
 from .api.vanna_assets import router as vanna_assets_router
 from .api.vanna_sql import vanna_router
 from .api.websocket import ws_router
-from .config import UPLOADS_DIR
 from .dynamic_memory_store import get_memory_store
 from .logging_config import setup_logging
 from .models.database import init_db
@@ -47,10 +47,16 @@ setup_llm_logging_from_env()
 
 logger = logging.getLogger(__name__)
 
-# 导出全局 memory store 供其他模块使用
+
 __all__ = ["app"]
 
-# 创建 FastAPI 应用
+
+# Ensure web, uploads directory exists before configuring static files
+uploads_dir = get_uploads_dir()
+uploads_dir.mkdir(parents=True, exist_ok=True)
+
+
+# FastAPI app creation here
 app = FastAPI(
     title="xagent", description="The Agent Operating System", redirect_slashes=False
 )
@@ -65,7 +71,7 @@ async def health_check() -> dict[str, str]:
     return {"status": "ok"}
 
 
-# 添加全局异常处理器
+# Add global exception handler
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(
     request: Request, exc: RequestValidationError
@@ -125,29 +131,28 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
     )
 
 
-# 添加CORS中间件
+# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 生产环境应该限制具体域名
+    allow_origins=["*"],  # TODO: "*" should not be used in production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# 获取当前目录
 current_dir = os.path.dirname(os.path.abspath(__file__))
 
-# 配置静态文件
+# For static files
 app.mount(
     "/uploads",
-    StaticFiles(directory=str(UPLOADS_DIR)),
+    StaticFiles(directory=str(uploads_dir)),
     name="uploads",
 )
 
-# 创建 memory management router with dynamic memory store
+# memory management router with dynamic memory store
 memory_router = MemoryManagementRouter(get_memory_store).get_router()
 
-# 注册API路由
+# API routers
 app.include_router(auth_router)
 app.include_router(chat_router)
 app.include_router(cloud_router)
@@ -174,7 +179,7 @@ app.include_router(vanna_assets_router)
 app.include_router(channel_router, prefix="/api/channels", tags=["Channels"])
 
 
-# 初始化数据库
+# initial database and skill manager
 @app.on_event("startup")
 async def startup_event() -> None:
     global _migration_task

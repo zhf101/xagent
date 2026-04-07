@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from ...config import get_uploads_dir
 from ..auth_dependencies import get_current_user
 from ..init_tool_configs import get_default_tool_configs
 from ..models.database import get_db
@@ -216,7 +217,7 @@ async def get_available_tools(
         is_admin=bool(current_user.is_admin),
         llm=None,  # Not needed for tool listing
         workspace_config={
-            "base_dir": "./uploads",
+            "base_dir": str(get_uploads_dir()),
             "task_id": "tools_list",  # Use a generic task ID for workspace creation
         },
         include_mcp_tools=True,  # Enable MCP tools

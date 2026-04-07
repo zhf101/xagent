@@ -11,6 +11,8 @@ import shutil
 import sys
 from pathlib import Path
 
+from ...config import get_lancedb_path as get_config_lancedb_path
+
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent / "src"))
 
@@ -171,7 +173,7 @@ def main():
         format="%(message)s",
     )
 
-    db_path = args.db_path or "./data/lancedb"
+    db_path = args.db_path or str(get_config_lancedb_path())
     logger.info(f"LanceDB path: {db_path}")
 
     if not args.execute:

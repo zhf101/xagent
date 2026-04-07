@@ -8,14 +8,20 @@ import os
 import threading
 from typing import Optional
 
-from pydantic import ValidationError
-
+from ..config import (
+    get_boxlite_home_dir,
+    get_sandbox_cpus,
+    get_sandbox_env,
+    get_sandbox_image,
+    get_sandbox_memory,
+    get_sandbox_volumes,
+    get_uploads_dir,
+)
 from ..core.tools.adapters.vibe.sandboxed_tool.sandboxed_tool_wrapper import (
     upload_code_to_sandbox,
 )
-from ..sandbox import DEFAULT_SANDBOX_IMAGE, SandboxService
+from ..sandbox import SandboxService
 from ..sandbox.base import Sandbox, SandboxConfig, SandboxTemplate
-from .config import UPLOADS_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -55,69 +61,30 @@ class SandboxManager:
         return parts[0], parts[1]
 
     def _get_sandbox_image_and_config(self) -> tuple[str, SandboxConfig]:
-        image = os.getenv("SANDBOX_IMAGE", DEFAULT_SANDBOX_IMAGE).strip()
+        """Get sandbox image and configuration from centralized config module."""
+        image = get_sandbox_image()
         config = SandboxConfig()
+
         # CPU
-        if env_str := os.getenv("SANDBOX_CPUS"):
-            try:
-                config.cpus = int(env_str)
-            except (ValueError, ValidationError):
-                logger.warning("Invalid SANDBOX_CPUS value, default value will be used")
+        cpus = get_sandbox_cpus()
+        if cpus is not None:
+            config.cpus = cpus
+
         # MEM
-        if env_str := os.getenv("SANDBOX_MEMORY"):
-            try:
-                config.memory = int(env_str)
-            except (ValueError, ValidationError):
-                logger.warning(
-                    "Invalid SANDBOX_MEMORY value, default value will be used"
-                )
+        memory = get_sandbox_memory()
+        if memory is not None:
+            config.memory = memory
+
         # ENV
-        env: dict[str, str] = {}
-        if env_str := os.getenv("SANDBOX_ENV", "").strip():
-            for pair in env_str.split(";"):
-                try:
-                    key, value = pair.strip().split("=", 1)
-                except ValueError:
-                    # Don't log the pair value - it may contain sensitive data
-                    logger.warning(
-                        "Invalid sandbox env config: must be in KEY=value format"
-                    )
-                else:
-                    key = key.strip()
-                    value = value.strip()
-                    if not key:
-                        logger.warning("Environment variable has empty key")
-                    elif not value:
-                        logger.warning(f"Environment variable {key!r} has empty value")
-                    else:
-                        env[key] = value
-            if env:
-                config.env = env
+        env = get_sandbox_env()
+        if env:
+            config.env = env
+
         # VOL
-        volumes: list[tuple[str, str, str]] = []
-        if env_str := os.getenv("SANDBOX_VOLUMES", "").strip():
-            for item in env_str.split(";"):
-                if not (item := item.strip()):
-                    continue
-                parts = item.split(":", 2)
-                if len(parts) < 2:
-                    logger.warning(f"Invalid sandbox volume config: {item}")
-                    continue
-                src = os.path.expanduser(parts[0].strip())
-                dst = parts[1].strip()
-                if not src or not dst:
-                    logger.warning(f"Invalid sandbox volume: {item}")
-                    continue
-                # Normalize paths to resolve any relative components
-                src = os.path.abspath(src)
-                mode = parts[2].strip().lower() if len(parts) > 2 else "ro"
-                if mode not in ("ro", "rw"):
-                    logger.warning(f"Invalid sandbox volume mode: {item}, using 'ro'")
-                    mode = "ro"
-                volumes.append((src, dst, mode))
-            if volumes:
-                config.volumes = volumes
-        # return image and config
+        volumes = get_sandbox_volumes()
+        if volumes:
+            config.volumes = volumes
+
         return image, config
 
     def _make_volumes(
@@ -139,7 +106,7 @@ class SandboxManager:
         """
         volumes: Optional[list[tuple[str, str, str]]] = None
         if lifecycle_type == "user":
-            user_workspace = str((UPLOADS_DIR / f"user_{lifecycle_id}").resolve())
+            user_workspace = str((get_uploads_dir() / f"user_{lifecycle_id}").resolve())
             if ensure_dir:
                 os.makedirs(user_workspace, exist_ok=True)
             # Use the same absolute path for both host and sandbox.
@@ -232,7 +199,7 @@ class SandboxManager:
         Warmup default image.
         Uses empty config for warmup to avoid unnecessary volume mounts.
         """
-        image = os.getenv("SANDBOX_IMAGE", DEFAULT_SANDBOX_IMAGE).strip()
+        image = get_sandbox_image()
         warmup_name = "__warmup__"
         try:
             template = SandboxTemplate(type="image", image=image)
@@ -255,7 +222,7 @@ class SandboxManager:
         with the correct settings next time.
 
         Note:
-            If ``UPLOADS_DIR`` (via ``XAGENT_UPLOADS_DIR`` env var) changes
+            If ``get_uploads_dir()`` (via ``XAGENT_UPLOADS_DIR`` env var) changes
             between deployments, all user sandboxes will be detected as
             having stale volume mounts and will be deleted for recreation.
         """
@@ -419,11 +386,13 @@ def _create_boxlite_service() -> Optional[SandboxService]:
 
     store = DBBoxliteStore()
     # Get home directory
-    home_dir = os.getenv("BOXLITE_HOME_DIR")
+    home_dir = get_boxlite_home_dir()
 
     service = None
     try:
-        service = BoxliteSandboxService(store=store, home_dir=home_dir)
+        service = BoxliteSandboxService(
+            store=store, home_dir=None if home_dir is None else str(home_dir)
+        )
         logger.info(
             f"Created Boxlite sandbox service (home_dir={home_dir or 'default'})"
         )

@@ -1,12 +1,12 @@
+import logging
 from typing import Any, Generator
 
 from sqlalchemy import Engine, create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import NullPool, QueuePool
 
-from xagent.db import try_upgrade_db
-
-from ...core.storage.manager import get_default_db_url
+from ...config import get_database_url
 
 _SessionLocal: sessionmaker[Session] | None = None
 
@@ -42,9 +42,6 @@ def get_engine() -> Engine:
 
 def init_db(db_url: str | None = None) -> None:
     """Initialize database, create all tables and default users"""
-    import logging
-    import os
-
     # Import all models to ensure they are registered with Base.metadata
     from . import (  # noqa: F401
         MCPServer,
@@ -86,22 +83,18 @@ def init_db(db_url: str | None = None) -> None:
     if db_url is not None:
         database_url = db_url
     else:
-        database_url = os.getenv("DATABASE_URL") or get_default_db_url()
+        database_url = get_database_url()
 
     # Create database engine
     # For SQLite, use NullPool to prevent connection pool issues
     # For other databases, use QueuePool with timeout settings
     if "sqlite" in database_url:
-        from sqlalchemy.pool import NullPool
-
         _engine = create_engine(
             database_url,
             connect_args={"check_same_thread": False},
             poolclass=NullPool,  # SQLite doesn't need connection pooling
         )
     else:
-        from sqlalchemy.pool import QueuePool
-
         _engine = create_engine(
             database_url,
             poolclass=QueuePool,
@@ -116,6 +109,8 @@ def init_db(db_url: str | None = None) -> None:
     _SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=_engine)
 
     # Try upgrade db to head first
+    from ...db import try_upgrade_db
+
     try_upgrade_db(_engine)
 
     # Create all tables

@@ -12,7 +12,8 @@ from filelock import Timeout
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from ..config import UPLOADS_DIR, get_upload_path
+from ...config import get_uploads_dir
+from ..config import get_upload_path
 from ..kb_physical_sync import collection_physical_lock, move_collection_dir_to_trash
 from ..models.uploaded_file import UploadedFile
 from .kb_file_service import delete_uploaded_file_if_orphaned
@@ -64,7 +65,7 @@ def delete_collection_physical_dir(
         with collection_physical_lock(collection_dir):
             move_collection_dir_to_trash(
                 collection_dir,
-                UPLOADS_DIR,
+                get_uploads_dir(),
                 user_id,
                 collection_name,
             )
@@ -199,7 +200,7 @@ def rename_collection_storage(
         with collection_physical_lock(old_collection_dir):
             old_str = str(old_collection_dir)
             new_str = str(new_collection_dir)
-            uploads_resolved = UPLOADS_DIR.resolve()
+            uploads_resolved = get_uploads_dir().resolve()
             records_query = db.query(UploadedFile).filter(
                 UploadedFile.user_id == user_id
             )
@@ -234,7 +235,7 @@ def rename_collection_storage(
                     Path(new_path).resolve().relative_to(uploads_resolved)
                 except ValueError:
                     logger.warning(
-                        "Skipping storage_path update (path outside UPLOADS_DIR): %s",
+                        "Skipping storage_path update (path outside uploads directory): %s",
                         new_path,
                     )
                     continue

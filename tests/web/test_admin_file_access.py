@@ -75,7 +75,7 @@ def temp_uploads_dir(monkeypatch):
         temp_path = Path(temp_dir)
         import xagent.web.api.files
 
-        monkeypatch.setattr(xagent.web.api.files, "UPLOADS_DIR", temp_path)
+        monkeypatch.setattr(xagent.web.api.files, "get_uploads_dir", lambda: temp_path)
         yield temp_path
 
 

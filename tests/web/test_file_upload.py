@@ -125,7 +125,7 @@ def client(test_db):
 
 @pytest.fixture(scope="function")
 def temp_uploads_dir(monkeypatch):
-    """Create temporary uploads directory and override UPLOADS_DIR"""
+    """Create temporary uploads directory and override get_uploads_dir"""
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)
 
@@ -134,8 +134,8 @@ def temp_uploads_dir(monkeypatch):
         import xagent.web.api.files
         import xagent.web.config
 
-        monkeypatch.setattr(xagent.web.config, "UPLOADS_DIR", temp_path)
-        monkeypatch.setattr(xagent.web.api.files, "UPLOADS_DIR", temp_path)
+        monkeypatch.setattr(xagent.web.config, "get_uploads_dir", lambda: temp_path)
+        monkeypatch.setattr(xagent.web.api.files, "get_uploads_dir", lambda: temp_path)
 
         yield temp_path
 

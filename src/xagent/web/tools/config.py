@@ -8,6 +8,7 @@ and other web-specific sources.
 import logging
 from typing import Any, Dict, List, Optional
 
+from ...config import get_uploads_dir
 from ...core.tools.adapters.vibe.config import BaseToolConfig
 from ..services.tool_credentials import get_sql_connection_map, resolve_tool_credential
 
@@ -30,7 +31,7 @@ class WebToolConfig(BaseToolConfig):
         llm: Optional[Any] = None,
         include_mcp_tools: bool = True,
         task_id: Optional[str] = None,
-        workspace_base_dir: str = "uploads",
+        workspace_base_dir: Optional[str] = None,
         browser_tools_enabled: bool = True,
         allowed_collections: Optional[List[str]] = None,
         allowed_skills: Optional[List[str]] = None,
@@ -47,6 +48,9 @@ class WebToolConfig(BaseToolConfig):
             workspace_config = {}
         if task_id:
             workspace_config["task_id"] = task_id
+        # Use uploads dir if workspace_base_dir not explicitly provided
+        if workspace_base_dir is None:
+            workspace_base_dir = str(get_uploads_dir())
         # Ensure base_dir is in workspace_config (required by ToolFactory._create_workspace)
         if "base_dir" not in workspace_config:
             workspace_config["base_dir"] = workspace_base_dir
