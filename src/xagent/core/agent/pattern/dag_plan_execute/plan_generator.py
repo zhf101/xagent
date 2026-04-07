@@ -680,7 +680,75 @@ class PlanGenerator:
                 "3. browser_evaluate - make targeted modifications\n"
             )
 
+        routing_rules = self._build_tool_routing_rules(tool_names)
+        if routing_rules:
+            context_parts.append("TOOL ROUTING RULES:\n\n")
+            context_parts.append(routing_rules)
+
         return "".join(context_parts)
+
+    def _build_tool_routing_rules(self, tool_names: List[str]) -> str:
+        """Add routing hints so the planner prefers the correct tool family."""
+        tool_set = set(tool_names)
+        rules: List[str] = []
+
+        if "query_http_resource" in tool_set:
+            rule = (
+                "- For discovering registered HTTP assets, mockapi endpoints, request "
+                "schemas, or callable API metadata, prefer query_http_resource first."
+            )
+            if "execute_http_resource" in tool_set:
+                rule += (
+                    " After the correct asset is identified, use execute_http_resource "
+                    "for the real invocation."
+                )
+            rules.append(rule)
+
+        if "query_vanna_sql_asset" in tool_set:
+            rule = (
+                "- For locating a SQL asset from a natural-language request, previewing "
+                "required parameters, or resolving the right datasource/asset version, "
+                "prefer query_vanna_sql_asset first."
+            )
+            if "execute_vanna_sql_asset" in tool_set:
+                rule += (
+                    " After the asset is confirmed, use execute_vanna_sql_asset to run it."
+                )
+            rules.append(rule)
+
+        if (
+            "query_http_resource" in tool_set
+            and (
+                "list_knowledge_bases" in tool_set
+                or "knowledge_search" in tool_set
+                or "list_all_user_files" in tool_set
+            )
+        ):
+            rules.append(
+                "- Do NOT use knowledge-base or user-file tools as the primary way to "
+                "discover runtime HTTP assets when query_http_resource is available. "
+                "Those tools are only for user-provided docs or fallback evidence."
+            )
+
+        if "query_vanna_sql_asset" in tool_set and "execute_sql_query" in tool_set:
+            rules.append(
+                "- Do NOT plan execute_sql_query as the first choice for a named SQL asset "
+                "unless raw connection_name and SQL text are already explicitly provided. "
+                "For asset-based SQL tasks, prefer the Vanna asset query/execute pair."
+            )
+
+        if (
+            "list_all_user_files" in tool_set
+            or "read_file" in tool_set
+            or "read_json_file" in tool_set
+        ):
+            rules.append(
+                "- list_all_user_files/read_file/read_json_file are for inspecting uploaded "
+                "files. Use them only when the task explicitly depends on user files or when "
+                "runtime asset tools cannot provide the needed metadata."
+            )
+
+        return "\n".join(rules) + ("\n\n" if rules else "")
 
     def _build_classification_prompt(
         self,

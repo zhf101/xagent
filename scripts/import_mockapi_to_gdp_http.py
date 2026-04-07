@@ -46,6 +46,7 @@ OPENAPI_URL = f"{MOCK_API_BASE_URL}/openapi.json"
 
 # 默认用户 ID（需要数据库中存在）
 DEFAULT_USER_ID = 1
+SUPPORTED_HTTP_METHODS = {"GET", "POST"}
 
 
 def fetch_openapi_spec() -> dict[str, Any]:
@@ -100,68 +101,26 @@ def extract_args_position(
     # 处理请求体
     if request_body:
         content = request_body.get("content", {})
-        
-        # JSON 请求体
-        if "application/json" in content:
-            json_schema = content["application/json"].get("schema", {})
-            resolved_schema = resolve_schema(json_schema, components)
-            
-            if resolved_schema.get("type") == "object":
-                # 对象类型的请求体，每个属性都映射到 body
-                props = resolved_schema.get("properties", {})
-                for prop_name in props:
-                    if prop_name not in args_position:  # 避免与已有参数冲突
-                        args_position[prop_name] = {"in": "body", "name": prop_name}
-            else:
-                # 非对象类型（数组、字符串等）：添加 body 路由
-                # body 必须在 input_schema 中存在
+
+        # text/plain 直接交给 request_template.body，不额外声明 body 路由，
+        # 否则会与当前 GDP validator 的“body 模板和 body 路由互斥”规则冲突。
+        if "text/plain" in content:
+            return args_position
+
+        for content_type in (
+            "application/json",
+            "application/x-www-form-urlencoded",
+            "multipart/form-data",
+        ):
+            if content_type not in content:
+                continue
+            schema = content[content_type].get("schema", {})
+            resolved_schema = resolve_schema(schema, components)
+            if resolved_schema.get("type") != "object":
                 args_position["body"] = {"in": "body", "name": "body"}
-        
-        # 表单请求体
-        elif "application/x-www-form-urlencoded" in content:
-            form_schema = content["application/x-www-form-urlencoded"].get("schema", {})
-            resolved_schema = resolve_schema(form_schema, components)
-            if resolved_schema.get("type") == "object":
-                props = resolved_schema.get("properties", {})
-                for prop_name in props:
-                    if prop_name not in args_position:
-                        args_position[prop_name] = {"in": "body", "name": prop_name}
-        
-        # multipart 文件上传
-        elif "multipart/form-data" in content:
-            multipart_schema = content["multipart/form-data"].get("schema", {})
-            resolved_schema = resolve_schema(multipart_schema, components)
-            if resolved_schema.get("type") == "object":
-                props = resolved_schema.get("properties", {})
-                for prop_name in props:
-                    if prop_name not in args_position:
-                        args_position[prop_name] = {"in": "body", "name": prop_name}
-        
-        # 纯文本请求体：添加 body 路由
-        elif "text/plain" in content:
-            args_position["body"] = {"in": "body", "name": "body"}
+            break
     
     return args_position
-
-
-def extract_headers_from_params(
-    parameters: list[dict[str, Any]],
-) -> dict[str, Any]:
-    """从参数中提取需要传递的 headers 配置。"""
-    headers: dict[str, Any] = {}
-    
-    for param in parameters:
-        if param.get("in") == "header":
-            param_name = param.get("name")
-            if param_name:
-                # header 参数模板，运行时由调用者填充
-                headers[param_name] = {
-                    "type": "param",
-                    "param_name": param_name,
-                    "required": param.get("required", False),
-                }
-    
-    return headers
 
 
 def build_input_schema(
@@ -195,10 +154,7 @@ def build_input_schema(
         # 添加描述
         if param.get("description"):
             schema["description"] = param["description"]
-        
-        # 标记参数位置
-        schema["x-param-in"] = param_in
-        
+
         properties[param_name] = schema
         
         if param.get("required", False):
@@ -341,50 +297,47 @@ def build_output_schema(
 
 def build_request_template(
     method: str,
-    path: str,
     parameters: list[dict[str, Any]],
     request_body: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """
-    构建请求模板配置。
-    
-    定义如何将参数映射到实际 HTTP 请求。
-    """
-    template: dict[str, Any] = {
-        "path_template": path,
-        "query_params": [],
-        "header_params": [],
-        "body_type": None,
-    }
-    
-    # 收集 query 参数
-    for param in parameters:
-        if param.get("in") == "query":
-            template["query_params"].append({
-                "name": param.get("name"),
-                "required": param.get("required", False),
-            })
-    
-    # 收集 header 参数
-    for param in parameters:
-        if param.get("in") == "header":
-            template["header_params"].append({
-                "name": param.get("name"),
-                "required": param.get("required", False),
-            })
-    
-    # 处理请求体类型
+    """构建当前 GDP HTTP runtime 可执行的 request_template_json。"""
+
+    normalized_method = str(method or "GET").upper()
+    template: dict[str, Any] = {"method": normalized_method}
+
+    headers: list[dict[str, str]] = []
+
     if request_body:
         content = request_body.get("content", {})
         if "application/json" in content:
-            template["body_type"] = "json"
+            headers.append({"key": "Content-Type", "value": "application/json"})
+            template["argsToJsonBody"] = True
         elif "application/x-www-form-urlencoded" in content:
-            template["body_type"] = "form"
+            headers.append(
+                {
+                    "key": "Content-Type",
+                    "value": "application/x-www-form-urlencoded",
+                }
+            )
+            template["argsToJsonBody"] = True
         elif "multipart/form-data" in content:
-            template["body_type"] = "multipart"
+            headers.append({"key": "Content-Type", "value": "multipart/form-data"})
+            template["argsToJsonBody"] = True
         elif "text/plain" in content:
-            template["body_type"] = "text"
-    
+            headers.append({"key": "Content-Type", "value": "text/plain"})
+            template["body"] = "{{ args.body }}"
+    elif normalized_method == "GET":
+        template["argsToUrlParam"] = True
+    else:
+        has_only_non_body_params = any(
+            param.get("in") in {"query", "path", "header"} for param in parameters
+        )
+        if has_only_non_body_params:
+            template["argsToUrlParam"] = True
+
+    if headers:
+        template["headers"] = headers
+
     return template
 
 
@@ -436,9 +389,6 @@ def convert_openapi_to_gdp_asset_dict(
     # 提取参数位置信息
     args_position = extract_args_position(parameters, request_body, components)
     
-    # 提取 headers 配置
-    headers_json = extract_headers_from_params(parameters)
-    
     # 构建输入 schema
     input_schema = build_input_schema(method, parameters, request_body, components)
     
@@ -446,7 +396,7 @@ def convert_openapi_to_gdp_asset_dict(
     output_schema = build_output_schema(responses, components)
     
     # 构建请求模板
-    request_template = build_request_template(method, path, parameters, request_body)
+    request_template = build_request_template(method, parameters, request_body)
     
     # 构建 resource_key
     resource_key = f"mockapi_{operation_id}"
@@ -478,7 +428,7 @@ def convert_openapi_to_gdp_asset_dict(
         "response_template_json": {},
         "error_response_template": None,
         "auth_json": {},
-        "headers_json": headers_json,
+        "headers_json": {},
         "timeout_seconds": 30,
     }
 
@@ -516,14 +466,28 @@ def import_all_assets(db: Session, user_id: int) -> list[dict[str, Any]]:
             
             operation = path_item[method]
             operation_id = operation.get("operationId", f"{method}_{path}")
+            normalized_method = method.upper()
+
+            if normalized_method not in SUPPORTED_HTTP_METHODS:
+                results.append(
+                    {
+                        "status": "skipped",
+                        "resource_key": f"mockapi_{operation_id}",
+                        "method": normalized_method,
+                        "path": path,
+                        "reason": "unsupported_method",
+                    }
+                )
+                print(f"  - 跳过: {normalized_method} {path} (当前仅支持 GET/POST)")
+                continue
             
-            print(f"正在导入: {method.upper()} {path} ({operation_id})")
+            print(f"正在导入: {normalized_method} {path} ({operation_id})")
             
             try:
                 # 转换为资产数据
                 payload_dict = convert_openapi_to_gdp_asset_dict(
                     path=path,
-                    method=method.upper(),
+                    method=normalized_method,
                     operation=operation,
                     components=components,
                 )
@@ -556,7 +520,7 @@ def import_all_assets(db: Session, user_id: int) -> list[dict[str, Any]]:
                     "status": "success",
                     "resource_key": resource_key,
                     "asset_id": asset.id,
-                    "method": method.upper(),
+                    "method": normalized_method,
                     "path": path,
                 })
                 print(f"  ✓ 成功: asset_id={asset.id}")
@@ -567,7 +531,7 @@ def import_all_assets(db: Session, user_id: int) -> list[dict[str, Any]]:
                 results.append({
                     "status": "error",
                     "resource_key": f"mockapi_{operation_id}",
-                    "method": method.upper(),
+                    "method": normalized_method,
                     "path": path,
                     "error": str(e),
                     "traceback": traceback.format_exc(),

@@ -21,6 +21,7 @@ from ....gdp.application.http_runtime_service import (
 from .base import ToolCategory
 from .factory import register_tool
 from .function import FunctionTool
+from .runtime_context import build_web_tool_runtime_context
 
 if TYPE_CHECKING:
     from xagent.web.tools.config import WebToolConfig
@@ -39,13 +40,12 @@ async def create_gdp_http_runtime_tools(config: "WebToolConfig") -> list[Any]:
     """Create GDP HTTP query/execute tools for authenticated web sessions."""
 
     try:
-        if not hasattr(config, "get_db") or not hasattr(config, "get_user_id"):
+        runtime_context = build_web_tool_runtime_context(config)
+        if runtime_context is None:
             return []
 
-        db = config.get_db()
-        user_id = config.get_user_id()
-        if not user_id:
-            return []
+        db = runtime_context.db
+        user_id = runtime_context.user_id
 
         def query_http_resource(
             user_query: str,

@@ -8,25 +8,13 @@ Expose Vanna SQL assets to standard task agents as two-stage tools:
 from __future__ import annotations
 
 import logging
-import re
-from dataclasses import asdict
 from typing import TYPE_CHECKING, Any
 
-from ....vanna import (
-    AskService,
-    QueryService,
-    SqlAssetExecutionService,
-    SqlAssetInferenceService,
-)
-from ....vanna.contracts import QueryResult
-from ....vanna.sql_assets.service import SqlAssetService
-from .....web.services.task_target_resolution_service import (
-    TaskTargetResolutionService,
-)
-from .....web.models.user import User
+from ....vanna.tool_runtime_service import VannaToolRuntimeService
 from .base import ToolCategory
 from .factory import register_tool
 from .function import FunctionTool
+from .runtime_context import build_web_tool_runtime_context, load_task_confirmed_target
 
 if TYPE_CHECKING:
     from xagent.web.tools.config import WebToolConfig
@@ -40,164 +28,41 @@ class VannaSqlFunctionTool(FunctionTool):
     category = ToolCategory.DATABASE
 
 
-def _coerce_task_id(raw_task_id: Any) -> int | None:
-    if raw_task_id is None:
-        return None
-    if isinstance(raw_task_id, int):
-        return raw_task_id
-    matched = re.search(r"(\d+)$", str(raw_task_id))
-    if matched is None:
-        return None
-    return int(matched.group(1))
-
-
-def _resolve_owner_user_name(db: Any, user_id: int) -> str | None:
-    user = db.query(User).filter(User.id == int(user_id)).first()
-    if user is None:
-        return None
-    username = getattr(user, "username", None)
-    return str(username) if username is not None else None
-
-
-def _load_task_confirmed_target(
-    db: Any,
-    *,
-    task_id: int | None,
-    user_id: int,
-) -> dict[str, Any] | None:
-    if task_id is None:
-        return None
-    try:
-        return TaskTargetResolutionService(db).load_confirmed_target(
-            task_id=int(task_id),
-            owner_user_id=int(user_id),
-        )
-    except Exception as exc:
-        logger.warning(
-            "Failed to load task-confirmed Vanna target for task %s: %s",
-            task_id,
-            exc,
-        )
-        return None
-
-
-def _serialize_query_result(
-    result: QueryResult,
-    *,
-    asset: Any | None = None,
-    version: Any | None = None,
-) -> dict[str, Any]:
-    payload = asdict(result)
-    if asset is not None:
-        payload["asset"] = asset.to_dict()
-    if version is not None:
-        payload["version"] = version.to_dict()
-    return payload
-
-
 @register_tool
 async def create_vanna_sql_runtime_tools(config: "WebToolConfig") -> list[Any]:
     """Create Vanna SQL asset query/execute tools for authenticated web tasks."""
 
     try:
-        if not hasattr(config, "get_db") or not hasattr(config, "get_user_id"):
+        runtime_context = build_web_tool_runtime_context(config)
+        if runtime_context is None:
             return []
 
-        db = config.get_db()
-        user_id = config.get_user_id()
-        if not user_id:
-            return []
+        runtime_service = VannaToolRuntimeService(
+            runtime_context.db,
+            owner_user_id=runtime_context.user_id,
+            owner_user_name=runtime_context.user_name,
+            task_id=runtime_context.task_id,
+            llm=runtime_context.llm,
+        )
 
-        owner_user_name = _resolve_owner_user_name(db, int(user_id))
-        task_id = _coerce_task_id(
-            config.get_task_id() if hasattr(config, "get_task_id") else None
-        )
-        explicit_llm = config.get_llm() if hasattr(config, "get_llm") else None
-        task_llm_resolver = (
-            (lambda _owner_user_id: explicit_llm) if explicit_llm is not None else None
-        )
-        query_service = QueryService(
-            db,
-            ask_service=(
-                AskService(db, llm_resolver=task_llm_resolver)
-                if task_llm_resolver is not None
-                else None
-            ),
-            inference_service=(
-                SqlAssetInferenceService(llm_resolver=task_llm_resolver)
-                if task_llm_resolver is not None
-                else None
-            ),
-        )
         async def query_vanna_sql_asset(
             user_query: str,
             datasource_id: int | None = None,
             kb_id: int | None = None,
             explicit_params: dict[str, Any] | None = None,
         ) -> dict[str, Any]:
-            task_confirmed_target = _load_task_confirmed_target(
-                db,
-                task_id=task_id,
-                user_id=int(user_id),
+            confirmed_target = load_task_confirmed_target(
+                runtime_context.db,
+                task_id=runtime_context.task_id,
+                user_id=runtime_context.user_id,
             )
-            resolved_target = task_confirmed_target or {}
-            resolved_datasource_id = resolved_target.get("datasource_id")
-            resolved_kb_id = resolved_target.get("kb_id")
-            if resolved_datasource_id is not None:
-                if (
-                    datasource_id is not None
-                    and int(datasource_id) != int(resolved_datasource_id)
-                ):
-                    logger.info(
-                        "Ignoring tool-provided datasource_id=%s for task %s; using confirmed datasource_id=%s",
-                        datasource_id,
-                        task_id,
-                        resolved_datasource_id,
-                    )
-                datasource_id = int(resolved_datasource_id)
-            if resolved_kb_id is not None:
-                if kb_id is not None and int(kb_id) != int(resolved_kb_id):
-                    logger.info(
-                        "Ignoring tool-provided kb_id=%s for task %s; using confirmed kb_id=%s",
-                        kb_id,
-                        task_id,
-                        resolved_kb_id,
-                    )
-                kb_id = int(resolved_kb_id)
-            if datasource_id is None:
-                raise ValueError("当前任务还没有确认 SQL 目标，无法查询 SQL 资产")
-
-            result = await query_service.query(
-                datasource_id=int(datasource_id),
-                owner_user_id=int(user_id),
-                create_user_name=owner_user_name,
+            return await runtime_service.query_asset(
                 question=user_query,
+                datasource_id=datasource_id,
                 kb_id=kb_id,
-                task_id=task_id,
                 explicit_params=dict(explicit_params or {}),
-                context={},
-                auto_run=False,
-                auto_infer=True,
+                confirmed_target=confirmed_target,
             )
-
-            asset = None
-            version = None
-            if result.asset_id is not None:
-                service = SqlAssetService(db)
-                asset = service.get_asset(
-                    asset_id=int(result.asset_id),
-                    owner_user_id=int(user_id),
-                )
-                version = service.get_effective_version(
-                    asset_id=int(asset.id),
-                    owner_user_id=int(user_id),
-                    version_id=(
-                        int(result.asset_version_id)
-                        if result.asset_version_id is not None
-                        else None
-                    ),
-                )
-            return _serialize_query_result(result, asset=asset, version=version)
 
         async def execute_vanna_sql_asset(
             question: str,
@@ -208,81 +73,21 @@ async def create_vanna_sql_runtime_tools(config: "WebToolConfig") -> list[Any]:
             version_id: int | None = None,
             explicit_params: dict[str, Any] | None = None,
         ) -> dict[str, Any]:
-            if asset_id is None and not (asset_code or "").strip():
-                raise ValueError("asset_id 与 asset_code 至少提供一个")
-
-            task_confirmed_target = _load_task_confirmed_target(
-                db,
-                task_id=task_id,
-                user_id=int(user_id),
+            confirmed_target = load_task_confirmed_target(
+                runtime_context.db,
+                task_id=runtime_context.task_id,
+                user_id=runtime_context.user_id,
             )
-            resolved_target = task_confirmed_target or {}
-            resolved_datasource_id = resolved_target.get("datasource_id")
-            resolved_kb_id = resolved_target.get("kb_id")
-            if resolved_datasource_id is not None:
-                datasource_id = int(resolved_datasource_id)
-            if resolved_kb_id is not None:
-                kb_id = int(resolved_kb_id)
-
-            service = SqlAssetService(db)
-            if asset_id is not None:
-                asset = service.get_asset(
-                    asset_id=int(asset_id),
-                    owner_user_id=int(user_id),
-                )
-            else:
-                asset = service.get_asset_by_code(
-                    asset_code=str(asset_code),
-                    owner_user_id=int(user_id),
-                )
-            version = service.get_effective_version(
-                asset_id=int(asset.id),
-                owner_user_id=int(user_id),
-                version_id=int(version_id) if version_id is not None else None,
-            )
-
-            normalized_context: dict[str, Any] = {}
-            inference = await query_service.inference_service.infer_bindings(
-                asset=asset,
-                version=version,
-                owner_user_id=int(user_id),
+            return await runtime_service.execute_asset(
                 question=question,
-                context=normalized_context,
-            )
-
-            run = await SqlAssetExecutionService(db).execute(
-                asset=asset,
-                version=version,
-                datasource_id=(
-                    int(datasource_id) if datasource_id is not None else int(asset.datasource_id)
-                ),
-                kb_id=int(kb_id) if kb_id is not None else int(asset.kb_id),
-                owner_user_id=int(user_id),
-                owner_user_name=owner_user_name,
-                question=question,
+                asset_id=asset_id,
+                asset_code=asset_code,
+                datasource_id=datasource_id,
+                kb_id=kb_id,
+                version_id=version_id,
                 explicit_params=dict(explicit_params or {}),
-                context=normalized_context,
-                inferred_params=dict((inference or {}).get("bindings") or {}),
-                inference_assumptions=list((inference or {}).get("assumptions") or []),
-                task_id=task_id,
+                confirmed_target=confirmed_target,
             )
-
-            binding_plan = dict(run.binding_plan_json or {})
-            result = QueryResult(
-                mode="asset",
-                route="asset_execute",
-                execution_status=str(run.execution_status),
-                asset_id=int(asset.id),
-                asset_version_id=int(version.id),
-                asset_run_id=int(run.id),
-                asset_code=str(asset.asset_code),
-                compiled_sql=str(run.compiled_sql),
-                bound_params=dict(run.bound_params_json or {}),
-                assumptions=list(binding_plan.get("assumptions") or []),
-                execution_result=dict(run.execution_result_json or {}),
-                llm_inference=inference,
-            )
-            return _serialize_query_result(result, asset=asset, version=version)
 
         return [
             VannaSqlFunctionTool(

@@ -1565,6 +1565,7 @@ Remember: Return ONLY ONE JSON object. No additional text, no multiple objects.
                     "task_type": "LLM call",
                     "attempt": 1,
                     "response_type": type(response_payload).__name__,
+                    "response_preview": self._build_response_preview(response_payload),
                     "is_tool_call": is_tool_call_flag,
                     "response": response_payload,
                     "chat_kwargs": chat_kwargs,
@@ -1581,69 +1582,15 @@ Remember: Return ONLY ONE JSON object. No additional text, no multiple objects.
             cleaned_messages = clean_messages(messages)
             chat_kwargs["messages"] = cleaned_messages
 
-            # Get LLM response using streaming API
-            full_content = ""
             usage = {}
-            tool_calls_from_stream = []
-
-            async for chunk in self.llm.stream_chat(**chat_kwargs):
-                if chunk.is_token():
-                    full_content += chunk.delta
-                elif chunk.is_tool_call():
-                    tool_calls_from_stream = chunk.tool_calls
-                elif chunk.is_usage():
-                    usage = chunk.usage
-                elif chunk.is_error():
-                    raise RuntimeError(f"LLM stream error: {chunk.content}")
-
-            # Record token usage
-            if usage:
-                logger.info(
-                    f"LLM call usage - prompt_tokens: {usage.get('prompt_tokens', 0)}, "
-                    f"completion_tokens: {usage.get('completion_tokens', 0)}, "
-                    f"total_tokens: {usage.get('total_tokens', 0)}"
-                )
-
-            # Construct response object (maintaining compatibility with original chat() format)
-            reasoning_text = full_content.strip()
-            if reasoning_text:
-                extracted_reasoning: Optional[str] = None
-                try:
-                    parsed_reasoning = repair_loads(reasoning_text, logging=False)
-                    if isinstance(parsed_reasoning, dict):
-                        extracted_reasoning = parsed_reasoning.get("reasoning")
-                        if not extracted_reasoning:
-                            # Some models put the explanation under "content"
-                            content_value = parsed_reasoning.get("content")
-                            if isinstance(content_value, str):
-                                extracted_reasoning = content_value
-                    elif isinstance(parsed_reasoning, list):
-                        # Look for first dict item with reasoning/content fields
-                        for item in parsed_reasoning:
-                            if isinstance(item, dict):
-                                extracted_reasoning = item.get("reasoning") or item.get(
-                                    "content"
-                                )
-                                if extracted_reasoning:
-                                    break
-                except Exception:
-                    extracted_reasoning = None
-
-                if extracted_reasoning:
-                    reasoning_text = extracted_reasoning.strip()
-
-            if tool_calls_from_stream:
-                response = {
-                    "type": "tool_call",
-                    "tool_calls": tool_calls_from_stream,
-                    "raw": {"usage": usage} if usage else {},
-                }
-                if reasoning_text:
-                    # Preserve assistant text so reasoning is not lost in traces
-                    response["reasoning"] = reasoning_text
-                    response["content"] = reasoning_text
-            else:
-                response = full_content
+            # First-phase decision is intentionally non-streaming.
+            # Structured JSON output is more stable when we wait for the complete response.
+            response = await self.llm.chat(**chat_kwargs)
+            logger.info(
+                "ReAct first-phase decision raw response: type=%s preview=%s",
+                type(response).__name__,
+                self._build_response_preview(response),
+            )
 
         except Exception as e:
             # Trace LLM call error
@@ -1713,10 +1660,23 @@ Remember: Return ONLY ONE JSON object. No additional text, no multiple objects.
                             parsed, action.type == "tool_call", action.reasoning
                         )
                         return action
-                    else:
-                        logger.warning(
-                            f"First call: Parsed JSON but unknown type: {parsed.get('type')}"
-                        )
+                    self._raise_invalid_action_response(
+                        messages,
+                        response=response,
+                        message=(
+                            "LLM returned a JSON object that does not match the "
+                            "required Action schema."
+                        ),
+                        context={"parsed_type": parsed.get("type")},
+                    )
+                self._raise_invalid_action_response(
+                    messages,
+                    response=response,
+                    message=(
+                        "LLM returned valid JSON, but the top-level value is not an object."
+                    ),
+                    context={"top_level_type": type(parsed).__name__},
+                )
             except json.JSONDecodeError:
                 # JSON parsing failed - might be multiple JSON objects
                 # Try to use json_repair to handle multiple JSON objects
@@ -1729,8 +1689,6 @@ Remember: Return ONLY ONE JSON object. No additional text, no multiple objects.
                         action_data = repaired
 
                     # Handle when json_repair returns a list (multiple JSON objects)
-                    # gpt-5.4 in streaming mode often returns multiple JSONs even with response_format='json_object'
-                    # We take the first one as the intended action
                     if isinstance(action_data, list):
                         # Log all items for debugging
                         for i, item in enumerate(action_data):
@@ -1743,27 +1701,20 @@ Remember: Return ONLY ONE JSON object. No additional text, no multiple objects.
                                     f"First call: JSON object {i}: {type(item).__name__}"
                                 )
 
-                        # Take the first JSON object
-                        if action_data and isinstance(action_data[0], dict):
-                            action_data = action_data[0]
-                            logger.info(
-                                f"First call: Selected first JSON object from multiple (type: {action_data.get('type', 'UNKNOWN')})"
-                            )
-                        else:
-                            # First item is not a dict, raise error
-                            raise PatternExecutionError(
-                                pattern_name="ReAct",
-                                message=f"LLM returned multiple JSON objects but the first one is not a valid dict (count: {len(action_data)})",
-                                context={
-                                    "json_object_count": len(action_data),
-                                    "first_object_type": type(action_data[0]).__name__
-                                    if action_data
-                                    else "none",
-                                    "response_preview": response[:500]
-                                    if response
-                                    else None,
-                                },
-                            )
+                        self._raise_invalid_action_response(
+                            messages,
+                            response=response,
+                            message=(
+                                "LLM returned multiple JSON objects for a single ReAct "
+                                "decision. Exactly one JSON object is required."
+                            ),
+                            context={
+                                "json_object_count": len(action_data),
+                                "first_object_type": type(action_data[0]).__name__
+                                if action_data
+                                else "none",
+                            },
+                        )
 
                     if isinstance(action_data, dict):
                         action = self._try_parse_action_from_dict(
@@ -1776,26 +1727,45 @@ Remember: Return ONLY ONE JSON object. No additional text, no multiple objects.
                                 action.reasoning,
                             )
                             return action
+                        self._raise_invalid_action_response(
+                            messages,
+                            response=response,
+                            message=(
+                                "LLM returned repaired JSON, but it still does not match "
+                                "the required Action schema."
+                            ),
+                            context={"parsed_type": action_data.get("type")},
+                        )
+                    self._raise_invalid_action_response(
+                        messages,
+                        response=response,
+                        message=(
+                            "LLM response could not be normalized to a single JSON object."
+                        ),
+                        context={"repaired_type": type(action_data).__name__},
+                    )
                 except Exception as repair_error:
                     # Re-raise PatternExecutionError as it's not a repair failure
                     if isinstance(repair_error, PatternExecutionError):
                         raise
-                    # Not valid JSON, treat as direct text response
-                    pass
+                    self._raise_invalid_action_response(
+                        messages,
+                        response=response,
+                        message="LLM returned invalid JSON for the ReAct decision step.",
+                        context={"repair_error": str(repair_error)},
+                    )
             except AttributeError:
-                pass
+                self._raise_invalid_action_response(
+                    messages,
+                    response=response,
+                    message="LLM returned a non-parseable string response.",
+                )
 
-            # Fallback: treat unparsable string as direct text response
-            action = Action(
-                type="final_answer",
-                reasoning="LLM provided direct response",
-                answer=response.strip(),
-                success=True,
-                error=None,
+            self._raise_invalid_action_response(
+                messages,
+                response=response,
+                message="LLM returned a string response that is not valid Action JSON.",
             )
-            await log_llm_completion(response, False, action.reasoning)
-
-            return action
 
         # Parse JSON response (for when response_format="json_object" is enforced)
         try:
@@ -2020,50 +1990,62 @@ Remember: Return ONLY ONE JSON object. No additional text, no multiple objects.
         """
         Normalize LLM action output to ensure a dict is passed to Action validation.
 
-        Some LLMs may return a list of fragments or actions. We:
-        - Use the first non-empty element
-        - If it's a dict, return it directly
-        - If it's a string, attempt to repair/parse JSON inside it
-        - Otherwise, fall back to a final_answer action with the stringified value
+        The ReAct decision phase must produce exactly one JSON object that matches the
+        Action schema. Multiple objects or non-object values are treated as protocol
+        violations and should trigger a retry instead of being silently coerced.
         """
         if isinstance(action_data, dict):
             return self._ensure_action_type(action_data)
 
-        if not isinstance(action_data, list):
-            return action_data
-
-        if not action_data:
+        if isinstance(action_data, list):
             raise PatternExecutionError(
-                pattern_name="ReAct", message="Action list is empty"
+                pattern_name="ReAct",
+                message=(
+                    "ReAct decision returned multiple JSON objects. "
+                    "Exactly one JSON object is required."
+                ),
+                context={
+                    "json_object_count": len(action_data),
+                    "item_types": [type(item).__name__ for item in action_data[:5]],
+                },
             )
 
-        primary = next(
-            (item for item in action_data if item not in (None, "", {})),
-            action_data[0],
+        raise PatternExecutionError(
+            pattern_name="ReAct",
+            message="ReAct decision did not produce a JSON object.",
+            context={"top_level_type": type(action_data).__name__},
         )
 
-        if isinstance(primary, dict):
-            return self._ensure_action_type(primary)
-
-        if isinstance(primary, str):
-            try:
-                repaired_inner = repair_loads(primary, logging=False)
-                if isinstance(repaired_inner, dict):
-                    return repaired_inner
-            except Exception:
-                pass
-
-            return {
-                "type": "final_answer",
-                "reasoning": "Fallback: converted list response to final answer",
-                "answer": primary,
+    def _raise_invalid_action_response(
+        self,
+        messages: List[Dict[str, str]],
+        *,
+        response: Any,
+        message: str,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Raise a retryable protocol error for invalid Action JSON output."""
+        messages.append(
+            {
+                "role": "user",
+                "content": (
+                    "SYSTEM REMINDER: In the ReAct decision step, you must return "
+                    "exactly one JSON object matching the Action schema. Do not "
+                    "output multiple JSON objects, markdown, or plain text."
+                ),
             }
-
-        return {
-            "type": "final_answer",
-            "reasoning": "Fallback: converted list response to final answer",
-            "answer": str(primary),
+        )
+        error_context = {
+            "response": response,
+            "response_type": type(response).__name__,
         }
+        if context:
+            error_context.update(context)
+        raise PatternExecutionError(
+            pattern_name="ReAct",
+            message=message,
+            context=error_context,
+        )
 
     def _ensure_action_type(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
         """Infer missing or incorrect action 'type' from common fields."""
@@ -2343,6 +2325,23 @@ Remember: Return ONLY ONE JSON object. No additional text, no multiple objects.
                 return str(response)
         else:
             return str(response)
+
+    def _build_response_preview(self, response: Any, limit: int = 500) -> str:
+        """Build a compact single-line preview for logging raw LLM responses."""
+        try:
+            if isinstance(response, str):
+                preview = response
+            elif isinstance(response, (dict, list)):
+                preview = json.dumps(response, ensure_ascii=False)
+            else:
+                preview = str(response)
+        except Exception:
+            preview = repr(response)
+
+        preview = preview.replace("\r", "\\r").replace("\n", "\\n")
+        if len(preview) > limit:
+            return preview[:limit] + "..."
+        return preview
 
     async def _generate_and_store_react_memories(
         self, task: str, result: str, iterations: int, messages: List[Dict[str, str]]

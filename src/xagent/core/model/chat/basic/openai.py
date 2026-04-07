@@ -3,6 +3,7 @@ import logging
 import os
 import time
 from typing import Any, AsyncIterator, Dict, List, Optional, Union
+from unittest.mock import Mock
 
 import openai
 from openai import AsyncOpenAI
@@ -134,6 +135,227 @@ class OpenAILLM(BaseLLM):
             started_at=started_at,
             error=error,
             extra=extra,
+        )
+
+    def _stringify_structured_value(self, value: Any) -> Optional[str]:
+        """Convert a structured SDK value into plain text content."""
+        if value is None:
+            return None
+
+        if isinstance(value, Mock):
+            return None
+
+        if isinstance(value, str):
+            text = value.strip()
+            return text or None
+
+        if isinstance(value, tuple):
+            value = list(value)
+
+        if isinstance(value, (dict, list, int, float, bool)):
+            try:
+                return json.dumps(value, ensure_ascii=False)
+            except (TypeError, ValueError):
+                return None
+
+        model_dump = getattr(value, "model_dump", None)
+        if callable(model_dump):
+            try:
+                dumped = model_dump()
+            except Exception:
+                dumped = None
+            if dumped is value or isinstance(dumped, Mock):
+                dumped = None
+            if dumped is not None:
+                return self._stringify_structured_value(dumped)
+
+        dict_method = getattr(value, "dict", None)
+        if callable(dict_method):
+            try:
+                dumped = dict_method()
+            except Exception:
+                dumped = None
+            if dumped is value or isinstance(dumped, Mock):
+                dumped = None
+            if dumped is not None:
+                return self._stringify_structured_value(dumped)
+
+        return None
+
+    def _extract_text_from_content_parts(self, content: Any) -> Optional[str]:
+        """Extract plain text from OpenAI content payload variants."""
+        if content is None:
+            return None
+
+        if isinstance(content, str):
+            text = content.strip()
+            return text or None
+
+        if isinstance(content, dict):
+            for key in ("text", "content"):
+                text = self._extract_text_from_content_parts(content.get(key))
+                if text:
+                    return text
+            for key in ("json", "parsed", "value"):
+                text = self._stringify_structured_value(content.get(key))
+                if text:
+                    return text
+            return None
+
+        if isinstance(content, list):
+            parts: List[str] = []
+            for part in content:
+                text = self._extract_text_from_content_parts(part)
+                if text:
+                    parts.append(text)
+            if not parts:
+                return None
+            return "".join(parts).strip() or None
+
+        for attr in ("text", "content"):
+            text = self._extract_text_from_content_parts(getattr(content, attr, None))
+            if text:
+                return text
+
+        for attr in ("json", "parsed", "value"):
+            text = self._stringify_structured_value(getattr(content, attr, None))
+            if text:
+                return text
+
+        return None
+
+    def _safe_model_dump(self, value: Any) -> Optional[Dict[str, Any]]:
+        """Safely dump SDK models to plain dictionaries."""
+        model_dump = getattr(value, "model_dump", None)
+        if callable(model_dump):
+            try:
+                dumped = model_dump()
+            except Exception:
+                return None
+            if isinstance(dumped, dict):
+                return dumped
+        return None
+
+    def _extract_structured_message_text(
+        self, message: Any, response: Any
+    ) -> tuple[Optional[str], Optional[str]]:
+        """Best-effort extraction for structured outputs with empty content."""
+        text = self._extract_text_from_content_parts(getattr(message, "content", None))
+        if text:
+            return text, "message.content"
+
+        for attr in (
+            "parsed",
+            "output_text",
+            "json",
+            "structured_content",
+            "refusal",
+            "reasoning_content",
+        ):
+            text = self._stringify_structured_value(getattr(message, attr, None))
+            if text:
+                return text, f"message.{attr}"
+
+        message_dump = self._safe_model_dump(message)
+        if isinstance(message_dump, dict):
+            text = self._extract_text_from_content_parts(message_dump.get("content"))
+            if text:
+                return text, "message.model_dump().content"
+            for key in (
+                "parsed",
+                "output_text",
+                "json",
+                "structured_content",
+                "refusal",
+                "reasoning_content",
+            ):
+                text = self._stringify_structured_value(message_dump.get(key))
+                if text:
+                    return text, f"message.model_dump().{key}"
+
+        response_dump = self._safe_model_dump(response)
+        if isinstance(response_dump, dict):
+            choices = response_dump.get("choices")
+            if isinstance(choices, list) and choices:
+                raw_message = choices[0].get("message")
+                if isinstance(raw_message, dict):
+                    text = self._extract_text_from_content_parts(
+                        raw_message.get("content")
+                    )
+                    if text:
+                        return text, "response.model_dump().choices[0].message.content"
+                    for key in (
+                        "parsed",
+                        "output_text",
+                        "json",
+                        "structured_content",
+                        "refusal",
+                        "reasoning_content",
+                    ):
+                        text = self._stringify_structured_value(raw_message.get(key))
+                        if text:
+                            return (
+                                text,
+                                f"response.model_dump().choices[0].message.{key}",
+                            )
+
+        return None, None
+
+    def _build_response_format_fallback_instruction(
+        self, response_format: Optional[Dict[str, Any]]
+    ) -> str:
+        """Build prompt-level constraints when the endpoint rejects response_format."""
+        response_type = None
+        if isinstance(response_format, dict):
+            response_type = response_format.get("type")
+
+        instruction_parts = [
+            "The endpoint for this request does not support native response_format.",
+            "If you answer with assistant text, return exactly one valid JSON object as plain text.",
+            "Do not wrap the JSON in markdown fences.",
+            "Do not add commentary before or after the JSON.",
+        ]
+
+        if response_type == "json_schema":
+            schema = None
+            if isinstance(response_format, dict):
+                json_schema = response_format.get("json_schema")
+                if isinstance(json_schema, dict):
+                    schema = json_schema.get("schema")
+            if schema:
+                instruction_parts.append(
+                    f"The JSON must satisfy this schema: {json.dumps(schema, ensure_ascii=False)}"
+                )
+
+        return " ".join(instruction_parts)
+
+    def _apply_response_format_prompt_fallback(
+        self, completion_params: Dict[str, Any]
+    ) -> bool:
+        """Remove native response_format and fall back to prompt-only constraints."""
+        response_format = completion_params.pop("response_format", None)
+        if not response_format:
+            return False
+
+        messages = list(completion_params.get("messages") or [])
+        messages.append(
+            {
+                "role": "system",
+                "content": self._build_response_format_fallback_instruction(
+                    response_format
+                ),
+            }
+        )
+        completion_params["messages"] = messages
+        return True
+
+    @staticmethod
+    def _is_response_format_unsupported_error(error_msg: str) -> bool:
+        lowered = error_msg.lower()
+        return (
+            "response_format" in lowered
+            or "json_schema" in lowered
+            or "json object" in lowered
         )
 
     async def chat(
@@ -270,6 +492,7 @@ class OpenAILLM(BaseLLM):
             },
         )
         retried_without_response_format = False
+        used_prompt_response_format_fallback = False
 
         # Helper function to process response
         async def _make_api_call() -> Any:
@@ -340,20 +563,29 @@ class OpenAILLM(BaseLLM):
                 }
 
             # Handle text content
-            content = message.content
+            content = self._extract_text_from_content_parts(message.content)
+            content_source = "message.content" if content else None
 
-            # Handle None or empty content when no tool calls
-            if not content or not content.strip():
-                # If there are no tool calls and no content, this is an error
-                raise RuntimeError(
-                    f"LLM returned {'empty' if content == '' else 'None'} content and no tool calls"
+            if not content:
+                content, content_source = self._extract_structured_message_text(
+                    message, resp
                 )
 
-            return {
+            # Handle None or empty content when no tool calls
+            if not content:
+                # If there are no tool calls and no content, this is an error
+                raise RuntimeError(
+                    f"LLM returned {('empty' if message.content == '' else 'None')} content and no tool calls"
+                )
+
+            result = {
                 "type": "text",
                 "content": content,
                 "raw": resp.model_dump(),
             }
+            if content_source and content_source != "message.content":
+                result["content_source"] = content_source
+            return result
 
         try:
             # Make the API call
@@ -394,6 +626,7 @@ class OpenAILLM(BaseLLM):
                 usage=getattr(response, "usage", None),
                 extra={
                     "retried_without_response_format": retried_without_response_format,
+                    "used_prompt_response_format_fallback": used_prompt_response_format_fallback,
                 },
             )
             return result
@@ -404,14 +637,16 @@ class OpenAILLM(BaseLLM):
 
             # Check if error is related to response_format
             if (
-                "response_format" in error_msg.lower()
+                self._is_response_format_unsupported_error(error_msg)
                 and "response_format" in completion_params
             ):
-                # Remove response_format and retry
                 logger.warning(
-                    f"API doesn't support response_format, retrying without it. Error: {error_msg}"
+                    "API doesn't support response_format, retrying without it and with prompt fallback. Error: %s",
+                    error_msg,
                 )
-                completion_params.pop("response_format")
+                used_prompt_response_format_fallback = (
+                    self._apply_response_format_prompt_fallback(completion_params)
+                )
                 retried_without_response_format = True
 
                 # Retry the API call without response_format
@@ -424,6 +659,7 @@ class OpenAILLM(BaseLLM):
                     usage=getattr(response, "usage", None),
                     extra={
                         "retried_without_response_format": retried_without_response_format,
+                        "used_prompt_response_format_fallback": used_prompt_response_format_fallback,
                     },
                 )
                 return result
@@ -649,6 +885,8 @@ class OpenAILLM(BaseLLM):
                 "extra_body": extra_body or None,
             },
         )
+        retried_without_response_format = False
+        used_prompt_response_format_fallback = False
 
         try:
             # Make the API call with extra_body if needed
@@ -723,13 +961,19 @@ class OpenAILLM(BaseLLM):
                 return result
 
             # Handle text content
-            content = message.content
+            content = self._extract_text_from_content_parts(message.content)
+            content_source = "message.content" if content else None
+
+            if not content:
+                content, content_source = self._extract_structured_message_text(
+                    message, response
+                )
 
             # Handle None or empty content when no tool calls
-            if not content or not content.strip():
+            if not content:
                 # If there are no tool calls and no content, this is an error
                 raise RuntimeError(
-                    f"LLM returned {'empty' if content == '' else 'None'} content and no tool calls"
+                    f"LLM returned {('empty' if message.content == '' else 'None')} content and no tool calls"
                 )
 
             result = {
@@ -737,11 +981,17 @@ class OpenAILLM(BaseLLM):
                 "content": content,
                 "raw": response.model_dump(),
             }
+            if content_source and content_source != "message.content":
+                result["content_source"] = content_source
             self._finish_llm_log(
                 call_type="vision_chat",
                 started_at=llm_log_started_at,
                 result=result,
                 usage=getattr(response, "usage", None),
+                extra={
+                    "retried_without_response_format": retried_without_response_format,
+                    "used_prompt_response_format_fallback": used_prompt_response_format_fallback,
+                },
             )
             return result
 
@@ -781,14 +1031,17 @@ class OpenAILLM(BaseLLM):
 
             # Check if error is related to response_format
             if (
-                "response_format" in error_msg.lower()
+                self._is_response_format_unsupported_error(error_msg)
                 and "response_format" in completion_params
             ):
-                # Remove response_format and retry
                 logger.warning(
-                    f"API doesn't support response_format, retrying without it. Error: {error_msg}"
+                    "API doesn't support response_format, retrying without it and with prompt fallback. Error: %s",
+                    error_msg,
                 )
-                completion_params.pop("response_format")
+                used_prompt_response_format_fallback = (
+                    self._apply_response_format_prompt_fallback(completion_params)
+                )
+                retried_without_response_format = True
 
                 # Retry the API call without response_format
                 if extra_body:
@@ -834,22 +1087,32 @@ class OpenAILLM(BaseLLM):
                         "raw": response.model_dump(),
                     }
                 else:
-                    content = message.content
-                    if not content or not content.strip():
+                    content = self._extract_text_from_content_parts(message.content)
+                    content_source = "message.content" if content else None
+                    if not content:
+                        content, content_source = self._extract_structured_message_text(
+                            message, response
+                        )
+                    if not content:
                         raise RuntimeError(
-                            f"LLM returned {'empty' if content == '' else 'None'} content and no tool calls"
+                            f"LLM returned {('empty' if message.content == '' else 'None')} content and no tool calls"
                         )
                     result = {
                         "type": "text",
                         "content": content,
                         "raw": response.model_dump(),
                     }
+                    if content_source and content_source != "message.content":
+                        result["content_source"] = content_source
                 self._finish_llm_log(
                     call_type="vision_chat",
                     started_at=llm_log_started_at,
                     result=result,
                     usage=getattr(response, "usage", None),
-                    extra={"retried_without_response_format": True},
+                    extra={
+                        "retried_without_response_format": retried_without_response_format,
+                        "used_prompt_response_format_fallback": used_prompt_response_format_fallback,
+                    },
                 )
                 return result
             else:
@@ -1031,14 +1294,14 @@ class OpenAILLM(BaseLLM):
                 # Check if error is related to response_format
                 error_msg = str(e.message) if hasattr(e, "message") else str(e)
                 if (
-                    "response_format" in error_msg.lower()
+                    self._is_response_format_unsupported_error(error_msg)
                     and "response_format" in completion_params
                 ):
-                    # Remove response_format and retry
                     logger.warning(
-                        f"API doesn't support response_format, retrying without it. Error: {error_msg}"
+                        "API doesn't support response_format, retrying without it and with prompt fallback. Error: %s",
+                        error_msg,
                     )
-                    completion_params.pop("response_format")
+                    self._apply_response_format_prompt_fallback(completion_params)
 
                     if extra_body:
                         stream = await self._client.chat.completions.create(
