@@ -1,0 +1,662 @@
+"""SQL Asset API。
+
+这个文件专注“可复用 SQL 资产”本身，而不是训练和 ask。
+
+可以把 SQL 资产理解为：
+- 有明确业务意图的 SQL 模板
+- 支持版本管理
+- 支持参数绑定
+- 可以被 query/tool 直接复用
+
+它和 `vanna_sql.py` 的关系是：
+- `vanna_sql.py` 偏治理、训练、ask/query 编排
+- `vanna_assets.py` 偏资产本体 CRUD、版本、绑定、执行
+"""
+
+from __future__ import annotations
+
+from typing import Any, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
+
+from xagent.gdp.vanna.service.sql_assets import (
+    SqlAssetBindingService,
+    SqlAssetExecutionService,
+    SqlAssetInferenceService,
+    SqlAssetResolver,
+    SqlAssetService,
+    SqlTemplateCompiler,
+)
+from xagent.web.auth_dependencies import get_current_user
+from xagent.web.models.database import get_db
+from xagent.web.models.user import User
+from xagent.gdp.vanna.model.vanna import VannaSqlAsset, VannaSqlAssetRun, VannaSqlAssetVersion
+
+router = APIRouter(prefix="/api/vanna/assets", tags=["vanna_assets"])
+
+
+class SqlAssetCreateRequest(BaseModel):
+    """创建 SQL 资产元数据请求。"""
+
+    datasource_id: int = Field(..., ge=1)
+    kb_id: int | None = Field(default=None, ge=1)
+    asset_code: str = Field(..., min_length=1, max_length=255)
+    name: str = Field(..., min_length=1, max_length=255)
+    description: str | None = None
+    intent_summary: str | None = None
+    asset_kind: str = Field(default="query", max_length=32)
+    match_keywords: list[str] = Field(default_factory=list)
+    match_examples: list[str] = Field(default_factory=list)
+
+
+class SqlAssetVersionCreateRequest(BaseModel):
+    """为 SQL 资产新增一个模板版本。"""
+
+    template_sql: str = Field(..., min_length=1)
+    parameter_schema_json: list[dict[str, Any]] = Field(default_factory=list)
+    render_config_json: dict[str, Any] = Field(default_factory=dict)
+    statement_kind: str = Field(default="SELECT", max_length=32)
+    tables_read_json: list[str] = Field(default_factory=list)
+    columns_read_json: list[str] = Field(default_factory=list)
+    output_fields_json: list[str] = Field(default_factory=list)
+    version_label: str | None = Field(default=None, max_length=64)
+
+
+class SqlAssetPublishRequest(BaseModel):
+    """发布某个版本为当前生效版本。"""
+
+    version_id: int = Field(..., ge=1)
+
+
+class SqlAssetUpdateRequest(BaseModel):
+    """同时更新资产元信息与当前版本 SQL。"""
+
+    asset_code: str = Field(..., min_length=1, max_length=255)
+    name: str = Field(..., min_length=1, max_length=255)
+    description: str | None = None
+    intent_summary: str | None = None
+    asset_kind: str = Field(default="query", max_length=32)
+    match_keywords: list[str] = Field(default_factory=list)
+    match_examples: list[str] = Field(default_factory=list)
+    template_sql: str = Field(..., min_length=1)
+    version_label: str | None = Field(default=None, max_length=64)
+
+
+class SqlAssetResolveRequest(BaseModel):
+    """根据问题检索候选 SQL 资产。"""
+
+    datasource_id: int = Field(..., ge=1)
+    kb_id: int | None = Field(default=None, ge=1)
+    question: str = Field(..., min_length=1)
+    top_k: int = Field(default=5, ge=1, le=20)
+
+
+class SqlAssetBindRequest(BaseModel):
+    """对已选中的 SQL 资产执行参数绑定预览。"""
+
+    question: str = Field(..., min_length=1)
+    explicit_params: dict[str, Any] = Field(default_factory=dict)
+    context: dict[str, Any] = Field(default_factory=dict)
+    version_id: int | None = Field(default=None, ge=1)
+    auto_infer: bool = False
+
+
+class SqlAssetExecuteRequest(BaseModel):
+    """执行 SQL 资产。"""
+
+    datasource_id: int | None = Field(default=None, ge=1)
+    kb_id: int | None = Field(default=None, ge=1)
+    question: str = Field(..., min_length=1)
+    explicit_params: dict[str, Any] = Field(default_factory=dict)
+    context: dict[str, Any] = Field(default_factory=dict)
+    task_id: int | None = Field(default=None, ge=1)
+    version_id: int | None = Field(default=None, ge=1)
+    auto_infer: bool = False
+
+
+class PromoteSqlAssetRequest(BaseModel):
+    """把 ask / training entry 晋升为 SQL 资产时使用的元数据。"""
+
+    asset_code: str = Field(..., min_length=1, max_length=255)
+    name: str = Field(..., min_length=1, max_length=255)
+    description: str | None = None
+    intent_summary: str | None = None
+    asset_kind: str = Field(default="query", max_length=32)
+    match_keywords: list[str] = Field(default_factory=list)
+    match_examples: list[str] = Field(default_factory=list)
+    parameter_schema_json: list[dict[str, Any]] = Field(default_factory=list)
+    render_config_json: dict[str, Any] = Field(default_factory=dict)
+    version_label: str | None = Field(default=None, max_length=64)
+
+
+def _serialize_asset(row: VannaSqlAsset) -> dict[str, Any]:
+    """序列化 SQL 资产。"""
+
+    return row.to_dict()
+
+
+def _serialize_asset_version(row: VannaSqlAssetVersion) -> dict[str, Any]:
+    """序列化 SQL 资产版本。"""
+
+    return row.to_dict()
+
+
+def _serialize_asset_run(row: VannaSqlAssetRun) -> dict[str, Any]:
+    """序列化 SQL 资产执行记录。"""
+
+    return row.to_dict()
+
+
+def _raise_bad_request(message: str) -> None:
+    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message)
+
+
+def _raise_from_value_error(message: str) -> None:
+    if "was not found" in message:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=message)
+    _raise_bad_request(message)
+
+
+def _load_asset_version(
+    *,
+    db: Session,
+    asset: VannaSqlAsset,
+    version_id: int | None,
+) -> VannaSqlAssetVersion:
+    """加载本次请求要使用的版本。
+
+    优先级：
+    1. 显式指定的 version_id
+    2. 当前发布版本
+    3. 最近的版本
+    """
+
+    query = db.query(VannaSqlAssetVersion).filter(
+        VannaSqlAssetVersion.asset_id == int(asset.id)
+    )
+    if version_id is not None:
+        version = query.filter(VannaSqlAssetVersion.id == int(version_id)).first()
+        if version is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"SQL asset version {version_id} was not found",
+            )
+        return version
+
+    if asset.current_version_id is not None:
+        version = query.filter(
+            VannaSqlAssetVersion.id == int(asset.current_version_id)
+        ).first()
+        if version is not None:
+            return version
+
+    version = (
+        query.order_by(
+            VannaSqlAssetVersion.is_published.desc(),
+            VannaSqlAssetVersion.version_no.desc(),
+            VannaSqlAssetVersion.id.desc(),
+        ).first()
+    )
+    if version is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"SQL asset {asset.id} has no versions",
+        )
+    return version
+
+
+async def _infer_asset_bindings(
+    *,
+    asset: VannaSqlAsset,
+    version: VannaSqlAssetVersion,
+    owner_user_id: int,
+    question: str,
+    context: dict[str, Any],
+    auto_infer: bool,
+) -> dict[str, Any] | None:
+    """按需调用 LLM 进行参数推断。
+
+    这里故意做成可选能力，因为很多场景只想让系统做显式参数绑定，
+    不希望模型“猜参数”。
+    """
+
+    if not auto_infer:
+        return None
+    return await SqlAssetInferenceService().infer_bindings(
+        asset=asset,
+        version=version,
+        owner_user_id=owner_user_id,
+        question=question,
+        context=context,
+    )
+
+
+@router.post("")
+async def create_asset(
+    payload: SqlAssetCreateRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """创建 SQL 资产，不包含模板版本。"""
+
+    try:
+        asset = SqlAssetService(db).create_asset(
+            datasource_id=int(payload.datasource_id),
+            owner_user_id=int(user.id),
+            owner_user_name=getattr(user, "username", None),
+            kb_id=payload.kb_id,
+            asset_code=payload.asset_code,
+            name=payload.name,
+            description=payload.description,
+            intent_summary=payload.intent_summary,
+            asset_kind=payload.asset_kind,
+            match_keywords=list(payload.match_keywords or []),
+            match_examples=list(payload.match_examples or []),
+        )
+    except ValueError as exc:
+        _raise_from_value_error(str(exc))
+    return {"data": _serialize_asset(asset)}
+
+
+@router.post("/resolve")
+async def resolve_assets(
+    payload: SqlAssetResolveRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """根据自然语言问题检索候选资产。
+
+    这是 `query` 走 asset-first 之前的底层能力，也方便前端单独调试检索效果。
+    """
+
+    matches = SqlAssetResolver(db).resolve(
+        datasource_id=int(payload.datasource_id),
+        owner_user_id=int(user.id),
+        question=payload.question,
+        kb_id=payload.kb_id,
+        top_k=int(payload.top_k),
+    )
+    return {
+        "data": {
+            "matches": [
+                {
+                    "asset_id": int(item["asset"].id),
+                    "asset_code": item["asset"].asset_code,
+                    "name": item["asset"].name,
+                    "score": item["score"],
+                    "reason": item["reason"],
+                    "current_version_id": (
+                        int(item["version"].id) if item.get("version") is not None else None
+                    ),
+                }
+                for item in matches
+            ]
+        }
+    }
+
+
+@router.get("")
+async def list_assets(
+    kb_id: Optional[int] = Query(default=None),
+    datasource_id: Optional[int] = Query(default=None),
+    system_short: Optional[str] = Query(default=None),
+    database_name: Optional[str] = Query(default=None),
+    env: Optional[str] = Query(default=None),
+    status_value: Optional[str] = Query(default=None, alias="status"),
+    keyword: Optional[str] = Query(default=None),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """列出当前用户可见的 SQL 资产。"""
+
+    rows = SqlAssetService(db).list_assets(
+        owner_user_id=int(user.id),
+        datasource_id=int(datasource_id) if datasource_id is not None else None,
+        kb_id=int(kb_id) if kb_id is not None else None,
+        system_short=system_short,
+        database_name=database_name,
+        env=env,
+        status=status_value,
+        keyword=keyword,
+    )
+    return {"data": [_serialize_asset(row) for row in rows]}
+
+
+@router.get("/{asset_id}")
+async def get_asset_detail(
+    asset_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    try:
+        asset = SqlAssetService(db).get_asset(
+            asset_id=int(asset_id), owner_user_id=int(user.id)
+        )
+    except ValueError as exc:
+        _raise_from_value_error(str(exc))
+    return {"data": _serialize_asset(asset)}
+
+
+@router.put("/{asset_id}")
+async def update_asset(
+    asset_id: int,
+    payload: SqlAssetUpdateRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """更新资产元信息，并基于传入 SQL 新建一个版本。"""
+
+    try:
+        asset, version = SqlAssetService(db).update_asset_and_current_version(
+            asset_id=int(asset_id),
+            owner_user_id=int(user.id),
+            updated_by=getattr(user, "username", None),
+            asset_code=payload.asset_code,
+            name=payload.name,
+            description=payload.description,
+            intent_summary=payload.intent_summary,
+            asset_kind=payload.asset_kind,
+            match_keywords=list(payload.match_keywords or []),
+            match_examples=list(payload.match_examples or []),
+            template_sql=payload.template_sql,
+            version_label=payload.version_label,
+        )
+    except ValueError as exc:
+        _raise_from_value_error(str(exc))
+    return {
+        "data": {
+            "asset": _serialize_asset(asset),
+            "version": _serialize_asset_version(version),
+        }
+    }
+
+
+@router.delete("/{asset_id}")
+async def archive_asset(
+    asset_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """归档资产。
+
+    当前阶段采用软删除思路，避免直接删掉版本和运行历史。
+    """
+
+    try:
+        asset = SqlAssetService(db).archive_asset(
+            asset_id=int(asset_id),
+            owner_user_id=int(user.id),
+        )
+    except ValueError as exc:
+        _raise_from_value_error(str(exc))
+    return {"data": _serialize_asset(asset)}
+
+
+@router.post("/{asset_id}/versions")
+async def create_asset_version(
+    asset_id: int,
+    payload: SqlAssetVersionCreateRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """新增版本，但不自动发布。"""
+
+    try:
+        version = SqlAssetService(db).create_version(
+            asset_id=int(asset_id),
+            owner_user_id=int(user.id),
+            created_by=getattr(user, "username", None),
+            template_sql=payload.template_sql,
+            parameter_schema_json=list(payload.parameter_schema_json or []),
+            render_config_json=dict(payload.render_config_json or {}),
+            statement_kind=payload.statement_kind,
+            tables_read_json=list(payload.tables_read_json or []),
+            columns_read_json=list(payload.columns_read_json or []),
+            output_fields_json=list(payload.output_fields_json or []),
+            version_label=payload.version_label,
+        )
+    except ValueError as exc:
+        _raise_from_value_error(str(exc))
+    return {"data": _serialize_asset_version(version)}
+
+
+@router.get("/{asset_id}/versions")
+async def list_asset_versions(
+    asset_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    try:
+        rows = SqlAssetService(db).list_versions(
+            asset_id=int(asset_id), owner_user_id=int(user.id)
+        )
+    except ValueError as exc:
+        _raise_from_value_error(str(exc))
+    return {"data": [_serialize_asset_version(row) for row in rows]}
+
+
+@router.post("/{asset_id}/publish")
+async def publish_asset_version(
+    asset_id: int,
+    payload: SqlAssetPublishRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """发布某个版本，并把资产当前版本切到它。"""
+
+    try:
+        version = SqlAssetService(db).publish_version(
+            asset_id=int(asset_id),
+            version_id=int(payload.version_id),
+            owner_user_id=int(user.id),
+        )
+    except ValueError as exc:
+        _raise_from_value_error(str(exc))
+    return {"data": _serialize_asset_version(version)}
+
+
+@router.post("/{asset_id}/bind")
+async def bind_asset(
+    asset_id: int,
+    payload: SqlAssetBindRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """做一次“只绑定不执行”的预览。
+
+    这个接口对调试最有价值，因为它能把三件事一次性展示出来：
+    - 绑定计划
+    - 缺失参数
+    - 编译后的最终 SQL
+    """
+
+    service = SqlAssetService(db)
+    try:
+        asset = service.get_asset(asset_id=int(asset_id), owner_user_id=int(user.id))
+    except ValueError as exc:
+        _raise_from_value_error(str(exc))
+    version = _load_asset_version(
+        db=db, asset=asset, version_id=payload.version_id
+    )
+    try:
+        inference = await _infer_asset_bindings(
+            asset=asset,
+            version=version,
+            owner_user_id=int(user.id),
+            question=payload.question,
+            context=dict(payload.context or {}),
+            auto_infer=bool(payload.auto_infer),
+        )
+        binding = SqlAssetBindingService().bind(
+            asset=asset,
+            version=version,
+            question=payload.question,
+            explicit_params=dict(payload.explicit_params or {}),
+            context=dict(payload.context or {}),
+            inferred_params=dict((inference or {}).get("bindings") or {}),
+            inference_assumptions=list((inference or {}).get("assumptions") or []),
+        )
+    except ValueError as exc:
+        _raise_from_value_error(str(exc))
+    compiled_sql: str | None = None
+    compiled_params: dict[str, Any] = {}
+    if not binding["missing_params"]:
+        compiled = SqlTemplateCompiler().compile(
+            template_sql=str(version.template_sql),
+            parameter_schema_json=list(version.parameter_schema_json or []),
+            render_config_json=dict(version.render_config_json or {}),
+            bound_params=dict(binding["bound_params"]),
+        )
+        compiled_sql = str(compiled["compiled_sql"])
+        compiled_params = dict(compiled["bound_params"])
+    return {
+        "data": {
+            "asset_id": int(asset.id),
+            "asset_version_id": int(version.id),
+            "binding_plan": binding["binding_plan"],
+            "bound_params": compiled_params or binding["bound_params"],
+            "missing_params": binding["missing_params"],
+            "compiled_sql": compiled_sql,
+            "assumptions": binding["assumptions"],
+            "llm_inference": inference,
+        }
+    }
+
+
+@router.post("/{asset_id}/execute")
+async def execute_asset(
+    asset_id: int,
+    payload: SqlAssetExecuteRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """执行指定 SQL 资产版本。"""
+
+    service = SqlAssetService(db)
+    try:
+        asset = service.get_asset(asset_id=int(asset_id), owner_user_id=int(user.id))
+    except ValueError as exc:
+        _raise_from_value_error(str(exc))
+    version = _load_asset_version(
+        db=db, asset=asset, version_id=payload.version_id
+    )
+    try:
+        inference = await _infer_asset_bindings(
+            asset=asset,
+            version=version,
+            owner_user_id=int(user.id),
+            question=payload.question,
+            context=dict(payload.context or {}),
+            auto_infer=bool(payload.auto_infer),
+        )
+        run = await SqlAssetExecutionService(db).execute(
+            asset=asset,
+            version=version,
+            datasource_id=payload.datasource_id,
+            kb_id=payload.kb_id,
+            owner_user_id=int(user.id),
+            owner_user_name=getattr(user, "username", None),
+            question=payload.question,
+            explicit_params=dict(payload.explicit_params or {}),
+            context=dict(payload.context or {}),
+            inferred_params=dict((inference or {}).get("bindings") or {}),
+            inference_assumptions=list((inference or {}).get("assumptions") or []),
+            task_id=payload.task_id,
+        )
+    except ValueError as exc:
+        _raise_from_value_error(str(exc))
+    return {"data": _serialize_asset_run(run)}
+
+
+@router.get("/{asset_id}/runs")
+async def list_asset_runs(
+    asset_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """查看某个 SQL 资产的运行历史。"""
+
+    service = SqlAssetService(db)
+    try:
+        asset = service.get_asset(asset_id=int(asset_id), owner_user_id=int(user.id))
+    except ValueError as exc:
+        _raise_from_value_error(str(exc))
+    rows = (
+        db.query(VannaSqlAssetRun)
+        .filter(VannaSqlAssetRun.asset_id == int(asset.id))
+        .order_by(VannaSqlAssetRun.created_at.desc(), VannaSqlAssetRun.id.desc())
+        .all()
+    )
+    return {"data": [_serialize_asset_run(row) for row in rows]}
+
+
+@router.post("/promote/ask-runs/{ask_run_id}")
+async def promote_ask_run_to_asset(
+    ask_run_id: int,
+    payload: PromoteSqlAssetRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """把 ask 产出的 SQL 直接沉淀为资产。"""
+
+    try:
+        asset, version = SqlAssetService(db).promote_ask_run(
+            ask_run_id=int(ask_run_id),
+            owner_user_id=int(user.id),
+            owner_user_name=getattr(user, "username", None),
+            asset_code=payload.asset_code,
+            name=payload.name,
+            description=payload.description,
+            intent_summary=payload.intent_summary,
+            asset_kind=payload.asset_kind,
+            match_keywords=list(payload.match_keywords or []),
+            match_examples=list(payload.match_examples or []),
+            parameter_schema_json=list(payload.parameter_schema_json or []),
+            render_config_json=dict(payload.render_config_json or {}),
+            version_label=payload.version_label,
+        )
+    except ValueError as exc:
+        _raise_from_value_error(str(exc))
+    return {
+        "data": {
+            "asset": _serialize_asset(asset),
+            "version": _serialize_asset_version(version),
+        }
+    }
+
+
+@router.post("/promote/entries/{entry_id}")
+async def promote_training_entry_to_asset(
+    entry_id: int,
+    payload: PromoteSqlAssetRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """把训练条目沉淀为 SQL 资产。"""
+
+    try:
+        asset, version = SqlAssetService(db).promote_training_entry(
+            entry_id=int(entry_id),
+            owner_user_id=int(user.id),
+            owner_user_name=getattr(user, "username", None),
+            asset_code=payload.asset_code,
+            name=payload.name,
+            description=payload.description,
+            intent_summary=payload.intent_summary,
+            asset_kind=payload.asset_kind,
+            match_keywords=list(payload.match_keywords or []),
+            match_examples=list(payload.match_examples or []),
+            parameter_schema_json=list(payload.parameter_schema_json or []),
+            render_config_json=dict(payload.render_config_json or {}),
+            version_label=payload.version_label,
+        )
+    except ValueError as exc:
+        _raise_from_value_error(str(exc))
+    return {
+        "data": {
+            "asset": _serialize_asset(asset),
+            "version": _serialize_asset_version(version),
+        }
+    }

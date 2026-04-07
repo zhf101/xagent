@@ -9,6 +9,11 @@ from openai import AsyncOpenAI
 
 from ....utils.security import redact_sensitive_text
 from ..exceptions import LLMRetryableError, LLMTimeoutError
+from ..logging_callback import (
+    log_llm_request_end,
+    log_llm_request_error,
+    log_llm_request_start,
+)
 from ..timeout_config import TimeoutConfig
 from ..token_context import add_token_usage
 from ..types import ChunkType, StreamChunk
@@ -74,6 +79,63 @@ class OpenAILLM(BaseLLM):
                 timeout=self.timeout,
             )
 
+    def _start_llm_log(
+        self,
+        *,
+        call_type: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
+        tool_choice: str | dict[str, Any] | None,
+        response_format: dict[str, Any] | None,
+        thinking: dict[str, Any] | None,
+        extra: dict[str, Any] | None = None,
+    ) -> float:
+        return log_llm_request_start(
+            call_type=call_type,
+            model_name=self._model_name,
+            base_url=self.base_url,
+            messages=messages,
+            tools=tools,
+            tool_choice=tool_choice,
+            response_format=response_format,
+            thinking=thinking,
+            extra=extra,
+        )
+
+    def _finish_llm_log(
+        self,
+        *,
+        call_type: str,
+        started_at: float,
+        result: dict[str, Any],
+        usage: Any = None,
+        extra: dict[str, Any] | None = None,
+    ) -> None:
+        log_llm_request_end(
+            call_type=call_type,
+            model_name=self._model_name,
+            started_at=started_at,
+            result=result,
+            usage=usage,
+            extra=extra,
+        )
+
+    def _fail_llm_log(
+        self,
+        *,
+        call_type: str,
+        started_at: float,
+        error: Exception,
+        extra: dict[str, Any] | None = None,
+    ) -> None:
+        log_llm_request_error(
+            call_type=call_type,
+            model_name=self._model_name,
+            started_at=started_at,
+            error=error,
+            extra=extra,
+        )
+
     async def chat(
         self,
         messages: List[Dict[str, str]],
@@ -109,6 +171,17 @@ class OpenAILLM(BaseLLM):
         """
         self._ensure_client()
         assert self._client is not None
+        llm_log_started_at = self._start_llm_log(
+            call_type="chat",
+            messages=messages,
+            tools=tools,
+            tool_choice=tool_choice,
+            response_format=response_format,
+            thinking=thinking,
+            extra={
+                "output_config_enabled": output_config is not None,
+            },
+        )
 
         # Prepare the completion parameters
         completion_params = {
@@ -310,6 +383,13 @@ class OpenAILLM(BaseLLM):
                         response = await _make_api_call()
                         result = _process_response(response)
 
+            self._finish_llm_log(
+                call_type="chat",
+                started_at=llm_log_started_at,
+                result=result,
+                usage=getattr(response, "usage", None),
+                extra={"used_thinking": bool(extra_body.get("enable_thinking"))},
+            )
             return result
 
         except openai.BadRequestError as e:
@@ -329,20 +409,48 @@ class OpenAILLM(BaseLLM):
 
                 # Retry the API call without response_format
                 response = await _make_api_call()
-                return _process_response(response)
+                result = _process_response(response)
+                self._finish_llm_log(
+                    call_type="chat",
+                    started_at=llm_log_started_at,
+                    result=result,
+                    usage=getattr(response, "usage", None),
+                    extra={"response_format_retried_without_schema": True},
+                )
+                return result
 
+            self._fail_llm_log(
+                call_type="chat",
+                started_at=llm_log_started_at,
+                error=e,
+            )
             raise RuntimeError(f"OpenAI bad request: {error_msg}") from e
 
         except openai.APITimeoutError as e:
             # Handle timeout errors
+            self._fail_llm_log(
+                call_type="chat",
+                started_at=llm_log_started_at,
+                error=e,
+            )
             raise RuntimeError(f"OpenAI API timeout: {str(e)}") from e
 
         except openai.RateLimitError as e:
             # Handle rate limit errors
+            self._fail_llm_log(
+                call_type="chat",
+                started_at=llm_log_started_at,
+                error=e,
+            )
             raise RuntimeError(f"OpenAI rate limit exceeded: {e.message}") from e
 
         except openai.AuthenticationError as e:
             # Handle authentication errors
+            self._fail_llm_log(
+                call_type="chat",
+                started_at=llm_log_started_at,
+                error=e,
+            )
             raise RuntimeError(f"OpenAI authentication failed: {e.message}") from e
 
         except openai.APIError as e:
@@ -350,10 +458,20 @@ class OpenAILLM(BaseLLM):
             error_msg = f"OpenAI API error: {e.message}"
             if (status_code := getattr(e, "status_code", None)) is not None:
                 error_msg = f"OpenAI API error ({status_code}): {e.message}"
+            self._fail_llm_log(
+                call_type="chat",
+                started_at=llm_log_started_at,
+                error=e,
+            )
             raise RuntimeError(error_msg) from e
 
         except Exception as e:
             # Handle any other unexpected errors
+            self._fail_llm_log(
+                call_type="chat",
+                started_at=llm_log_started_at,
+                error=e,
+            )
             raise RuntimeError(f"LLM chat failed: {str(e)}") from e
 
     @property
@@ -419,6 +537,18 @@ class OpenAILLM(BaseLLM):
 
         self._ensure_client()
         assert self._client is not None
+        llm_log_started_at = self._start_llm_log(
+            call_type="vision_chat",
+            messages=messages,
+            tools=tools,
+            tool_choice=tool_choice,
+            response_format=response_format,
+            thinking=thinking,
+            extra={
+                "output_config_enabled": output_config is not None,
+                "vision": True,
+            },
+        )
 
         # Prepare the completion parameters
         completion_params = {
@@ -562,11 +692,18 @@ class OpenAILLM(BaseLLM):
                             }
                         )
 
-                return {
+                result = {
                     "type": "tool_call",
                     "tool_calls": tool_calls,
                     "raw": response.model_dump(),
                 }
+                self._finish_llm_log(
+                    call_type="vision_chat",
+                    started_at=llm_log_started_at,
+                    result=result,
+                    usage=getattr(response, "usage", None),
+                )
+                return result
 
             # Handle text content
             content = message.content
@@ -578,22 +715,44 @@ class OpenAILLM(BaseLLM):
                     f"LLM returned {'empty' if content == '' else 'None'} content and no tool calls"
                 )
 
-            return {
+            result = {
                 "type": "text",
                 "content": content,
                 "raw": response.model_dump(),
             }
+            self._finish_llm_log(
+                call_type="vision_chat",
+                started_at=llm_log_started_at,
+                result=result,
+                usage=getattr(response, "usage", None),
+            )
+            return result
 
         except openai.APITimeoutError as e:
             # Handle timeout errors
+            self._fail_llm_log(
+                call_type="vision_chat",
+                started_at=llm_log_started_at,
+                error=e,
+            )
             raise RuntimeError(f"OpenAI API timeout: {str(e)}") from e
 
         except openai.RateLimitError as e:
             # Handle rate limit errors
+            self._fail_llm_log(
+                call_type="vision_chat",
+                started_at=llm_log_started_at,
+                error=e,
+            )
             raise RuntimeError(f"OpenAI rate limit exceeded: {e.message}") from e
 
         except openai.AuthenticationError as e:
             # Handle authentication errors
+            self._fail_llm_log(
+                call_type="vision_chat",
+                started_at=llm_log_started_at,
+                error=e,
+            )
             raise RuntimeError(f"OpenAI authentication failed: {e.message}") from e
 
         except openai.BadRequestError as e:
@@ -620,7 +779,25 @@ class OpenAILLM(BaseLLM):
                     response = await self._client.chat.completions.create(
                         **completion_params
                     )
+                result = {
+                    "type": "text",
+                    "content": response.choices[0].message.content,
+                    "raw": response.model_dump(),
+                }
+                self._finish_llm_log(
+                    call_type="vision_chat",
+                    started_at=llm_log_started_at,
+                    result=result,
+                    usage=getattr(response, "usage", None),
+                    extra={"response_format_retried_without_schema": True},
+                )
+                return result
             else:
+                self._fail_llm_log(
+                    call_type="vision_chat",
+                    started_at=llm_log_started_at,
+                    error=e,
+                )
                 raise RuntimeError(f"OpenAI bad request: {error_msg}") from e
 
         except openai.APIError as e:
@@ -628,10 +805,20 @@ class OpenAILLM(BaseLLM):
             error_msg = f"OpenAI API error: {e.message}"
             if (status_code := getattr(e, "status_code", None)) is not None:
                 error_msg = f"OpenAI API error ({status_code}): {e.message}"
+            self._fail_llm_log(
+                call_type="vision_chat",
+                started_at=llm_log_started_at,
+                error=e,
+            )
             raise RuntimeError(error_msg) from e
 
         except Exception as e:
             # Handle any other unexpected errors
+            self._fail_llm_log(
+                call_type="vision_chat",
+                started_at=llm_log_started_at,
+                error=e,
+            )
             raise RuntimeError(f"LLM vision chat failed: {str(e)}") from e
 
     async def stream_chat(
@@ -670,6 +857,18 @@ class OpenAILLM(BaseLLM):
         """
         self._ensure_client()
         assert self._client is not None
+        llm_log_started_at = self._start_llm_log(
+            call_type="stream_chat",
+            messages=messages,
+            tools=tools,
+            tool_choice=tool_choice,
+            response_format=response_format,
+            thinking=thinking,
+            extra={
+                "output_config_enabled": output_config is not None,
+                "stream": True,
+            },
+        )
 
         # Prepare completion parameters
         completion_params = {
@@ -795,6 +994,8 @@ class OpenAILLM(BaseLLM):
             accumulated_tool_calls: Dict[str, Dict] = {}
             last_raw_chunk = None  # Track last raw chunk for usage extraction
             usage_received = False
+            streamed_text_parts: list[str] = []
+            last_usage_payload: dict[str, Any] | None = None
 
             async for raw_chunk in stream:
                 current_time = time.time()
@@ -827,8 +1028,11 @@ class OpenAILLM(BaseLLM):
                 # Parse chunk
                 chunk = self._parse_stream_chunk(raw_chunk, accumulated_tool_calls)
                 if chunk:
+                    if chunk.type == ChunkType.TOKEN and chunk.content:
+                        streamed_text_parts.append(chunk.content)
                     if chunk.is_usage():
                         usage_received = True
+                        last_usage_payload = dict(chunk.usage or {})
                     yield chunk
 
             # Fallback: Ensure usage chunk is always sent
@@ -864,18 +1068,56 @@ class OpenAILLM(BaseLLM):
                         logger.info(
                             f"Extracted usage from last chunk: {input_tokens} + {output_tokens} tokens"
                         )
+                        last_usage_payload = {
+                            "prompt_tokens": input_tokens,
+                            "completion_tokens": output_tokens,
+                            "total_tokens": input_tokens + output_tokens,
+                        }
+
+            stream_result: dict[str, Any]
+            if accumulated_tool_calls:
+                stream_result = {
+                    "type": "tool_call",
+                    "tool_calls": list(accumulated_tool_calls.values()),
+                }
+            else:
+                stream_result = {
+                    "type": "text",
+                    "content": "".join(streamed_text_parts),
+                }
+            self._finish_llm_log(
+                call_type="stream_chat",
+                started_at=llm_log_started_at,
+                result=stream_result,
+                usage=last_usage_payload,
+            )
 
         except LLMTimeoutError:
             # Re-raise timeout errors for retry
+            self._fail_llm_log(
+                call_type="stream_chat",
+                started_at=llm_log_started_at,
+                error=LLMTimeoutError("stream timeout"),
+            )
             raise
 
         except openai.APITimeoutError as e:
             logger.error(f"OpenAI API timeout: {e}")
+            self._fail_llm_log(
+                call_type="stream_chat",
+                started_at=llm_log_started_at,
+                error=e,
+            )
             raise LLMRetryableError(f"OpenAI API timeout: {str(e)}") from e
 
         except openai.RateLimitError as e:
             logger.error(
                 "OpenAI rate limit exceeded: %s", redact_sensitive_text(str(e))
+            )
+            self._fail_llm_log(
+                call_type="stream_chat",
+                started_at=llm_log_started_at,
+                error=e,
             )
             raise LLMRetryableError(f"OpenAI rate limit exceeded: {e.message}") from e
 
@@ -883,10 +1125,20 @@ class OpenAILLM(BaseLLM):
             logger.error(
                 "OpenAI authentication failed: %s", redact_sensitive_text(str(e))
             )
+            self._fail_llm_log(
+                call_type="stream_chat",
+                started_at=llm_log_started_at,
+                error=e,
+            )
             raise RuntimeError(f"OpenAI authentication failed: {e.message}") from e
 
         except openai.BadRequestError as e:
             logger.error("OpenAI bad request: %s", redact_sensitive_text(str(e)))
+            self._fail_llm_log(
+                call_type="stream_chat",
+                started_at=llm_log_started_at,
+                error=e,
+            )
             raise RuntimeError(f"OpenAI bad request: {e.message}") from e
 
         except openai.APIError as e:
@@ -894,13 +1146,28 @@ class OpenAILLM(BaseLLM):
             error_msg = f"OpenAI API error: {e.message}"
             if (status_code := getattr(e, "status_code", None)) is not None:
                 error_msg = f"OpenAI API error ({status_code}): {e.message}"
+            self._fail_llm_log(
+                call_type="stream_chat",
+                started_at=llm_log_started_at,
+                error=e,
+            )
             raise RuntimeError(error_msg) from e
 
         except TimeoutError:
+            self._fail_llm_log(
+                call_type="stream_chat",
+                started_at=llm_log_started_at,
+                error=TimeoutError("stream timeout"),
+            )
             raise
 
         except Exception as e:
             logger.error("OpenAI stream chat failed: %s", redact_sensitive_text(str(e)))
+            self._fail_llm_log(
+                call_type="stream_chat",
+                started_at=llm_log_started_at,
+                error=e,
+            )
             raise RuntimeError(f"LLM stream chat failed: {str(e)}") from e
 
     def _parse_stream_chunk(

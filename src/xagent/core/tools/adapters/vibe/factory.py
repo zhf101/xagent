@@ -57,6 +57,8 @@ class ToolRegistry:
 
         try:
             # Import tool modules in priority order - these imports trigger @register_tool decorators
+            # 这里不要把 import 当成“没用的死代码”。
+            # 在本项目里，很多工具模块的注册副作用就发生在 import 阶段。
             from . import (  # noqa: F401 - imports trigger @register_tool decorators
                 agent_tool,
                 audio_tool,
@@ -73,6 +75,13 @@ class ToolRegistry:
                 vision_tool,
                 workspace_file_tool,
             )
+            # 为什么现在要“这样导入”？
+            #   - 以前工具文件就在 src/xagent/core/tools/adapters/vibe/ 包里，所以 factory.py 可以直接：
+            #     from . import basic_tools, browser_tools, ...
+            #   - 现在把 HTTP/Vanna 相关工具主实现搬到了 src/xagent/gdp/** 它们已经不在 vibe 包下面了
+            #   - 所以 factory.py 只能额外显式 import 新位置的模块，才能继续触发注册
+            from .....gdp.hrun.adapter import gdp_http_tools  # noqa: F401
+            from .....gdp.vanna.adapter import vanna_sql_tools  # noqa: F401
 
             cls._modules_imported = True
             logger.info("Tool modules imported and registered")

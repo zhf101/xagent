@@ -58,8 +58,22 @@ def init_db(db_url: str | None = None) -> None:
         UserModel,
     )
     from .agent import Agent  # noqa: F401
+    from ...gdp.hrun.model.http_resource import GdpHttpResource  # noqa: F401
     from .sandbox import SandboxInfo  # noqa: F401
-    from .text2sql import Text2SQLDatabase  # noqa: F401
+    from ...gdp.vanna.model.text2sql import Text2SQLDatabase  # noqa: F401
+    from ...gdp.vanna.model.vanna import (  # noqa: F401
+        VannaAskRun,
+        VannaEmbeddingChunk,
+        VannaKnowledgeBase,
+        VannaSchemaColumn,
+        VannaSchemaColumnAnnotation,
+        VannaSchemaHarvestJob,
+        VannaSchemaTable,
+        VannaSqlAsset,
+        VannaSqlAssetRun,
+        VannaSqlAssetVersion,
+        VannaTrainingEntry,
+    )
 
     global _SessionLocal
     global _engine

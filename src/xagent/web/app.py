@@ -1,3 +1,7 @@
+"""Web 应用主入口。
+这个文件的职责不是承载具体业务逻辑，而是把所有业务模块挂到 FastAPI 上。
+"""
+
 import asyncio
 import logging
 import os
@@ -10,6 +14,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from ..config import get_uploads_dir
+from ..core.model.chat.logging_callback import setup_llm_logging_from_env
 from .api.admin_users import router as admin_users_router
 from .api.agents import router as agents_router
 from .api.auth import auth_router
@@ -17,6 +22,7 @@ from .api.channel import router as channel_router
 from .api.chat import chat_router
 from .api.cloud_storage import cloud_router
 from .api.files import file_router
+from ..gdp.hrun.api.http_assets import router as gdp_http_assets_router
 from .api.kb import kb_router
 from .api.mcp import mcp_router
 from .api.memory import MemoryManagementRouter
@@ -26,15 +32,22 @@ from .api.progress_ws import progress_ws_router
 from .api.skills import router as skills_router
 from .api.system import system_router
 from .api.templates import router as templates_router
-from .api.text2sql import text2sql_router
+from ..gdp.vanna.api.text2sql import text2sql_router
 from .api.tools import tools_router
+from ..gdp.vanna.api.vanna_assets import router as vanna_assets_router
+from ..gdp.vanna.api.vanna_sql import vanna_router
 from .api.websocket import ws_router
+from ..gdp.vanna.adapter.database.sql_logging import (
+    enable_sql_logging,
+    is_sql_logging_enabled,
+)
 from .dynamic_memory_store import get_memory_store
 from .logging_config import setup_logging
-from .models.database import init_db
+from .models.database import get_engine, init_db
 
 # Configure logging when running under gunicorn/uwsgi (no __main__.py)
 setup_logging()  # Uses XAGENT_LOG_LEVEL env var or defaults to INFO
+setup_llm_logging_from_env()
 
 logger = logging.getLogger(__name__)
 
@@ -160,6 +173,9 @@ app.include_router(skills_router)
 app.include_router(system_router)
 app.include_router(templates_router)
 app.include_router(agents_router)
+app.include_router(gdp_http_assets_router)
+app.include_router(vanna_assets_router)
+app.include_router(vanna_router)
 app.include_router(channel_router, prefix="/api/channels", tags=["Channels"])
 
 
@@ -170,6 +186,13 @@ async def startup_event() -> None:
     logger.info("Initializing database...")
     init_db()
     logger.info("Database initialized successfully")
+    if is_sql_logging_enabled():
+        enable_sql_logging(
+            engine=get_engine(),
+            log_params=os.getenv("SQL_LOG_QUERY_PARAMS", "true").lower() == "true",
+            log_results=os.getenv("SQL_LOG_RESULTS", "false").lower() == "true",
+        )
+        logger.info("SQL logging enabled")
 
     # Initialize skill manager
     from ..skills.utils import create_skill_manager
