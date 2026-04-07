@@ -1,3 +1,14 @@
+"""LanceDB 版记忆存储。
+
+这是生产场景下更完整的记忆实现，支持：
+- 向量检索
+- 结构化 metadata
+- 与新版 memory_type / memory_subtype 过滤兼容
+
+注意：当前分支遵循你的约束，embedding 侧保留 OpenAI 兼容方向，
+没有把之前不要的多厂商逻辑重新加回来。
+"""
+
 from __future__ import annotations
 
 import json
@@ -14,6 +25,7 @@ from ..model.embedding.adapter import create_embedding_adapter
 from ..model.model import EmbeddingModelConfig
 from .base import MemoryStore
 from .core import MemoryNote, MemoryResponse
+from .schema import matches_memory_filter
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +55,9 @@ class LanceDBMemoryStore(MemoryStore):
         """
         self._collection_name = collection_name
 
-        # Handle different types of embedding_model input
+        # 这里兼容两种输入：
+        # 1. 直接传入 BaseEmbedding 实例
+        # 2. 传入 EmbeddingModelConfig，再动态创建 adapter
         if embedding_model is None:
             # Try to create a default embedding model only if embedding_kwargs are provided
             if embedding_kwargs:
@@ -74,7 +88,7 @@ class LanceDBMemoryStore(MemoryStore):
         self._ensure_table_schema()
 
     def _ensure_table_schema(self) -> None:
-        """Ensure the table has the correct schema for memory storage."""
+        """确保 LanceDB 表结构满足当前记忆存储需要。"""
         try:
             conn = self._vector_store.get_raw_connection()
             table = conn.open_table(self._collection_name)
@@ -82,7 +96,7 @@ class LanceDBMemoryStore(MemoryStore):
             # Check if table exists and has basic structure
             df = table.search().limit(1).to_pandas()
 
-            # Table exists, check if it has required columns
+            # 记忆表至少要有 id / text / metadata，缺任意一个都说明结构不兼容。
             if not all(col in df.columns for col in ["id", "text", "metadata"]):
                 # Schema is incompatible, drop and recreate
                 logger.warning(
@@ -107,7 +121,7 @@ class LanceDBMemoryStore(MemoryStore):
             self._create_empty_table()
 
     def _create_empty_table(self) -> None:
-        """Create an empty table with the correct schema."""
+        """创建一张空表，并按是否有 embedding 决定是否包含 vector 列。"""
         conn = self._vector_store.get_raw_connection()
 
         # Check if we have an embedding model
@@ -142,7 +156,7 @@ class LanceDBMemoryStore(MemoryStore):
         table.delete("id = 'sample'")
 
     def _get_embedding(self, text: str) -> Optional[list[float]]:
-        """Get embedding for text using the configured embedding model."""
+        """通过当前 embedding 模型为文本生成向量。"""
         if not self._embedding_model or not text.strip():
             return None
 
@@ -163,21 +177,37 @@ class LanceDBMemoryStore(MemoryStore):
             return None
 
     def _memory_note_to_dict(self, note: MemoryNote) -> dict[str, Any]:
-        """Convert MemoryNote to dictionary for storage."""
-        # Get embedding for the content
+        """把 MemoryNote 转成 LanceDB 存储格式。"""
+        # 向量写进 `vector`，其余结构化字段统一折叠进 metadata JSON。
         content_text = (
             note.content.decode() if isinstance(note.content, bytes) else note.content
         )
         embedding = self._get_embedding(content_text)
 
-        # Prepare metadata
+        # 这次迁移补进来的结构化字段都放在 metadata 里持久化，
+        # 这样旧接口还能继续读 category，新接口则能读 memory_type/subtype。
         metadata = {
             "content": note.content,
             "keywords": note.keywords,
             "tags": note.tags,
             "category": note.category,
+            "memory_type": note.memory_type,
+            "memory_subtype": note.memory_subtype,
+            "scope": note.scope,
             "timestamp": note.timestamp.isoformat(),
             "mime_type": note.mime_type,
+            "source_session_id": note.source_session_id,
+            "source_agent_id": note.source_agent_id,
+            "project_id": note.project_id,
+            "workspace_id": note.workspace_id,
+            "importance": note.importance,
+            "confidence": note.confidence,
+            "freshness_at": note.freshness_at.isoformat()
+            if note.freshness_at
+            else None,
+            "expires_at": note.expires_at.isoformat() if note.expires_at else None,
+            "dedupe_key": note.dedupe_key,
+            "status": note.status,
             **note.metadata,
         }
 
@@ -201,26 +231,43 @@ class LanceDBMemoryStore(MemoryStore):
             keywords=metadata.pop("keywords", []),
             tags=metadata.pop("tags", []),
             category=metadata.pop("category", "general"),
+            memory_type=metadata.pop("memory_type", None),
+            memory_subtype=metadata.pop("memory_subtype", None),
+            scope=metadata.pop("scope", "user"),
             timestamp=metadata.pop("timestamp", None),
             mime_type=metadata.pop("mime_type", "text/plain"),
+            source_session_id=metadata.pop("source_session_id", None),
+            source_agent_id=metadata.pop("source_agent_id", None),
+            project_id=metadata.pop("project_id", None),
+            workspace_id=metadata.pop("workspace_id", None),
+            importance=metadata.pop("importance", 3),
+            confidence=metadata.pop("confidence", 0.5),
+            freshness_at=metadata.pop("freshness_at", None),
+            expires_at=metadata.pop("expires_at", None),
+            dedupe_key=metadata.pop("dedupe_key", None),
+            status=metadata.pop("status", "active"),
             metadata=metadata,
         )
 
     def _apply_filters(self, note: MemoryNote, filters: dict[str, Any]) -> bool:
         """Apply filters to a MemoryNote for vector search results."""
         for key, value in filters.items():
-            # Special handling for category - check note.category first
-            if key == "category":
-                if str(note.category) != str(value):
-                    return False
-            elif key == "metadata":
-                # Handle nested metadata filters
-                if not self._apply_metadata_filters(note.metadata, value):
-                    return False
-            else:
-                # For other fields, check metadata
-                if str(note.metadata.get(key, "")) != str(value):
-                    return False
+            if not matches_memory_filter(
+                note_category=note.category,
+                note_memory_type=note.memory_type,
+                note_memory_subtype=note.memory_subtype,
+                note_scope=note.scope,
+                note_source_session_id=note.source_session_id,
+                note_source_agent_id=note.source_agent_id,
+                note_project_id=note.project_id,
+                note_workspace_id=note.workspace_id,
+                note_dedupe_key=note.dedupe_key,
+                note_status=note.status,
+                metadata=note.metadata,
+                key=key,
+                value=value,
+            ):
+                return False
         return True
 
     def _apply_text_search_filters(
@@ -228,14 +275,22 @@ class LanceDBMemoryStore(MemoryStore):
     ) -> bool:
         """Apply filters to metadata dict for text search results."""
         for key, value in filters.items():
-            if key == "metadata":
-                # Handle nested metadata filters
-                if not self._apply_metadata_filters(metadata_dict, value):
-                    return False
-            else:
-                # Direct field comparison
-                if str(metadata_dict.get(key, "")) != str(value):
-                    return False
+            if not matches_memory_filter(
+                note_category=metadata_dict.get("category"),
+                note_memory_type=metadata_dict.get("memory_type"),
+                note_memory_subtype=metadata_dict.get("memory_subtype"),
+                note_scope=metadata_dict.get("scope"),
+                note_source_session_id=metadata_dict.get("source_session_id"),
+                note_source_agent_id=metadata_dict.get("source_agent_id"),
+                note_project_id=metadata_dict.get("project_id"),
+                note_workspace_id=metadata_dict.get("workspace_id"),
+                note_dedupe_key=metadata_dict.get("dedupe_key"),
+                note_status=metadata_dict.get("status"),
+                metadata=metadata_dict,
+                key=key,
+                value=value,
+            ):
+                return False
         return True
 
     def _apply_metadata_filters(

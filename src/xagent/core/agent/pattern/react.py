@@ -1,7 +1,12 @@
-"""ReAct (Reasoning and Acting) Pattern Implementation
+"""ReAct (Reasoning and Acting) 主执行器。
 
-This module implements a simplified ReAct pattern where the LLM must output
-structured actions, eliminating parsing complexity and improving stability.
+这个文件本来就是项目里的核心执行链之一。
+这次记忆模块迁移，主要在这里补了三件事：
+1. 执行前：从新版结构化记忆里检索上下文，增强用户任务。
+2. 执行后：把本轮结果写入 session summary，方便后续轮次连续对话。
+3. 执行后：把较重的“记忆提取”工作异步丢进后台队列，不阻塞主任务响应。
+
+所以阅读这个文件时，可以重点盯住和 memory 相关的导入、检索、summary 更新、job 入队。
 """
 
 __all__ = ["ReActPattern", "ReActStepType"]
@@ -18,6 +23,8 @@ from json_repair import loads as repair_loads
 from pydantic import BaseModel, Field, ValidationError
 
 from ...memory import MemoryStore
+from ...memory.prompt_builder import build_memory_prompt_sections
+from ...memory.session_summary import upsert_session_summary
 from ...model.chat.basic.base import BaseLLM
 from ...tools.adapters.vibe import Tool
 from ..context import AgentContext
@@ -51,7 +58,11 @@ from ..transcript import normalize_transcript_messages
 from ..utils.compact import CompactConfig, CompactUtils
 from ..utils.llm_utils import clean_messages
 from .base import AgentPattern, notify_condition
-from .memory_utils import enhance_goal_with_memory, store_react_task_memory
+from .memory_utils import (
+    enhance_goal_with_bundle,
+    enqueue_memory_extraction_job,
+    store_react_task_memory,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -724,15 +735,24 @@ class ReActPattern(AgentPattern):
                 # Fallback for non-web environment
                 user_id = None
 
-            memories = await asyncio.to_thread(
-                self._lookup_relevant_memories_with_context,
+            # 这里是这次迁移对老逻辑的核心改动之一：
+            # 旧版只会查一组扁平 memories，新版会拿到一个结构化 bundle，
+            # 这样后面能区分会话摘要、长期记忆、历史经验等不同来源。
+            session_id = context.session_id if context and context.session_id else None
+
+            memory_bundle = await asyncio.to_thread(
+                self._lookup_memory_bundle_with_context,
                 self.memory_store,
                 task,
-                "react_memory",
+                "experience",
                 include_general=True,
                 user_id=user_id,
+                session_id=session_id,
             )
-            enhanced_task = enhance_goal_with_memory(task, memories)
+            # ReAct 主体仍然只关心“最终给模型用了多少条记忆”，
+            # 所以统计时继续使用 flatten 后的结果。
+            memories = memory_bundle.flatten()
+            enhanced_task = enhance_goal_with_bundle(task, memory_bundle)
 
             # Trace memory retrieval end
             await trace_memory_retrieve_end(
@@ -925,13 +945,30 @@ class ReActPattern(AgentPattern):
                             },
                         )
 
-                    return {
+                    final_result = {
                         "success": success_status,
                         "output": result["content"],
                         "iterations": iteration + 1,
                         "execution_history": messages,
                         "pattern": "react",
                     }
+                    # 这里补的是“会话摘要”能力：
+                    # 不把整段 transcript 全量重复写入，而是把这一轮任务的最终结果
+                    # 归纳为 session summary，供下一轮优先检索。
+                    current_context = self._context
+                    if (
+                        self.memory_store
+                        and current_context is not None
+                        and current_context.session_id
+                    ):
+                        await asyncio.to_thread(
+                            upsert_session_summary,
+                            self.memory_store,
+                            current_context.session_id,
+                            task_description,
+                            final_result,
+                        )
+                    return final_result
 
                 # Add observation to conversation for tool results
                 observation_content = f"Tool result from {result.get('tool_name', 'unknown')}:\n{result['content']}\n\nBased on this result, if you have enough information to answer the user's question, provide your final answer. Otherwise, call another tool."
@@ -1074,14 +1111,20 @@ class ReActPattern(AgentPattern):
                     # Fallback for non-web environment
                     user_id = None
 
-                memories = await asyncio.to_thread(
-                    self._lookup_relevant_memories_with_context,
+                # run_with_context 通常发生在 DAG 子步骤里。
+                # 这里同样切到结构化 bundle，保证子步骤和主 ReAct 的记忆读取口径一致。
+                session_id = getattr(self._context, "session_id", None)
+
+                memory_bundle = await asyncio.to_thread(
+                    self._lookup_memory_bundle_with_context,
                     self.memory_store,
                     user_message,
-                    "react_memory",
+                    "experience",
                     include_general=True,
                     user_id=user_id,
+                    session_id=session_id,
                 )
+                memories = memory_bundle.flatten()
 
                 # Trace memory retrieval end
                 await trace_memory_retrieve_end(
@@ -1099,12 +1142,13 @@ class ReActPattern(AgentPattern):
 
                 # Add memory context to the user message
                 if memories:
-                    memory_context = "\n\nRelevant Memories:\n" + "\n".join(
-                        [
-                            f"- {m.get('content', '')}"
-                            for m in memories
-                            if m.get("content", "").strip()
-                        ]
+                    # 这里不要简单把记忆列表拼成若干 bullet，
+                    # 而是用 prompt_builder 统一生成分区文本，提示词更稳定。
+                    memory_context_body = build_memory_prompt_sections(memory_bundle)
+                    memory_context = (
+                        f"\n\nRelevant Memory Context:\n{memory_context_body}"
+                        if memory_context_body
+                        else ""
                     )
                     enhanced_messages = []
                     for msg in messages:
@@ -2391,6 +2435,44 @@ Remember: Return ONLY ONE JSON object. No additional text, no multiple objects.
                     logger.info(
                         f"Stored valuable ReAct memory for task: {task[:100]}... Reason: {reason}"
                     )
+
+                    # 这里是第二个关键迁移点：
+                    # ReAct 只负责把“这次执行值得沉淀”为后台任务入队，
+                    # 复杂提取和治理由 memory governance worker 处理。
+                    extract_job_id = await asyncio.to_thread(
+                        enqueue_memory_extraction_job,
+                        task=task,
+                        result=result,
+                        classification=insights,
+                        session_id=(
+                            self._context.session_id
+                            if self._context and self._context.session_id
+                            else None
+                        ),
+                        user_id=(
+                            self._context.user_id
+                            if self._context and self._context.user_id
+                            else None
+                        ),
+                        project_id=(
+                            str(self._context.state.get("project_id"))
+                            if self._context
+                            and self._context.state
+                            and self._context.state.get("project_id") is not None
+                            else None
+                        ),
+                        task_id=(
+                            self._context.task_id
+                            if self._context and self._context.task_id
+                            else None
+                        ),
+                        pattern="react",
+                    )
+                    if extract_job_id is not None:
+                        logger.info(
+                            "Enqueued async memory extraction job %s for ReAct task",
+                            extract_job_id,
+                        )
                 elif should_store and not self.memory_store:
                     # Trace memory storage decision (would store but no memory_store)
                     await trace_memory_store_end(
@@ -2543,7 +2625,7 @@ STORAGE THRESHOLD: Be extremely conservative. Only store truly exceptional insig
         logger.error(f"LLM response: {response}")
         logger.error("=== END CONTEXT ===")
 
-    def _lookup_relevant_memories_with_context(
+    def _lookup_memory_bundle_with_context(
         self,
         memory_store: MemoryStore,
         query: str,
@@ -2552,12 +2634,14 @@ STORAGE THRESHOLD: Be extremely conservative. Only store truly exceptional insig
         limit: int = 5,
         similarity_threshold: Optional[float] = None,
         user_id: Optional[int] = None,
-    ) -> List[Dict[str, Any]]:
+        session_id: Optional[str] = None,
+    ) -> Any:
         """
-        Wrapper for lookup_relevant_memories that sets user context for thread execution.
+        在线程池里安全查询结构化记忆。
 
-        This method ensures that user context is properly set when calling
-        lookup_relevant_memories from a different thread (e.g., via asyncio.to_thread).
+        之所以需要这个包装层，是因为项目的用户隔离依赖 contextvar。
+        一旦通过 `asyncio.to_thread()` 跳到别的线程，用户上下文就可能丢失，
+        所以这里要手动把 user_id 补进去，再调用真正的 lookup_memory_bundle。
         """
         # Set user context for this thread
         if user_id is not None:
@@ -2567,41 +2651,44 @@ STORAGE THRESHOLD: Be extremely conservative. Only store truly exceptional insig
                 context_token = current_user_id.set(user_id)
             except ImportError:
                 # Fallback for non-web environment - proceed without user context
-                from .memory_utils import lookup_relevant_memories
+                from .memory_utils import lookup_memory_bundle
 
-                return lookup_relevant_memories(
+                return lookup_memory_bundle(
                     memory_store,
                     query,
                     category,
                     include_general,
                     limit,
                     similarity_threshold,
+                    session_id=session_id,
                 )
 
             try:
                 # Call the original function with context set
-                from .memory_utils import lookup_relevant_memories
+                from .memory_utils import lookup_memory_bundle
 
-                return lookup_relevant_memories(
+                return lookup_memory_bundle(
                     memory_store,
                     query,
                     category,
                     include_general,
                     limit,
                     similarity_threshold,
+                    session_id=session_id,
                 )
             finally:
                 # Clean up context
                 current_user_id.reset(context_token)
         else:
             # No user ID provided, call function directly
-            from .memory_utils import lookup_relevant_memories
+            from .memory_utils import lookup_memory_bundle
 
-            return lookup_relevant_memories(
+            return lookup_memory_bundle(
                 memory_store,
                 query,
                 category,
                 include_general,
                 limit,
                 similarity_threshold,
+                session_id=session_id,
             )

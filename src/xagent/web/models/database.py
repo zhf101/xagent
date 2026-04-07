@@ -1,3 +1,11 @@
+"""Web 层数据库初始化与会话管理。
+
+这个文件是所有 ORM 模型的注册入口。
+本次记忆模块迁移后，这里最重要的变化是：
+要确保 `MemoryJob` 以及 Vanna / GDP 相关模型在 `init_db()` 时被导入，
+这样 `Base.metadata.create_all()` 才知道这些表的存在。
+"""
+
 import logging
 from typing import Any, Generator
 
@@ -42,9 +50,12 @@ def get_engine() -> Engine:
 
 def init_db(db_url: str | None = None) -> None:
     """Initialize database, create all tables and default users"""
-    # Import all models to ensure they are registered with Base.metadata
+    # 这里的导入虽然看起来“没被直接使用”，但实际上非常关键：
+    # SQLAlchemy 只有在模型类被 import 后，才会把表注册到 Base.metadata。
+    # 所以本次新增的 MemoryJob 也必须在这里显式导入。
     from . import (  # noqa: F401
         MCPServer,
+        MemoryJob,
         Model,
         SystemSetting,
         Task,
@@ -107,7 +118,8 @@ def init_db(db_url: str | None = None) -> None:
     # Create session factory
     _SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=_engine)
 
-    # Try upgrade db to head first
+    # 先跑 Alembic 升级，再 create_all。
+    # 这样能优先应用正式迁移脚本，create_all 只作为补齐兜底。
     from ...db import try_upgrade_db
 
     try_upgrade_db(_engine)

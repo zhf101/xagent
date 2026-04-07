@@ -1,3 +1,13 @@
+"""纯内存版记忆存储。
+
+这个实现主要用于：
+1. 没有配置 embedding/LanceDB 时的退化运行
+2. 单元测试
+3. 本地快速调试
+
+虽然它不做真正向量检索，但过滤语义会尽量和 LanceDB 版本保持一致。
+"""
+
 from __future__ import annotations
 
 import uuid
@@ -5,6 +15,7 @@ from typing import Any, List, Optional
 
 from .base import MemoryStore
 from .core import MemoryNote, MemoryResponse
+from .schema import matches_memory_filter
 
 
 class InMemoryMemoryStore(MemoryStore):
@@ -50,24 +61,36 @@ class InMemoryMemoryStore(MemoryStore):
         filters: Optional[dict[str, Any]] = None,
         similarity_threshold: Optional[float] = None,
     ) -> list[MemoryNote]:
+        # 这里是最朴素的文本 contains 搜索。
+        # 重点不在“搜索有多强”，而在过滤语义要和正式存储实现保持一致。
         results = []
         for note in self._store.values():
-            if query.lower() in note.content.lower():
+            content = (
+                note.content.decode()
+                if isinstance(note.content, bytes)
+                else str(note.content)
+            )
+            if query.lower() in content.lower():
                 if filters:
                     match = True
-
-                    # Category filter
-                    if "category" in filters and note.category != filters["category"]:
-                        match = False
-
-                    # Other metadata filters
-                    other_filters = {
-                        k: v for k, v in filters.items() if k != "category"
-                    }
-                    if other_filters and not all(
-                        note.metadata.get(k) == v for k, v in other_filters.items()
-                    ):
-                        match = False
+                    for key, value in filters.items():
+                        if not matches_memory_filter(
+                            note_category=note.category,
+                            note_memory_type=note.memory_type,
+                            note_memory_subtype=note.memory_subtype,
+                            note_scope=note.scope,
+                            note_source_session_id=note.source_session_id,
+                            note_source_agent_id=note.source_agent_id,
+                            note_project_id=note.project_id,
+                            note_workspace_id=note.workspace_id,
+                            note_dedupe_key=note.dedupe_key,
+                            note_status=note.status,
+                            metadata=note.metadata,
+                            key=key,
+                            value=value,
+                        ):
+                            match = False
+                            break
 
                     if match:
                         results.append(note)
@@ -79,36 +102,46 @@ class InMemoryMemoryStore(MemoryStore):
         self._store.clear()
 
     def list_all(self, filters: Optional[dict[str, Any]] = None) -> List[MemoryNote]:
+        """列出全部记忆，并复用 schema 层的统一过滤规则。"""
         results = list(self._store.values())
 
         if filters:
             filtered_results = []
             for note in results:
                 match = True
-
-                # Category filter
-                if "category" in filters and note.category != filters["category"]:
-                    match = False
-
-                # Date range filters
-                if "date_from" in filters and note.timestamp < filters["date_from"]:
-                    match = False
-                if "date_to" in filters and note.timestamp > filters["date_to"]:
-                    match = False
-
-                # Tag filter
-                if "tags" in filters:
-                    required_tags = filters["tags"]
-                    if not all(tag in note.tags for tag in required_tags):
+                for key, value in filters.items():
+                    if key == "date_from" and note.timestamp < value:
                         match = False
-
-                # Keyword filter
-                if "keywords" in filters:
-                    required_keywords = filters["keywords"]
-                    if not all(
-                        keyword in note.keywords for keyword in required_keywords
+                    elif key == "date_from":
+                        continue
+                    elif key == "date_to" and note.timestamp > value:
+                        match = False
+                    elif key == "date_to":
+                        continue
+                    elif key == "tags":
+                        if not all(tag in note.tags for tag in value):
+                            match = False
+                    elif key == "keywords":
+                        if not all(keyword in note.keywords for keyword in value):
+                            match = False
+                    elif not matches_memory_filter(
+                        note_category=note.category,
+                        note_memory_type=note.memory_type,
+                        note_memory_subtype=note.memory_subtype,
+                        note_scope=note.scope,
+                        note_source_session_id=note.source_session_id,
+                        note_source_agent_id=note.source_agent_id,
+                        note_project_id=note.project_id,
+                        note_workspace_id=note.workspace_id,
+                        note_dedupe_key=note.dedupe_key,
+                        note_status=note.status,
+                        metadata=note.metadata,
+                        key=key,
+                        value=value,
                     ):
                         match = False
+                    if not match:
+                        break
 
                 if match:
                     filtered_results.append(note)

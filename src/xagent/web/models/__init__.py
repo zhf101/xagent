@@ -1,4 +1,12 @@
-"""Lazy exports for web ORM models."""
+"""Web ORM 模型的懒加载导出入口。
+
+这个文件的作用有两个：
+1. 给外部提供统一 import 入口，避免到处记具体模型文件路径。
+2. 在需要时做延迟导入，减少循环依赖。
+
+本次记忆迁移后，`MemoryJob` 也被挂到了这里，
+这样数据库初始化和 API 层都能从统一入口拿到它。
+"""
 
 from __future__ import annotations
 
@@ -17,6 +25,7 @@ __all__ = [
     "Model",
     "MCPServer",
     "UserMCPServer",
+    "MemoryJob",
     "Task",
     "DAGExecution",
     "TemplateStats",
@@ -42,6 +51,7 @@ _MODULE_BY_NAME = {
     "Model": ".model",
     "MCPServer": ".mcp",
     "UserMCPServer": ".mcp",
+    "MemoryJob": ".memory_job",
     "Task": ".task",
     "DAGExecution": ".task",
     "TemplateStats": ".template_stats",
@@ -56,6 +66,7 @@ _MODULE_BY_NAME = {
 
 
 def __getattr__(name: str):
+    """按名称把模型延迟 import 进来。"""
     module_name = _MODULE_BY_NAME.get(name)
     if module_name is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
@@ -65,11 +76,13 @@ def __getattr__(name: str):
     return value
 
 
-# Eagerly register legacy ORM tables that are needed by tests and metadata setup,
-# while keeping GDP-domain wrappers lazy to avoid circular imports.
+# 这里显式导入一批“必须尽早注册”的 ORM 模型。
+# 原因是测试、metadata 初始化、create_all 等流程都依赖这些表已经挂进 Base.metadata。
+# 新增的 MemoryJob 也放在这里，避免只写了模型文件却没有真正注册进 SQLAlchemy。
 from .agent import Agent  # noqa: F401,E402
 from .chat_message import TaskChatMessage  # noqa: F401,E402
 from .mcp import MCPServer, UserMCPServer  # noqa: F401,E402
+from .memory_job import MemoryJob  # noqa: F401,E402
 from .model import Model  # noqa: F401,E402
 from .sandbox import SandboxInfo  # noqa: F401,E402
 from .system_setting import SystemSetting  # noqa: F401,E402

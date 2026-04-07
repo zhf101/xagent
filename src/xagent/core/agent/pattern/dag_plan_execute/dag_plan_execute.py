@@ -7,6 +7,12 @@ This module implements an advanced plan-and-execute pattern that supports:
 3. Immutable plans with selective step execution (skip mechanism)
 4. Pre/post step injection hooks for user prompt processing
 5. Step execution visualization for web display
+
+
+记忆模块迁移在这里增加了三条关键链路：
+1. 规划前读取结构化记忆，给计划生成提供经验上下文。
+2. 执行完成后写入 session summary，方便下一轮会话快速续接。
+3. 把重型“记忆提取”工作异步入队，交给后台治理 worker 处理。
 """
 
 from __future__ import annotations
@@ -21,6 +27,7 @@ from uuid import uuid4
 
 from ....memory import MemoryStore
 from ....memory.in_memory import InMemoryMemoryStore
+from ....memory.session_summary import upsert_session_summary
 from ....model.chat.basic.base import BaseLLM
 from ....tools.adapters.vibe import Tool
 from ....workspace import TaskWorkspace
@@ -43,7 +50,7 @@ from ...transcript import (
     build_assistant_transcript_content,
     normalize_transcript_messages,
 )
-from ..memory_utils import enhance_goal_with_memory
+from ..memory_utils import enhance_goal_with_bundle, enqueue_memory_extraction_job
 
 if TYPE_CHECKING:
     from ...agent import Agent
@@ -578,13 +585,17 @@ class DAGPlanExecutePattern(AgentPattern):
                             # Fallback for non-web environment
                             user_id = None
 
+                        # 老逻辑这里取到的是一批扁平记忆；
+                        # 迁移后改为结构化 bundle，这样能把摘要/长期记忆/经验区分开。
+                        session_id = getattr(self._context, "session_id", None)
                         memory_task = asyncio.to_thread(
-                            self._lookup_relevant_memories_with_context,
+                            self._lookup_memory_bundle_with_context,
                             self.memory_store,
                             task,
-                            "dag_plan_execute_memory",
+                            "experience",
                             include_general=True,
                             user_id=user_id,
+                            session_id=session_id,
                         )
 
                     if self.skill_manager:
@@ -610,9 +621,12 @@ class DAGPlanExecutePattern(AgentPattern):
                     )
                     if memory_result and not isinstance(memory_result, Exception):
                         # Type narrowing: we know memory_result is the actual result, not Exception
-                        memories: List[Dict[str, Any]] = memory_result  # type: ignore[assignment]
+                        # 这里的 memory_result 实际上就是新版 MemoryBundle。
+                        # 后面统计数量时再 flatten，真正增强任务时仍保留结构化信息。
+                        memory_bundle = memory_result
+                        memories: List[Dict[str, Any]] = memory_bundle.flatten()
                         # Apply memory enhancement (task already includes examples for process mode)
-                        enhanced_task = enhance_goal_with_memory(task, memories)
+                        enhanced_task = enhance_goal_with_bundle(task, memory_bundle)
 
                         # Trace memory retrieval end
                         if self.memory_store:
@@ -1755,7 +1769,7 @@ class DAGPlanExecutePattern(AgentPattern):
             "continuation": True,
         }
 
-    def _lookup_relevant_memories_with_context(
+    def _lookup_memory_bundle_with_context(
         self,
         memory_store: MemoryStore,
         query: str,
@@ -1764,12 +1778,15 @@ class DAGPlanExecutePattern(AgentPattern):
         limit: int = 5,
         similarity_threshold: Optional[float] = None,
         user_id: Optional[int] = None,
-    ) -> List[Dict[str, Any]]:
+        session_id: Optional[str] = None,
+    ) -> Any:
         """
-        Wrapper for lookup_relevant_memories that sets user context for thread execution.
+        在线程池里安全查询结构化记忆。
 
-        This method ensures that user context is properly set when calling
-        lookup_relevant_memories from a different thread (e.g., via asyncio.to_thread).
+        由于 DAG 流程里大量耗时工作都会通过 `asyncio.to_thread()` 执行，
+        用户隔离依赖的 contextvar 可能在线程切换时丢失。
+        这个包装函数的目的就是在子线程里手动恢复 user context，
+        避免出现跨用户串读记忆的风险。
         """
         # Set user context for this thread
         if user_id is not None:
@@ -1779,43 +1796,46 @@ class DAGPlanExecutePattern(AgentPattern):
                 context_token = current_user_id.set(user_id)
             except ImportError:
                 # Fallback for non-web environment - proceed without user context
-                from ..memory_utils import lookup_relevant_memories
+                from ..memory_utils import lookup_memory_bundle
 
-                return lookup_relevant_memories(
+                return lookup_memory_bundle(
                     memory_store,
                     query,
                     category,
                     include_general,
                     limit,
                     similarity_threshold,
+                    session_id=session_id,
                 )
 
             try:
                 # Call the original function with context set
-                from ..memory_utils import lookup_relevant_memories
+                from ..memory_utils import lookup_memory_bundle
 
-                return lookup_relevant_memories(
+                return lookup_memory_bundle(
                     memory_store,
                     query,
                     category,
                     include_general,
                     limit,
                     similarity_threshold,
+                    session_id=session_id,
                 )
             finally:
                 # Clean up context
                 current_user_id.reset(context_token)
         else:
             # No user ID provided, call function directly
-            from ..memory_utils import lookup_relevant_memories
+            from ..memory_utils import lookup_memory_bundle
 
-            return lookup_relevant_memories(
+            return lookup_memory_bundle(
                 memory_store,
                 query,
                 category,
                 include_general,
                 limit,
                 similarity_threshold,
+                session_id=session_id,
             )
 
     async def _store_memory(
@@ -1856,6 +1876,71 @@ class DAGPlanExecutePattern(AgentPattern):
                     memory_insights.get("failure_analysis", ""),
                     memory_insights.get("classification", {}),
                 )
+
+                # 整个 DAG 结束后，把结果归纳进本会话摘要。
+                # 这样用户继续追问时，优先命中的是高层总结，而不是重新扫描整轮执行细节。
+                if self._context and self._context.session_id:
+                    await asyncio.to_thread(
+                        upsert_session_summary,
+                        self.memory_store,
+                        self._context.session_id,
+                        task,
+                        {
+                            "success": not any(
+                                result.get("status") == "failed"
+                                for result in execution_results
+                            ),
+                            "output": execution_results,
+                        },
+                    )
+
+                # 后台提取器不仅看基础 classification，
+                # 还会消费这里补充进去的 execution/failure/success 洞察字段。
+                extract_classification = dict(
+                    memory_insights.get("classification", {}) or {}
+                )
+                for field_name in (
+                    "execution_insights",
+                    "failure_analysis",
+                    "success_factors",
+                    "learned_patterns",
+                ):
+                    field_value = memory_insights.get(field_name)
+                    if field_value:
+                        extract_classification.setdefault(field_name, field_value)
+
+                # DAG 主链只负责“投递任务”，不在这里做重型提取，
+                # 这样不会拖慢主任务返回速度。
+                extract_job_id = await asyncio.to_thread(
+                    enqueue_memory_extraction_job,
+                    task=task,
+                    result=execution_results,
+                    classification=extract_classification,
+                    session_id=(
+                        self._context.session_id
+                        if self._context and self._context.session_id
+                        else None
+                    ),
+                    user_id=(
+                        self._context.user_id
+                        if self._context and self._context.user_id
+                        else None
+                    ),
+                    project_id=(
+                        str(self._context.state.get("project_id"))
+                        if self._context
+                        and self._context.state
+                        and self._context.state.get("project_id") is not None
+                        else None
+                    ),
+                    task_id=self.task_id,
+                    pattern="dag",
+                )
+                if extract_job_id is not None:
+                    logger.info(
+                        "Enqueued async memory extraction job %s for DAG task",
+                        extract_job_id,
+                    )
 
                 # Trace memory storage end
                 reason = memory_insights.get("reason", "Unknown reason")
