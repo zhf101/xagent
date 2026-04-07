@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import logging
 import re
 from datetime import UTC, datetime
 from typing import Any, Callable
@@ -27,6 +28,8 @@ from .prompt_builder import PromptBuilder
 from .retrieval_service import RetrievalService
 from .train_service import TrainService
 
+logger = logging.getLogger(__name__)
+
 
 class AskService:
     """负责召回、组 Prompt、生成 SQL、可选执行与候选回流。"""
@@ -40,6 +43,7 @@ class AskService:
         llm_callable: Callable[..., Any] | None = None,
         llm_resolver: Callable[[int | None], Any] | None = None,
         sql_executor: Callable[..., Any] | None = None,
+        schema_loader: Callable[..., Any] | None = None,
         train_service: TrainService | None = None,
     ) -> None:
         self.db = db
@@ -49,6 +53,7 @@ class AskService:
         self.llm_callable = llm_callable
         self.llm_resolver = llm_resolver or get_default_model
         self.sql_executor = sql_executor
+        self.schema_loader = schema_loader
         self.train_service = train_service or TrainService(db)
 
     async def ask(
@@ -83,10 +88,17 @@ class AskService:
             top_k_schema=top_k_schema or kb.default_top_k_schema or 12,
             top_k_doc=top_k_doc or kb.default_top_k_doc or 6,
         )
+        live_schema_context = await self._maybe_load_live_schema_context(
+            datasource_id=int(datasource_id),
+            owner_user_id=int(owner_user_id),
+            question=normalized_question,
+            retrieval=retrieval,
+        )
         prompt_bundle = self.prompt_builder.build_prompt(
             kb=kb,
             question=normalized_question,
             retrieval=retrieval,
+            live_schema_context=live_schema_context,
         )
         generation = await self._generate_sql(
             kb=kb,
@@ -224,14 +236,260 @@ class AskService:
         parsed["model_name"] = getattr(llm, "model_name", None)
         return parsed
 
-    async def _execute_sql(
+    async def _maybe_load_live_schema_context(
         self,
         *,
         datasource_id: int,
         owner_user_id: int,
-        sql: str,
-        task_id: int | None,
-    ) -> dict[str, Any]:
+        question: str,
+        retrieval: RetrievalResult,
+    ) -> dict[str, Any] | None:
+        if not self._should_fallback_to_live_schema(retrieval):
+            return None
+        try:
+            return await self._load_live_schema_context(
+                datasource_id=datasource_id,
+                owner_user_id=owner_user_id,
+                question=question,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to load live schema context for datasource %s: %s",
+                datasource_id,
+                exc,
+            )
+            return None
+
+    def _should_fallback_to_live_schema(self, retrieval: RetrievalResult) -> bool:
+        return not (
+            retrieval.sql_hits or retrieval.schema_hits or retrieval.doc_hits
+        )
+
+    async def _load_live_schema_context(
+        self,
+        *,
+        datasource_id: int,
+        owner_user_id: int,
+        question: str,
+    ) -> dict[str, Any] | None:
+        if self.schema_loader is not None:
+            schema_snapshot = await self._call_maybe_async(
+                self.schema_loader,
+                datasource_id=datasource_id,
+                owner_user_id=owner_user_id,
+                question=question,
+            )
+        else:
+            datasource = self._get_datasource(
+                datasource_id=datasource_id,
+                owner_user_id=owner_user_id,
+            )
+            config = database_connection_config_from_url(
+                make_url(datasource.url),
+                read_only=datasource.read_only,
+            )
+            adapter = create_adapter_for_type(datasource.type.value, config)
+            await adapter.connect()
+            try:
+                schema_snapshot = await adapter.get_schema()
+            finally:
+                await adapter.disconnect()
+        return self._build_live_schema_context(
+            question=question,
+            schema_snapshot=schema_snapshot,
+        )
+
+    def _build_live_schema_context(
+        self,
+        *,
+        question: str,
+        schema_snapshot: Any,
+    ) -> dict[str, Any] | None:
+        if not isinstance(schema_snapshot, dict):
+            return None
+
+        tables = [
+            table
+            for table in list(schema_snapshot.get("tables") or [])
+            if isinstance(table, dict) and str(table.get("table") or "").strip()
+        ]
+        if not tables:
+            return None
+
+        selected_tables = self._select_live_schema_tables(
+            question=question,
+            tables=tables,
+        )
+        rendered_tables: list[str] = []
+        selected_table_names: list[str] = []
+        total_chars = 0
+        max_chars = 12000
+
+        for table in selected_tables:
+            rendered = self._render_live_schema_table(table)
+            if rendered_tables and total_chars + len(rendered) > max_chars:
+                break
+            rendered_tables.append(rendered)
+            selected_table_names.append(self._qualified_table_name(table))
+            total_chars += len(rendered)
+
+        if not rendered_tables:
+            return None
+
+        return {
+            "source": "datasource_live_schema",
+            "database_type": (
+                schema_snapshot.get("databaseType")
+                or schema_snapshot.get("database_type")
+            ),
+            "family": schema_snapshot.get("family"),
+            "table_count": len(tables),
+            "selected_table_names": selected_table_names,
+            "text": "\n\n".join(rendered_tables),
+        }
+
+    def _select_live_schema_tables(
+        self,
+        *,
+        question: str,
+        tables: list[dict[str, Any]],
+        limit: int = 12,
+    ) -> list[dict[str, Any]]:
+        if not tables:
+            return []
+
+        query_tokens = self._tokenize_schema_text(question)
+        ranked: list[tuple[float, str, str, dict[str, Any]]] = []
+
+        for table in tables:
+            schema_name = str(table.get("schema") or "")
+            table_name = str(table.get("table") or "")
+            candidate_parts = [
+                schema_name,
+                table_name,
+                str(table.get("comment") or ""),
+            ]
+            for column in list(table.get("columns") or []):
+                if not isinstance(column, dict):
+                    continue
+                candidate_parts.append(str(column.get("name") or ""))
+                candidate_parts.append(str(column.get("comment") or ""))
+            candidate_tokens = self._tokenize_schema_text(" ".join(candidate_parts))
+            overlap = query_tokens & candidate_tokens
+            coverage = len(overlap) / max(1, len(query_tokens)) if query_tokens else 0.0
+            richness = min(0.2, len(candidate_tokens) / 200)
+            ranked.append((coverage + richness, schema_name, table_name, table))
+
+        ranked.sort(key=lambda item: (-item[0], item[1], item[2]))
+        positive = [item[3] for item in ranked if item[0] > 0.2]
+        if positive:
+            return positive[:limit]
+        return [item[3] for item in ranked[:limit]]
+
+    def _render_live_schema_table(self, table: dict[str, Any]) -> str:
+        qualified_name = self._qualified_table_name(table)
+        lines = [f"表 {qualified_name}"]
+        table_comment = self._strip_or_none(table.get("comment"))
+        if table_comment:
+            lines.append(f"说明: {table_comment}")
+        lines.append("DDL:")
+        lines.append(
+            self._strip_or_none(table.get("ddl"))
+            or self._build_synthetic_ddl(table)
+        )
+        return "\n".join(lines)
+
+    def _build_synthetic_ddl(
+        self,
+        table: dict[str, Any],
+        *,
+        max_columns: int = 40,
+        max_foreign_keys: int = 12,
+    ) -> str:
+        column_defs: list[str] = []
+        columns = [
+            column
+            for column in list(table.get("columns") or [])
+            if isinstance(column, dict) and str(column.get("name") or "").strip()
+        ]
+        for column in columns[:max_columns]:
+            column_name = str(column.get("name") or "").strip()
+            data_type = str(column.get("type") or "text").strip()
+            nullable = column.get("nullable")
+            default_value = column.get("default")
+            line = f"  {column_name} {data_type}"
+            if nullable is False:
+                line += " NOT NULL"
+            if default_value not in (None, ""):
+                line += f" DEFAULT {default_value}"
+            column_comment = self._strip_or_none(column.get("comment"))
+            if column_comment:
+                line += f" -- {column_comment}"
+            column_defs.append(line)
+
+        remaining_columns = len(columns) - len(column_defs)
+        if remaining_columns > 0:
+            column_defs.append(f"  -- 其余 {remaining_columns} 个字段已省略")
+
+        primary_keys = [
+            str(value).strip()
+            for value in list(table.get("primary_keys") or [])
+            if str(value).strip()
+        ]
+        if primary_keys:
+            column_defs.append(f"  PRIMARY KEY ({', '.join(primary_keys)})")
+
+        foreign_keys = [
+            item
+            for item in list(table.get("foreign_keys") or [])
+            if isinstance(item, dict)
+        ]
+        for foreign_key in foreign_keys[:max_foreign_keys]:
+            constrained = ", ".join(
+                str(value).strip()
+                for value in list(foreign_key.get("constrained_columns") or [])
+                if str(value).strip()
+            )
+            referred_table = str(foreign_key.get("referred_table") or "").strip()
+            referred_columns = ", ".join(
+                str(value).strip()
+                for value in list(foreign_key.get("referred_columns") or [])
+                if str(value).strip()
+            )
+            if constrained and referred_table and referred_columns:
+                column_defs.append(
+                    "  FOREIGN KEY "
+                    f"({constrained}) REFERENCES {referred_table} ({referred_columns})"
+                )
+
+        table_body = ",\n".join(column_defs) if column_defs else "  -- no columns"
+        return f"CREATE TABLE {self._qualified_table_name(table)} (\n{table_body}\n);"
+
+    def _qualified_table_name(self, table: dict[str, Any]) -> str:
+        schema_name = str(table.get("schema") or "").strip()
+        table_name = str(table.get("table") or "").strip()
+        return f"{schema_name}.{table_name}" if schema_name else table_name
+
+    def _tokenize_schema_text(self, text: str) -> set[str]:
+        normalized = str(text or "").lower()
+        tokens: set[str] = set()
+        for match in re.findall(r"[a-z0-9_]+|[\u4e00-\u9fff]+", normalized):
+            if not match:
+                continue
+            if re.fullmatch(r"[\u4e00-\u9fff]+", match):
+                tokens.update({char for char in match if char.strip()})
+                if len(match) > 1:
+                    tokens.update(match[idx : idx + 2] for idx in range(len(match) - 1))
+            else:
+                tokens.add(match)
+        return {token for token in tokens if token}
+
+    def _get_datasource(
+        self,
+        *,
+        datasource_id: int,
+        owner_user_id: int,
+    ) -> Text2SQLDatabase:
         datasource = (
             self.db.query(Text2SQLDatabase)
             .filter(
@@ -244,6 +502,20 @@ class AskService:
             raise VannaDatasourceNotFoundError(
                 f"Datasource {datasource_id} was not found"
             )
+        return datasource
+
+    async def _execute_sql(
+        self,
+        *,
+        datasource_id: int,
+        owner_user_id: int,
+        sql: str,
+        task_id: int | None,
+    ) -> dict[str, Any]:
+        datasource = self._get_datasource(
+            datasource_id=datasource_id,
+            owner_user_id=owner_user_id,
+        )
 
         if self.sql_executor is not None:
             return await self._call_maybe_async(

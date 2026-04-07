@@ -855,7 +855,7 @@ interface AppContextType {
   setReplayPlaying: (isPlaying: boolean) => void
   setReplaySpeed: (speed: number) => void
   setReplayProgress: (progress: number) => void
-  setPendingMessage: React.Dispatch<React.SetStateAction<{ message: string; files?: File[]; targetTaskId?: number } | null>>
+  setPendingMessage: React.Dispatch<React.SetStateAction<{ message: string; files?: File[]; targetTaskId?: number; context?: Record<string, unknown> } | null>>
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined)
@@ -865,7 +865,7 @@ const historicalDataRequestMap = new Map<number, boolean>()
 
 export function AppProvider({ children, token }: { children: React.ReactNode; token?: string }) {
   const [state, dispatch] = useReducer(appReducer, initialState)
-  const [pendingMessage, setPendingMessage] = useState<{ message: string; files?: File[]; targetTaskId?: number } | null>(null)
+  const [pendingMessage, setPendingMessage] = useState<{ message: string; files?: File[]; targetTaskId?: number; context?: Record<string, unknown> } | null>(null)
   const { token: authToken } = useAuth() // Get auth token from context
   const { t } = useI18n()
   const router = useRouter()
@@ -972,7 +972,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
         hasFiles: pendingMessage.files && pendingMessage.files.length > 0,
         targetTaskId: pendingMessage.targetTaskId
       })
-      sendChatMessage(pendingMessage.message, pendingMessage.files)
+      sendChatMessage(pendingMessage.message, pendingMessage.files, false, pendingMessage.context)
       setPendingMessage(null)
     }
   }, [isConnected, pendingMessage, sendChatMessage])
@@ -3728,7 +3728,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
           })
 
           // Store the message to be sent after WebSocket connects
-          setPendingMessage({ message, files, targetTaskId: newTaskId })
+          setPendingMessage({ message, files, targetTaskId: newTaskId, context: config?.context })
 
           // Optimistically add the user message to the UI
           if (!isDuplicateMessage(message, 'user-message')) {
@@ -3814,7 +3814,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
 
         // Send chat message - backend will handle user message via trace event
         // Only send if not a duplicate
-        sendChatMessage(message, files, config?.force)
+        sendChatMessage(message, files, config?.force, config?.context)
       } else {
         console.log('⚠️ Duplicate message blocked from sending:', message)
       }

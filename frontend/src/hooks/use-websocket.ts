@@ -419,7 +419,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
     }
   }, [])
 
-  const sendChatMessage = useCallback((message: string, files?: File[], force: boolean = false) => {
+  const sendChatMessage = useCallback((message: string, files?: File[], force: boolean = false, context?: Record<string, unknown>) => {
     const timestamp = Date.now()
     console.log(`🚀 sendChatMessage called [${timestamp}]:`, { message, files: files?.map(f => f.name) })
 
@@ -445,6 +445,9 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
         type: "chat",
         message,
         task_id: taskIdRef.current,
+      }
+      if (context && Object.keys(context).length > 0) {
+        messageData.context = context
       }
 
       // If there are files, upload them first via API, then send file_ids

@@ -17,6 +17,7 @@ class PromptBuilder:
         kb: VannaKnowledgeBase,
         question: str,
         retrieval: RetrievalResult,
+        live_schema_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """返回 system/user prompt 以及可直接给 LLM 的 messages。"""
         system_prompt = self._build_system_prompt(kb=kb)
@@ -24,6 +25,7 @@ class PromptBuilder:
             kb=kb,
             question=question,
             retrieval=retrieval,
+            live_schema_context=live_schema_context,
         )
         return {
             "system_prompt": system_prompt,
@@ -41,6 +43,22 @@ class PromptBuilder:
                 "sql_hit_ids": [hit.entry_id for hit in retrieval.sql_hits],
                 "schema_hit_ids": [hit.entry_id for hit in retrieval.schema_hits],
                 "doc_hit_ids": [hit.entry_id for hit in retrieval.doc_hits],
+                "live_schema_source": (
+                    str(live_schema_context.get("source"))
+                    if live_schema_context
+                    and isinstance(live_schema_context.get("source"), str)
+                    else None
+                ),
+                "live_schema_table_names": list(
+                    live_schema_context.get("selected_table_names") or []
+                )
+                if live_schema_context
+                else [],
+                "live_schema_table_count": (
+                    int(live_schema_context.get("table_count") or 0)
+                    if live_schema_context
+                    else 0
+                ),
             },
         }
 
@@ -60,6 +78,7 @@ class PromptBuilder:
         kb: VannaKnowledgeBase,
         question: str,
         retrieval: RetrievalResult,
+        live_schema_context: dict[str, Any] | None = None,
     ) -> str:
         sections = [
             "## 数据源上下文",
@@ -79,18 +98,30 @@ class PromptBuilder:
                 retrieval.schema_hits,
                 formatter=self._format_doc_like_hit,
             ),
-            "",
-            "## 业务文档",
-            self._render_hits(
-                retrieval.doc_hits,
-                formatter=self._format_doc_like_hit,
-            ),
-            "",
-            "## 用户问题",
-            question.strip(),
-            "",
-            "请根据以上上下文输出最终 SQL。",
         ]
+        if live_schema_context and str(live_schema_context.get("text") or "").strip():
+            sections.extend(
+                [
+                    "",
+                    "## 实时 Schema / DDL（数据源直连回退）",
+                    str(live_schema_context["text"]).strip(),
+                ]
+            )
+        sections.extend(
+            [
+                "",
+                "## 业务文档",
+                self._render_hits(
+                    retrieval.doc_hits,
+                    formatter=self._format_doc_like_hit,
+                ),
+                "",
+                "## 用户问题",
+                question.strip(),
+                "",
+                "请根据以上上下文输出最终 SQL。",
+            ]
+        )
         return "\n".join(sections).strip()
 
     def _render_hits(

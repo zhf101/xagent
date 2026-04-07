@@ -33,6 +33,7 @@ export function ClarificationForm({ interactions, messageId }: ClarificationForm
   }
 
   const handleSubmit = async () => {
+    const structuredAnswers: Record<string, any> = {}
     // Construct the message
     const lines = interactions.map(interaction => {
       const value = formState[interaction.field]
@@ -41,6 +42,11 @@ export function ClarificationForm({ interactions, messageId }: ClarificationForm
       if (value === undefined || value === null || (typeof value === "string" && value.trim() === "") || (Array.isArray(value) && value.length === 0)) {
           // If it's a confirm type, default to false if undefined? Or maybe it's required?
           if (interaction.type === "confirm" && value === undefined) {
+              structuredAnswers[interaction.field] = {
+                type: interaction.type,
+                value: false,
+                label: interaction.label || interaction.field,
+              }
               return { field: interaction.field, label: interaction.label || interaction.field, value: t("chatPage.clarification.no"), isFile: false }
           }
           return null
@@ -48,17 +54,54 @@ export function ClarificationForm({ interactions, messageId }: ClarificationForm
 
       let displayValue = value
       let isFile = false
+      let rawValue = value
 
       if (interaction.type === "select_multiple" && Array.isArray(value)) {
         const labels = value.map(v => interaction.options?.find(o => o.value === v)?.label || v)
         displayValue = labels.join(", ")
+        rawValue = value
+        structuredAnswers[interaction.field] = {
+          type: interaction.type,
+          value: value,
+          labels,
+          label: interaction.label || interaction.field,
+        }
       } else if (interaction.type === "select_one") {
          const label = interaction.options?.find(o => o.value === value)?.label || value
          displayValue = label
+         rawValue = value
+         structuredAnswers[interaction.field] = {
+          type: interaction.type,
+          value,
+          display: label,
+          label: interaction.label || interaction.field,
+         }
       } else if (interaction.type === "confirm") {
         displayValue = value ? t("chatPage.clarification.yes") : t("chatPage.clarification.no")
+        rawValue = !!value
+        structuredAnswers[interaction.field] = {
+          type: interaction.type,
+          value: !!value,
+          label: interaction.label || interaction.field,
+        }
       } else if (interaction.type === "file_upload") {
          isFile = true
+         const fileNames = value instanceof FileList
+          ? Array.from(value).map(file => file.name)
+          : Array.isArray(value)
+            ? value.map(file => file.name)
+            : []
+         structuredAnswers[interaction.field] = {
+          type: interaction.type,
+          value: fileNames,
+          label: interaction.label || interaction.field,
+         }
+      } else {
+        structuredAnswers[interaction.field] = {
+          type: interaction.type,
+          value: rawValue,
+          label: interaction.label || interaction.field,
+        }
       }
 
       return { field: interaction.field, label: interaction.label || interaction.field, value: isFile ? value : displayValue, isFile }
@@ -94,7 +137,14 @@ export function ClarificationForm({ interactions, messageId }: ClarificationForm
         // If textMessage is empty but we have files, send a generic message?
         const finalMessage = textMessage || (files.length > 0 ? t("chatPage.clarification.uploadedFiles") : t("chatPage.clarification.confirmed"))
 
-        await sendMessage(finalMessage, { force: true }, files)
+        await sendMessage(finalMessage, {
+          force: true,
+          context: {
+            clarification_response: {
+              answers: structuredAnswers,
+            },
+          },
+        }, files)
         setIsOpen(false) // Collapse after submission
     } catch (error) {
         console.error("Failed to send clarification response", error)

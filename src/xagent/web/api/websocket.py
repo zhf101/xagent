@@ -1259,6 +1259,8 @@ async def handle_chat_message(
     try:
         user_message = message_data.get("message", "")
         context = message_data.get("context", {})
+        if not isinstance(context, dict):
+            context = {}
         files = message_data.get("files", [])
         user = message_data.get("user")
 
@@ -1279,10 +1281,14 @@ async def handle_chat_message(
             from ..models.task import Task, TaskStatus
             from ..services.chat_history_service import (
                 load_task_transcript,
+                persist_assistant_message,
                 persist_user_message,
             )
             from ..services.task_execution_context_service import (
                 load_task_execution_recovery_state,
+            )
+            from ..services.task_target_resolution_service import (
+                TaskTargetResolutionService,
             )
             from .chat import get_agent_manager
 
@@ -1424,6 +1430,60 @@ async def handle_chat_message(
                     user_id=int(user.id),
                     content=user_message,
                 )
+
+                resolution = TaskTargetResolutionService(db).resolve_for_message(
+                    task=task,
+                    owner_user_id=int(user.id),
+                    question=user_message,
+                    clarification_response=(
+                        context.get("clarification_response")
+                        if isinstance(context, dict)
+                        else None
+                    ),
+                )
+                if resolution.get("status") == "needs_user_input":
+                    task.status = TaskStatus.COMPLETED
+                    db.commit()
+
+                    interactions = list(resolution.get("interactions") or [])
+                    assistant_message = str(
+                        resolution.get("message")
+                        or "请先确认本次任务的 SQL 目标。"
+                    )
+                    persist_assistant_message(
+                        db,
+                        task_id=task_id,
+                        user_id=int(user.id),
+                        content=assistant_message,
+                        message_type="chat_response",
+                        interactions=interactions,
+                    )
+                    await manager.broadcast_to_task(
+                        create_stream_event(
+                            "task_completion",
+                            task_id,
+                            {
+                                "result": {
+                                    "content": assistant_message,
+                                    "chat_response": {
+                                        "message": assistant_message,
+                                        "interactions": interactions,
+                                    },
+                                },
+                                "success": True,
+                            },
+                        ),
+                        task_id,
+                    )
+                    return
+
+                resolved_target = resolution.get("resolved_target")
+                if isinstance(resolved_target, dict):
+                    context["preferred_datasource_id"] = int(
+                        resolved_target["datasource_id"]
+                    )
+                    context["preferred_kb_id"] = int(resolved_target["kb_id"])
+                    context["vanna_target_resolution"] = resolved_target
 
                 # Check if there's an old task running (PAUSED or RUNNING status)
                 # If so, use continuation mechanism; otherwise execute normally
@@ -1665,8 +1725,12 @@ async def handle_execute_task(
         # Get database session
         from ..models.database import get_db
         from ..models.task import Task, TaskStatus
+        from ..services.chat_history_service import persist_assistant_message
         from ..services.task_execution_context_service import (
             load_task_execution_recovery_state,
+        )
+        from ..services.task_target_resolution_service import (
+            TaskTargetResolutionService,
         )
         from .chat import get_agent_manager
 
@@ -1685,6 +1749,46 @@ async def handle_execute_task(
                 )
             if not task:
                 raise Exception(f"Task {task_id} not found or access denied")
+
+            resolution = TaskTargetResolutionService(db).resolve_for_message(
+                task=task,
+                owner_user_id=int(user.id),
+                question=str(task.description or ""),
+            )
+            if resolution.get("status") == "needs_user_input":
+                task.status = TaskStatus.COMPLETED
+                db.commit()
+
+                interactions = list(resolution.get("interactions") or [])
+                assistant_message = str(
+                    resolution.get("message") or "请先确认本次任务的 SQL 目标。"
+                )
+                persist_assistant_message(
+                    db,
+                    task_id=task_id,
+                    user_id=int(user.id),
+                    content=assistant_message,
+                    message_type="chat_response",
+                    interactions=interactions,
+                )
+                await manager.broadcast_to_task(
+                    create_stream_event(
+                        "task_completion",
+                        task_id,
+                        {
+                            "result": {
+                                "content": assistant_message,
+                                "chat_response": {
+                                    "message": assistant_message,
+                                    "interactions": interactions,
+                                },
+                            },
+                            "success": True,
+                        },
+                    ),
+                    task_id,
+                )
+                return
 
             # Update task status to running
             task.status = TaskStatus.RUNNING
@@ -1728,6 +1832,13 @@ async def handle_execute_task(
                     task_context["process_description"] = task.process_description
                 if hasattr(task, "examples") and task.examples:
                     task_context["examples"] = task.examples
+                resolved_target = resolution.get("resolved_target")
+                if isinstance(resolved_target, dict):
+                    task_context["preferred_datasource_id"] = int(
+                        resolved_target["datasource_id"]
+                    )
+                    task_context["preferred_kb_id"] = int(resolved_target["kb_id"])
+                    task_context["vanna_target_resolution"] = resolved_target
 
                 # Execute task with automatic token tracking
                 result = await agent_manager.execute_task(

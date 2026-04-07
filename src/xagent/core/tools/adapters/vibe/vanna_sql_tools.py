@@ -20,6 +20,9 @@ from ....vanna import (
 )
 from ....vanna.contracts import QueryResult
 from ....vanna.sql_assets.service import SqlAssetService
+from .....web.services.task_target_resolution_service import (
+    TaskTargetResolutionService,
+)
 from .....web.models.user import User
 from .base import ToolCategory
 from .factory import register_tool
@@ -54,6 +57,28 @@ def _resolve_owner_user_name(db: Any, user_id: int) -> str | None:
         return None
     username = getattr(user, "username", None)
     return str(username) if username is not None else None
+
+
+def _load_task_confirmed_target(
+    db: Any,
+    *,
+    task_id: int | None,
+    user_id: int,
+) -> dict[str, Any] | None:
+    if task_id is None:
+        return None
+    try:
+        return TaskTargetResolutionService(db).load_confirmed_target(
+            task_id=int(task_id),
+            owner_user_id=int(user_id),
+        )
+    except Exception as exc:
+        logger.warning(
+            "Failed to load task-confirmed Vanna target for task %s: %s",
+            task_id,
+            exc,
+        )
+        return None
 
 
 def _serialize_query_result(
@@ -104,13 +129,44 @@ async def create_vanna_sql_runtime_tools(config: "WebToolConfig") -> list[Any]:
                 else None
             ),
         )
-
         async def query_vanna_sql_asset(
             user_query: str,
-            datasource_id: int,
+            datasource_id: int | None = None,
             kb_id: int | None = None,
             explicit_params: dict[str, Any] | None = None,
         ) -> dict[str, Any]:
+            task_confirmed_target = _load_task_confirmed_target(
+                db,
+                task_id=task_id,
+                user_id=int(user_id),
+            )
+            resolved_target = task_confirmed_target or {}
+            resolved_datasource_id = resolved_target.get("datasource_id")
+            resolved_kb_id = resolved_target.get("kb_id")
+            if resolved_datasource_id is not None:
+                if (
+                    datasource_id is not None
+                    and int(datasource_id) != int(resolved_datasource_id)
+                ):
+                    logger.info(
+                        "Ignoring tool-provided datasource_id=%s for task %s; using confirmed datasource_id=%s",
+                        datasource_id,
+                        task_id,
+                        resolved_datasource_id,
+                    )
+                datasource_id = int(resolved_datasource_id)
+            if resolved_kb_id is not None:
+                if kb_id is not None and int(kb_id) != int(resolved_kb_id):
+                    logger.info(
+                        "Ignoring tool-provided kb_id=%s for task %s; using confirmed kb_id=%s",
+                        kb_id,
+                        task_id,
+                        resolved_kb_id,
+                    )
+                kb_id = int(resolved_kb_id)
+            if datasource_id is None:
+                raise ValueError("当前任务还没有确认 SQL 目标，无法查询 SQL 资产")
+
             result = await query_service.query(
                 datasource_id=int(datasource_id),
                 owner_user_id=int(user_id),
@@ -154,6 +210,19 @@ async def create_vanna_sql_runtime_tools(config: "WebToolConfig") -> list[Any]:
         ) -> dict[str, Any]:
             if asset_id is None and not (asset_code or "").strip():
                 raise ValueError("asset_id 与 asset_code 至少提供一个")
+
+            task_confirmed_target = _load_task_confirmed_target(
+                db,
+                task_id=task_id,
+                user_id=int(user_id),
+            )
+            resolved_target = task_confirmed_target or {}
+            resolved_datasource_id = resolved_target.get("datasource_id")
+            resolved_kb_id = resolved_target.get("kb_id")
+            if resolved_datasource_id is not None:
+                datasource_id = int(resolved_datasource_id)
+            if resolved_kb_id is not None:
+                kb_id = int(resolved_kb_id)
 
             service = SqlAssetService(db)
             if asset_id is not None:
