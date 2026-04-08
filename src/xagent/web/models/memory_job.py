@@ -15,6 +15,16 @@ from .database import Base
 
 
 class MemoryJob(Base):  # type: ignore
+    """后台记忆治理任务。
+
+    关键字段说明：
+    - `job_type`: 本次任务属于提取、合并还是清理
+    - `status`: worker 当前处理到什么阶段
+    - `payload_json`: 真正驱动任务执行的上下文参数
+    - `dedupe_key`: 防止同一类任务被重复投递
+    - `lease_until / locked_by`: 支持 worker 以租约方式领取任务
+    """
+
     __tablename__ = "memory_jobs"
     __table_args__ = (
         Index("ix_memory_jobs_status_available_at", "status", "available_at"),
@@ -67,6 +77,7 @@ class MemoryJob(Base):  # type: ignore
     finished_at = Column(DateTime(timezone=True), nullable=True)
 
     def __repr__(self) -> str:
+        """输出适合日志排查的任务摘要。"""
         return (
             f"<MemoryJob(id={self.id}, job_type={self.job_type!r}, "
             f"status={self.status!r}, priority={self.priority})>"

@@ -2,6 +2,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from xagent.core.model.chat.error import normalize_llm_retry_count
 from xagent.core.model.model import (
     ChatModelConfig,
     EmbeddingModelConfig,
@@ -132,9 +133,7 @@ class SQLAlchemyModelHub:
             "base_url": db_model.base_url,
             "abilities": db_model.abilities,
             "description": db_model.description,
-            "max_retries": db_model.max_retries
-            if db_model.max_retries is not None
-            else 10,
+            "max_retries": normalize_llm_retry_count(db_model.max_retries),
         }
 
         if db_model.category == "llm":
@@ -173,9 +172,7 @@ class SQLAlchemyModelHub:
                 "base_url": db_model.base_url,
                 "abilities": db_model.abilities,
                 "description": db_model.description,
-                "max_retries": db_model.max_retries
-                if db_model.max_retries is not None
-                else 10,
+                "max_retries": normalize_llm_retry_count(db_model.max_retries),
             }
 
             # Create appropriate config based on category

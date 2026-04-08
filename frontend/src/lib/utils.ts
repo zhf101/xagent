@@ -11,13 +11,6 @@ export function getApiUrl(): string {
   return apiUrl
 }
 
-export function getAuthHeaders(token: string | null): Record<string, string> {
-  if (!token) return {}
-  return {
-    'Authorization': `Bearer ${token}`
-  }
-}
-
 export function getWsUrl(): string {
   // 1. Use explicit env var if set (production/staging)
   if (process.env.NEXT_PUBLIC_WS_URL) {
@@ -31,7 +24,14 @@ export function getWsUrl(): string {
   }
 
   // 3. Fallback for SSR (shouldn't happen for WS, but safe)
-  return ''
+  return ""
+}
+
+export function getAuthHeaders(token: string | null): Record<string, string> {
+  if (!token) return {}
+  return {
+    'Authorization': `Bearer ${token}`
+  }
 }
 
 export async function fetchWithAuth(url: string, token: string | null, options: RequestInit = {}): Promise<Response> {

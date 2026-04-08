@@ -1,4 +1,15 @@
-"""Tool Management API Route Handlers"""
+"""工具治理 API。
+
+这个模块承担两类职责：
+1. 给前端返回“当前系统有哪些工具、状态如何、是否需要配置”
+2. 允许管理员维护工具启停策略、密钥和 SQL 连接等治理数据
+
+需要特别注意一个边界：
+- 这里返回的 `/available` 列表是“展示层视图”
+- 真正运行时是否能使用某个工具，还会再经过 ToolFactory 的最终过滤
+
+也就是说，工具治理不能只看页面返回值，最终解释权在运行时工具创建链路。
+"""
 
 import asyncio
 import logging
@@ -31,6 +42,7 @@ logger = logging.getLogger(__name__)
 
 
 def _require_user_id(current_user: User) -> int:
+    """从认证用户对象里提取稳定的整数型 user_id。"""
     user_id: object = getattr(current_user, "id", None)
     if isinstance(user_id, int):
         return user_id
@@ -58,18 +70,26 @@ tools_router = APIRouter(prefix="/api/tools", tags=["tools"])
 
 
 class CredentialFieldUpdate(BaseModel):
+    """单个密钥字段更新请求。"""
+
     value: str
 
 
 class ToolCredentialUpdateRequest(BaseModel):
+    """工具密钥更新请求。"""
+
     credentials: Dict[str, CredentialFieldUpdate]
 
 
 class ToolEnableUpdateRequest(BaseModel):
+    """工具启停更新请求。"""
+
     enabled: bool
 
 
 class SqlConnectionUpsertRequest(BaseModel):
+    """SQL 连接新增/覆盖请求。"""
+
     connection_url: str
 
 
@@ -78,7 +98,12 @@ def _create_tool_info(
     category: str,
     vision_model: Any = None,
 ) -> Dict[str, Any]:
-    """Create tool information based on category instead of hardcoded names"""
+    """把运行时工具对象投影成前端可展示的结构。
+
+    这里做的是“展示态推断”，不是运行态授权判断。
+    例如 vision 工具缺模型时会被标成 `missing_model`，
+    但真正是否可执行，还要再叠加数据库中的工具治理策略。
+    """
     tool_name = getattr(tool, "name", tool.__class__.__name__)
 
     # 基于类别设置状态和类型信息
@@ -145,10 +170,14 @@ async def get_available_tools(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
-    """Get list of all available tools, including MCP tools.
+    """返回工具展示列表。
 
-    Tools are self-describing - each tool declares its own category via
-    metadata.category field. No manual category mapping needed.
+    这个接口服务的是“工具页”和“Agent Builder 的工具选择区”，所以它需要满足两件事：
+    - 列出系统理论上支持的工具能力
+    - 把数据库里的治理信息（enabled / requires_configuration）叠回去
+
+    这里故意关闭运行时禁用策略过滤，因为管理员仍然需要在页面上看到
+    “已经被禁用的工具”，否则后续就无法再启用或继续治理。
     """
 
     # Create a temporary request object (simulating WebToolConfig requirements)
@@ -172,6 +201,7 @@ async def get_available_tools(
         include_mcp_tools=True,  # Enable MCP tools
         task_id="tools_list",  # Generic task ID for tool listing
         browser_tools_enabled=True,  # Enable browser automation tools
+        enforce_tool_policy=False,  # 列表页需要展示已禁用工具，方便管理员继续治理
     )
 
     # Use ToolFactory.create_all_tools() to get all tools
@@ -270,6 +300,7 @@ async def get_configurable_tools(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
+    """返回支持密钥配置的工具列表。"""
     if not bool(current_user.is_admin):
         raise HTTPException(status_code=403, detail="Admin privileges required")
 
@@ -296,6 +327,7 @@ async def get_sql_connections(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
+    """返回当前用户自己的 SQL 连接集合。"""
     items = list_sql_connections(db, _require_user_id(current_user))
     return {
         "connections": items,
@@ -310,6 +342,7 @@ async def upsert_sql_connection(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
+    """新增或覆盖当前用户的 SQL 连接。"""
     current_user_id = _require_user_id(current_user)
     try:
         set_sql_connection(db, current_user_id, name, payload.connection_url)
@@ -327,6 +360,7 @@ async def remove_sql_connection(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
+    """删除当前用户指定名称的 SQL 连接。"""
     current_user_id = _require_user_id(current_user)
     delete_sql_connection(db, current_user_id, name)
     return {
@@ -341,6 +375,11 @@ async def update_tool_enabled(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
+    """更新工具启停策略。
+
+    这里维护的是“全局工具治理开关”，不是某个用户的私有偏好。
+    一旦禁用，最终是否还能被运行时拿到，将由 ToolFactory 统一收口。
+    """
     if not bool(current_user.is_admin):
         raise HTTPException(status_code=403, detail="Admin privileges required")
 
@@ -379,6 +418,7 @@ async def get_tool_credentials(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
+    """读取某个工具当前的密钥配置视图。"""
     if not bool(current_user.is_admin):
         raise HTTPException(status_code=403, detail="Admin privileges required")
 
@@ -397,6 +437,7 @@ async def update_tool_credentials(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
+    """更新某个工具的密钥配置。"""
     if not bool(current_user.is_admin):
         raise HTTPException(status_code=403, detail="Admin privileges required")
 
@@ -425,6 +466,7 @@ async def delete_tool_credential(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
+    """删除某个工具指定字段的密钥配置。"""
     if not bool(current_user.is_admin):
         raise HTTPException(status_code=403, detail="Admin privileges required")
 
@@ -444,7 +486,10 @@ async def delete_tool_credential(
 
 @tools_router.get("/usage")
 async def get_tool_usage(db: Session = Depends(get_db)) -> List[Dict[str, Any]]:
-    """Get tool usage statistics"""
+    """返回工具使用统计。
+
+    这个接口主要给监控与工具管理页展示频次，不参与权限治理决策。
+    """
     try:
         # Run synchronous database queries in thread pool to avoid blocking event loop
         def _get_tool_usage_sync() -> List[Dict[str, Any]]:

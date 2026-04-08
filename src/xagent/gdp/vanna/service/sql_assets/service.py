@@ -1,4 +1,8 @@
-"""SQL Asset 管理服务。"""
+"""SQL Asset 管理服务。
+
+这个模块管理的是“被治理过、可复用、可版本化”的 SQL 资产，
+重点不是执行，而是资产如何被创建、发布、演进与追溯。
+"""
 
 from __future__ import annotations
 
@@ -40,7 +44,11 @@ class SqlAssetService:
         owner_user_name: str | None,
         kb_id: int | None,
     ):
-        """解析资产应归属哪个知识库。"""
+        """解析资产应归属哪个知识库。
+
+        资产必须挂在知识库之下，原因是后续检索、权限和系统环境过滤
+        都依赖 `kb -> datasource/system/env` 这条归属链。
+        """
 
         if kb_id is not None:
             return self.kb_service.get_kb(
@@ -91,7 +99,10 @@ class SqlAssetService:
         return version
 
     def _resolve_database_name_for_kb(self, kb) -> str | None:
-        """为资产推导 database_name，保证后续执行时能做数据库级校验。"""
+        """为资产推导 database_name，保证后续执行时能做数据库级校验。
+
+        这里优先信任 kb 上已经固化的值；只有 kb 缺失时，才回退 datasource URL 推导。
+        """
 
         database_name = clean_database_name(getattr(kb, "database_name", None))
         if database_name:
@@ -162,6 +173,10 @@ class SqlAssetService:
 
         注意这里还没有模板 SQL 版本，版本由 `create_version` 负责。
         这样可以让“资产是什么”和“资产当前 SQL 长什么样”分开治理。
+
+        状态影响：
+        - 会新增 `VannaSqlAsset`
+        - 初始状态固定为 `draft`
         """
 
         kb = self._resolve_kb(
@@ -219,7 +234,11 @@ class SqlAssetService:
         status: str | None = None,
         keyword: str | None = None,
     ) -> list[VannaSqlAsset]:
-        """按多种维度列出资产。"""
+        """按多种维度列出资产。
+
+        默认会排除 archived，避免普通列表把历史垃圾数据也混进来；
+        只有显式传 `status` 时才允许精确查看。
+        """
 
         query = self.db.query(VannaSqlAsset).filter(
             VannaSqlAsset.owner_user_id == int(owner_user_id)
@@ -249,11 +268,18 @@ class SqlAssetService:
         return query.order_by(VannaSqlAsset.updated_at.desc(), VannaSqlAsset.id.desc()).all()
 
     def get_asset(self, *, asset_id: int, owner_user_id: int) -> VannaSqlAsset:
+        """读取单个资产，并校验 owner 权限。"""
+
         return self._get_owned_asset(asset_id=int(asset_id), owner_user_id=int(owner_user_id))
 
     def get_asset_by_code(
         self, *, asset_code: str, owner_user_id: int
     ) -> VannaSqlAsset:
+        """按业务编码读取资产。
+
+        `asset_code` 是工具层和外部编排更稳定的引用方式，比数据库自增 id 更适合透传。
+        """
+
         normalized_code = asset_code.strip()
         if not normalized_code:
             raise ValueError("SQL asset code cannot be empty")
@@ -298,6 +324,8 @@ class SqlAssetService:
     def list_versions(
         self, *, asset_id: int, owner_user_id: int
     ) -> list[VannaSqlAssetVersion]:
+        """列出资产全部版本，按版本号倒序返回。"""
+
         asset = self._get_owned_asset(
             asset_id=int(asset_id), owner_user_id=int(owner_user_id)
         )
@@ -326,7 +354,13 @@ class SqlAssetService:
         output_fields_json: list[str],
         version_label: str | None,
     ) -> VannaSqlAssetVersion:
-        """创建一个新的 SQL 模板版本。"""
+        """创建一个新的 SQL 模板版本。
+
+        关键约束：
+        - 当前阶段只允许 `SELECT`
+        - 新版本只创建，不自动发布
+        - 版本号按资产内单调递增，不复用旧号
+        """
 
         asset = self._get_owned_asset(
             asset_id=int(asset_id), owner_user_id=int(owner_user_id)

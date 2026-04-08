@@ -14,7 +14,14 @@ from .database import Base
 
 
 class User(Base):  # type: ignore
-    """User model"""
+    """平台用户宿主模型。
+
+    这是 Web 侧最核心的身份主体，关键字段和关系包括：
+    - `is_admin`: 决定是否具备系统级管理能力
+    - `refresh_token*`: Web 登录态续期所需字段
+    - `user_models / user_default_models`: 当前用户能用哪些模型、默认用哪个模型
+    - `text2sql_databases / tool_configs`: GDP 与工具体系的用户级归属边界
+    """
 
     __tablename__ = "users"
 
@@ -72,7 +79,13 @@ class User(Base):  # type: ignore
 
 
 class UserModel(Base):  # type: ignore
-    """User-Model relationship table for model ownership and sharing"""
+    """用户与模型的关系表。
+
+    它不描述模型本身，而描述“某个用户对某个模型具有什么权限”：
+    - `is_owner`: 是否是创建者
+    - `can_edit / can_delete`: 是否能维护该模型
+    - `is_shared`: 是否来自管理员共享
+    """
 
     __tablename__ = "user_models"
     __table_args__ = (UniqueConstraint("user_id", "model_id", name="uq_user_model"),)
@@ -108,7 +121,15 @@ class UserModel(Base):  # type: ignore
 
 
 class UserDefaultModel(Base):  # type: ignore
-    """User default model configurations"""
+    """用户默认模型配置。
+
+    同一个用户在不同用途上可以有不同默认模型，例如：
+    - 通用对话
+    - 视觉
+    - embedding
+
+    `config_type` 就是这层“用途维度”的关键约束。
+    """
 
     __tablename__ = "user_default_models"
     __table_args__ = (

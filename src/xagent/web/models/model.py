@@ -41,7 +41,7 @@ if TYPE_CHECKING:
 
         @property
         def is_visual(self) -> bool:
-            """Check if this model has vision ability"""
+            """判断当前模型是否声明了视觉能力。"""
             if not self.abilities:
                 return False
             return "vision" in self.abilities
@@ -53,6 +53,9 @@ if TYPE_CHECKING:
 else:
     from .database import Base
 
+    # `Model` 表来自 core 层的动态表工厂，而不是在 web 层手写 ORM 类。
+    # 这样做的原因是模型配置既被 Web 管理页使用，也被底层 model storage 复用，
+    # 表结构需要只有一份权威定义，避免两边各维护一套字段后逐渐漂移。
     Model: Type[Any] = create_model_table(Base)
     # Relationships
     Model.user_models = relationship(

@@ -12,6 +12,7 @@ from .lancedb import (
     LanceDBConnectionManager,
     LanceDBVectorStore,
 )
+from .pgvector import PGVectorConnectionManager
 
 # ChromaVectorStore is optional (requires chromadb)
 _chroma_available = importlib.util.find_spec("chromadb") is not None
@@ -28,6 +29,7 @@ __all__ = [
     "VectorStore",
     "LanceDBVectorStore",
     "LanceDBConnectionManager",
+    "PGVectorConnectionManager",
 ]
 
 if _chroma_available:

@@ -6,6 +6,7 @@ from typing import Any, Callable, List, Optional, Tuple, Union
 
 from sqlalchemy.orm import Session
 
+from ...core.model.chat.error import normalize_llm_retry_count
 from ...core.model.chat.basic.adapter import create_base_llm
 from ...core.model.chat.basic.base import BaseLLM
 from ...core.model.chat.basic.openai import OpenAILLM
@@ -104,9 +105,9 @@ class CoreStorage:
             "base_url": db_model.base_url,
             "abilities": db_model.abilities,
             "description": db_model.description,
-            "max_retries": db_model.max_retries
-            if db_model.max_retries is not None
-            else 10,
+            # 数据库存量里可能仍然保留旧默认值或异常值。
+            # 这里统一走归一化，避免历史数据把一次模型调用拖成超长重试。
+            "max_retries": normalize_llm_retry_count(db_model.max_retries),
         }
 
         if db_model.category == "llm":

@@ -1,4 +1,11 @@
-"""Vanna 核心服务。"""
+"""Vanna 核心服务导出层。
+
+这里不直接 import 全量 service，而是通过惰性加载把几个目标同时兼顾住：
+
+- 避免 API / 工具层只引用少数 service 时，连带触发整条依赖链初始化
+- 降低循环 import 风险，特别是 `sql_assets` 与上层编排 service 之间的互引
+- 保持 `from xagent.gdp.vanna.service import XxxService` 这种调用方式稳定
+"""
 
 from __future__ import annotations
 
@@ -57,6 +64,8 @@ _LAZY_IMPORTS = {
 
 
 def __getattr__(name: str):
+    """按需加载 service，并把解析结果缓存回模块命名空间。"""
+
     module_name, attribute_name = _LAZY_IMPORTS.get(name, (None, None))
     if module_name is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

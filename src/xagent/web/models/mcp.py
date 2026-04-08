@@ -16,7 +16,11 @@ if TYPE_CHECKING:
     Base = declarative_base()
 
     class MCPServer(Base):  # type: ignore[valid-type, misc]
-        """MCP server configuration model for storing user-specific MCP server settings."""
+        """MCP Server 宿主模型。
+
+        这个表的权威结构来自 core 层工厂函数，Web 层这里只声明主要字段语义，
+        避免前后两处手写表结构逐渐漂移。
+        """
 
         __tablename__ = "mcp_servers"
 
@@ -59,6 +63,8 @@ if TYPE_CHECKING:
 else:
     from .database import Base
 
+    # MCP 表结构与底层 MCP runtime 强耦合，因此这里沿用 core 层的动态建表工厂，
+    # 保证管理页和运行时共享同一份权威 schema。
     MCPServer: Type[Any] = create_mcp_server_table(Base)
 # Relationships
 MCPServer.user_mcpservers = relationship(
@@ -69,7 +75,11 @@ MCPServer.user_mcpservers = relationship(
 
 
 class UserMCPServer(Base):  # type: ignore
-    """User-MCPServer relationship table for MCP server ownership and sharing"""
+    """用户与 MCP Server 的关系表。
+
+    这张表描述的是“某个用户是否拥有/共享/默认启用某个 MCP Server”，
+    而不是 MCP Server 本身的连接配置。
+    """
 
     __tablename__ = "user_mcpservers"
     __table_args__ = (

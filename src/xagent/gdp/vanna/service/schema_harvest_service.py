@@ -1,4 +1,8 @@
-"""Vanna schema 采集服务。"""
+"""Vanna schema 采集服务。
+
+这里负责把外部数据源里的结构事实拉回平台并固化成 Vanna 自己的结构模型。
+它和 ask 的“实时兜底读 schema”不同：本模块是持久化采集链路，强调快照、状态和可追溯性。
+"""
 
 from __future__ import annotations
 
@@ -25,7 +29,12 @@ from .knowledge_base_service import KnowledgeBaseService
 
 
 class SchemaHarvestService:
-    """从 Text2SQL 数据源采集 schema 结构事实。"""
+    """从 Text2SQL 数据源采集 schema 结构事实。
+
+    输出会拆成两层模型：
+    - `VannaSchemaTable`: 表级快照，记录表、DDL、主外键等
+    - `VannaSchemaColumn`: 字段级快照，记录字段属性和推导出的语义标签
+    """
 
     def __init__(self, db: Session):
         self.db = db
@@ -37,6 +46,8 @@ class SchemaHarvestService:
         datasource_id: int,
         owner_user_id: int,
     ) -> Text2SQLDatabase:
+        """读取并校验 datasource 归属；不存在时抛业务异常。"""
+
         datasource = (
             self.db.query(Text2SQLDatabase)
             .filter(
@@ -56,6 +67,8 @@ class SchemaHarvestService:
         *,
         datasource: Text2SQLDatabase,
     ) -> dict[str, Any]:
+        """实际连到数据源，拿一份原始 schema 快照。"""
+
         config = database_connection_config_from_url(
             make_url(datasource.url),
             read_only=datasource.read_only,
@@ -68,6 +81,8 @@ class SchemaHarvestService:
             await adapter.disconnect()
 
     def _normalize_name_set(self, names: list[str] | None) -> set[str]:
+        """把 schema/table 过滤条件规范成去重后的集合。"""
+
         return {
             name.strip()
             for name in names or []
@@ -81,6 +96,8 @@ class SchemaHarvestService:
         schema_names: list[str] | None = None,
         table_names: list[str] | None = None,
     ) -> list[dict[str, Any]]:
+        """在原始 schema 快照上做作用域过滤。"""
+
         selected_schemas = self._normalize_name_set(schema_names)
         selected_tables = self._normalize_name_set(table_names)
         filtered: list[dict[str, Any]] = []
@@ -98,6 +115,8 @@ class SchemaHarvestService:
         return filtered
 
     def _classify_default_kind(self, default_value: Any) -> str:
+        """把字段默认值粗分成 sequence / function / expression 等类别。"""
+
         if default_value is None:
             return "none"
         if not isinstance(default_value, str):
@@ -121,6 +140,8 @@ class SchemaHarvestService:
         is_primary_key: bool,
         is_foreign_key: bool,
     ) -> str:
+        """推断字段值来源类型，供后续摘要和问答理解使用。"""
+
         data_type = str(column.get("type") or "").lower()
         if is_primary_key:
             return "generated"
@@ -131,6 +152,8 @@ class SchemaHarvestService:
         return "unknown"
 
     def _build_table_content_hash(self, table: dict[str, Any]) -> str:
+        """为表级快照计算内容哈希，便于后续识别结构变化。"""
+
         payload = {
             "schema": table.get("schema"),
             "table": table.get("table"),
@@ -151,6 +174,8 @@ class SchemaHarvestService:
         table_name: str,
         column: dict[str, Any],
     ) -> str:
+        """为字段级快照计算内容哈希。"""
+
         payload = {
             "schema": schema_name,
             "table": table_name,
@@ -168,6 +193,11 @@ class SchemaHarvestService:
         schema_names: list[str] | None = None,
         table_names: list[str] | None = None,
     ) -> HarvestPreviewResult:
+        """预览本次采集会命中的表，不落库。
+
+        适用于前台“先看范围是否正确”的交互，避免用户误采整库。
+        """
+
         datasource = self._get_datasource(
             datasource_id=datasource_id,
             owner_user_id=owner_user_id,
@@ -217,6 +247,14 @@ class SchemaHarvestService:
         schema_names: list[str] | None = None,
         table_names: list[str] | None = None,
     ) -> HarvestCommitResult:
+        """正式提交 schema 采集，并把结果持久化到表/字段快照。
+
+        状态影响：
+        - 会先创建一条 `VannaSchemaHarvestJob`
+        - 会把同一 kb 下旧的同名活动表标记为 `STALE`
+        - 会新增一批新的表/字段快照
+        """
+
         datasource = self._get_datasource(
             datasource_id=datasource_id,
             owner_user_id=owner_user_id,
@@ -271,6 +309,8 @@ class SchemaHarvestService:
                     .all()
                 )
                 for existing_row in existing_rows:
+                    # 旧记录不做覆盖更新，而是转为 stale。
+                    # 这样可以保留历史结构事实，便于追查结构演进。
                     existing_row.status = VannaSchemaTableStatus.STALE.value
 
                 table_row = VannaSchemaTable(
@@ -365,6 +405,7 @@ class SchemaHarvestService:
                     self.db.add(column_row)
                     column_count += 1
 
+            # 成功后再统一回写任务结果，保证 job 与实际落库数量一致。
             job.status = VannaHarvestJobStatus.COMPLETED.value
             job.result_payload_json = {
                 "table_count": table_count,
@@ -395,6 +436,7 @@ class SchemaHarvestService:
                 .first()
             )
             if job is not None:
+                # 失败也要把 job 标成 failed，避免前台看到永远 running 的脏任务。
                 job.status = VannaHarvestJobStatus.FAILED.value
                 job.error_message = str(exc)
                 self.db.commit()

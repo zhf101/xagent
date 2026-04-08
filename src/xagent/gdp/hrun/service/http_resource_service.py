@@ -30,6 +30,7 @@ from sqlalchemy.orm import Session
 from xagent.gdp.hrun.model.http_resource import GdpHttpResource
 from xagent.gdp.hrun.adapter.http_schema_bridge import build_schema_and_routes_from_tree
 from .http_runtime_service import (
+    HttpBaseUrlResolver,
     HttpInvoker,
     HttpRequestAssembler,
     HttpRuntimeDefinitionAssembler,
@@ -54,7 +55,9 @@ class GdpHttpResourceService:
         # 这里让后台预览拼装复用运行时组件，确保 assemble 和 execute 看到的是同一套规则。
         # 对新人来说，这一点很重要：不要让“预览能过，真实执行却跑不通”。
         self.definition_assembler = HttpRuntimeDefinitionAssembler()
-        self.request_assembler = HttpRequestAssembler()
+        self.request_assembler = HttpRequestAssembler(
+            base_url_resolver=HttpBaseUrlResolver(db)
+        )
         self.invoker = HttpInvoker()
 
     def list_assets(self, user_id: int) -> list[GdpHttpResource]:

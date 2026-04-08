@@ -95,15 +95,36 @@ class MemoryStore(ABC):
         pass
 
     @abstractmethod
-    def list_all(self, filters: Optional[dict[str, Any]] = None) -> List["MemoryNote"]:
+    def list_all(
+        self,
+        filters: Optional[dict[str, Any]] = None,
+        *,
+        limit: Optional[int] = None,
+        offset: int = 0,
+    ) -> List["MemoryNote"]:
         """
-        List all memory notes with optional filtering.
+        List memory notes with optional filtering and pagination.
+
+        Args:
+            filters (Dict[str, Any], optional): Filter criteria like category, date range, etc.
+            limit (int, optional): Maximum number of records to return. ``None`` means no limit.
+            offset (int, optional): Number of matching records to skip. Defaults to 0.
+
+        Returns:
+            List[MemoryNote]: List of memory notes matching the filters.
+        """
+        pass
+
+    @abstractmethod
+    def count(self, filters: Optional[dict[str, Any]] = None) -> int:
+        """
+        Count memory notes matching optional filters.
 
         Args:
             filters (Dict[str, Any], optional): Filter criteria like category, date range, etc.
 
         Returns:
-            List[MemoryNote]: List of memory notes matching the filters.
+            int: Number of memory notes matching the filters.
         """
         pass
 

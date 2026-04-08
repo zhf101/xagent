@@ -54,6 +54,11 @@ class VannaToolRuntimeService:
         task_id: int | None = None,
         llm: Any | None = None,
     ) -> None:
+        """初始化工具运行时门面。
+
+        这里不会创建自己的权限上下文，而是完全复用调用方传进来的
+        `owner_user_id / task_id / llm`，目的是让工具调用与任务上下文严格一致。
+        """
         self.db = db
         self.owner_user_id = int(owner_user_id)
         self.owner_user_name = owner_user_name
@@ -95,6 +100,8 @@ class VannaToolRuntimeService:
         - 资产和版本详情
         - 参数绑定预览
         - 可能的 ask fallback 结果
+
+        本方法本身不落自己的业务表，真正的落库动作发生在被调用的 service 内部。
         """
         datasource_id, kb_id = self._resolve_target_ids(
             datasource_id=datasource_id,
@@ -156,6 +163,10 @@ class VannaToolRuntimeService:
         1. 先 `query_asset`
         2. 看清候选和参数
         3. 再 `execute_asset`
+
+        状态影响：
+        - 会新增 `VannaSqlAssetRun`
+        - 不会修改资产定义本身
         """
         if asset_id is None and not (asset_code or "").strip():
             raise ValueError("asset_id 与 asset_code 至少提供一个")
@@ -282,11 +293,13 @@ class VannaToolRuntimeService:
         asset: Any | None = None,
         version: Any | None = None,
     ) -> dict[str, Any]:
-        """把 dataclass 结果和 ORM 对象统一折叠成工具响应字典。"""
+        """把 dataclass 结果和 ORM 对象统一折叠成工具响应字典。
+
+        这样工具层拿到的是纯 JSON 友好结构，不需要再关心 ORM 序列化细节。
+        """
         payload = asdict(result)
         if asset is not None:
             payload["asset"] = asset.to_dict()
         if version is not None:
             payload["version"] = version.to_dict()
         return payload
-

@@ -94,7 +94,8 @@ def _get_or_init_model_hub() -> Any:
         Base = declarative_base()
         Model = create_model_table(Base)
         db = SessionLocal()
-        Base.metadata.create_all(engine)
+        # 注意：不再自动建表，依赖主库已初始化的表结构
+        # 如果表不存在，查询会报错，这是预期行为
         return SQLAlchemyModelHub(db, Model)
     except Exception as e:
         logger.debug(f"Model hub database not available: {e}")

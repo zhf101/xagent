@@ -1,9 +1,11 @@
-"""
-LanceDB vector store implementation with integrated connection management.
+"""LanceDB / pgvector 向量存储统一入口。
 
-This module provides both connection management and vector store implementation
-for LanceDB, combining the functionality that was previously split across
-lancedb_client.py and a separate vector store implementation.
+这个模块原本只服务 LanceDB，但当前分支为了让上层调用点尽量不改 import，
+把“连接管理兼容层”也收口到了这里：
+- 当向量后端仍是 LanceDB，走原生 LanceDB 连接
+- 当向量后端切到 pgvector，仍然从这里返回兼容连接包装
+
+因此它现在承担的是“统一向量存储入口”职责，而不只是一个单纯的 LanceDB client。
 """
 
 from __future__ import annotations
@@ -19,7 +21,8 @@ from typing import Any, ClassVar, Dict, List, Optional, Tuple
 import lancedb
 from lancedb.db import DBConnection
 
-from ...config import get_lancedb_path, get_storage_root
+from ...config import get_lancedb_path, get_storage_root, get_vector_backend
+from .pgvector import PGVectorConnectionManager
 from .base import VectorStore
 
 logger = logging.getLogger(__name__)
@@ -39,27 +42,41 @@ _cache_lock = RLock()
 CONNECTION_TTL = int(os.getenv("LANCEDB_CONNECTION_TTL", "300"))
 
 
-class LanceDBConnectionManager:
-    """
-    LanceDB connection manager with caching and automatic cleanup.
+def _build_vector_table_missing_message(collection_name: str) -> str:
+    """统一返回 pgvector 缺表时的指引文案。
 
-    This class handles connection lifecycle management, caching, and
-    automatic cleanup of expired connections.
+    当前项目已经转向 SQL-first 数据库治理，所以 pgvector 模式下如果缺表，
+    不能再像 LanceDB 一样由运行时自动补建；必须回到 SQL 脚本补齐。
+    """
+    return (
+        f"Vector table '{collection_name}' does not exist in pgvector backend. "
+        "Please initialize it via db/postgresql/init.sql or add a patch under "
+        "db/postgresql/patches before writing vector data."
+    )
+
+
+class LanceDBConnectionManager:
+    """向量存储连接管理器。
+
+    这里最重要的不是“如何连上 LanceDB”，而是：
+    - 避免同一个目录被反复创建连接
+    - 在连接长期不用后自动清理
+    - 在切到 pgvector 时保持同一入口不变
     """
 
     @staticmethod
     def _normalize_dirpath(db_dir: str) -> str:
-        """Normalize database directory path."""
+        """把目录路径规范成绝对路径，避免缓存键因相对路径差异失效。"""
         return str(Path(db_dir).expanduser().resolve())
 
     @staticmethod
     def _ensure_dir(db_dir: str) -> None:
-        """Ensure database directory exists."""
+        """确保目录存在。"""
         Path(db_dir).mkdir(parents=True, exist_ok=True)
 
     @staticmethod
     def _is_connection_expired(last_accessed: float) -> bool:
-        """Check if a connection has expired based on TTL."""
+        """判断缓存连接是否超出 TTL。"""
         return time.time() - last_accessed > CONNECTION_TTL
 
     @staticmethod
@@ -129,18 +146,16 @@ class LanceDBConnectionManager:
                 pass
 
     def get_connection(self, db_dir: str) -> DBConnection:
+        """按目录获取连接，并带缓存。
+
+        对上层来说，这里返回的是“当前向量后端可用连接”；
+        至于是 LanceDB 还是 pgvector，调用方不应该感知太多底层差异。
         """
-        Get LanceDB connection with caching.
+        # 兼容模式：当向量后端切到 pgvector 时，
+        # 这里直接返回 pgvector 连接包装，让上层调用点不必改 import。
+        if get_vector_backend() == "pgvector":
+            return PGVectorConnectionManager().get_connection(db_dir)  # type: ignore[return-value]
 
-        Args:
-            db_dir: Database directory path
-
-        Returns:
-            LanceDB connection
-
-        Raises:
-            ValueError: If db_dir is empty
-        """
         if not db_dir:
             raise ValueError("LanceDB directory path must be non-empty")
 
@@ -170,23 +185,14 @@ class LanceDBConnectionManager:
             return conn
 
     def get_connection_from_env(self, env_var: str = "LANCEDB_DIR") -> DBConnection:
+        """从环境变量推导连接目录，并返回连接。
+
+        这里保留了对历史 `LANCEDB_DIR` 语义的兼容：
+        标准变量缺失时可回退到默认目录；非标准变量缺失则直接报错。
         """
-        Get LanceDB connection from environment variable with fallback to default path.
+        if get_vector_backend() == "pgvector":
+            return PGVectorConnectionManager().get_connection_from_env(env_var)  # type: ignore[return-value]
 
-        If the environment variable is not set, uses get_default_lancedb_dir() which:
-        1. Checks legacy location (project root data/lancedb) if it contains data
-        2. Otherwise uses ~/.xagent/data/lancedb
-
-        Args:
-            env_var: Environment variable name containing database directory
-
-        Returns:
-            LanceDB connection
-
-        Raises:
-            ValueError: If environment variable is empty
-            KeyError: If environment variable (other than LANCEDB_DIR) is not set
-        """
         db_dir = os.getenv(env_var)
 
         if db_dir is None:
@@ -204,11 +210,10 @@ class LanceDBConnectionManager:
 
 
 class LanceDBVectorStore(VectorStore):
-    """
-    LanceDB vector store implementation.
+    """LanceDB 向量存储实现。
 
-    This class implements the standard VectorStore interface using LanceDB
-    as the backend storage engine.
+    这个类负责对齐项目内部统一的 `VectorStore` 接口，
+    让上层 RAG / memory 代码不需要直接依赖 LanceDB SDK。
     """
 
     support_store_texts: ClassVar[bool] = True
@@ -219,13 +224,10 @@ class LanceDBVectorStore(VectorStore):
         collection_name: str = "vectors",
         connection_manager: Optional[LanceDBConnectionManager] = None,
     ):
-        """
-        Initialize LanceDB vector store.
+        """初始化统一向量存储实例。
 
-        Args:
-            db_dir: Database directory path
-            collection_name: Collection/table name for vectors
-            connection_manager: Optional connection manager instance
+        即使类名仍叫 `LanceDBVectorStore`，当前也承担了 pgvector 兼容入口职责，
+        调用方不应该依赖它的具体底层实现。
         """
         self._db_dir = db_dir
         self._collection_name = collection_name
@@ -234,7 +236,24 @@ class LanceDBVectorStore(VectorStore):
         self._ensure_table()
 
     def _ensure_table(self) -> None:
-        """Ensure the vector table exists."""
+        """确保向量表存在。
+
+        LanceDB 与 pgvector 的建表时机不同，因此这里必须区分处理：
+        - LanceDB 可以用 sample row 预建表
+        - pgvector 需要等真实向量维度已知后再建表
+        """
+        if get_vector_backend() == "pgvector":
+            # pgvector 需要根据首批向量维度建表，不能像 LanceDB 一样
+            # 用固定 3 维 sample vector 预建表；否则后续真实向量写入会维度冲突。
+            try:
+                self._conn.open_table(self._collection_name)
+            except Exception:
+                logger.debug(
+                    "pgvector backend defers table creation for %s until first write.",
+                    self._collection_name,
+                )
+            return
+
         try:
             self._conn.open_table(self._collection_name)
         except Exception as e:
@@ -263,16 +282,10 @@ class LanceDBVectorStore(VectorStore):
         ids: Optional[List[str]] = None,
         metadatas: Optional[List[Dict[str, Any]]] = None,
     ) -> List[str]:
-        """
-        Add vectors to the store.
+        """批量写入向量。
 
-        Args:
-            vectors: List of vectors to add
-            ids: Optional list of IDs for each vector
-            metadatas: Optional list of metadata dicts
-
-        Returns:
-            List of vector IDs stored
+        这里统一把 metadata 折叠成 JSON 文本，保证 LanceDB / pgvector 两个后端
+        都能以相近的数据形状落库。
         """
         import json
         from uuid import uuid4
@@ -295,21 +308,21 @@ class LanceDBVectorStore(VectorStore):
             data.append(record)
 
         # Insert data
-        table = self._conn.open_table(self._collection_name)
+        try:
+            table = self._conn.open_table(self._collection_name)
+        except Exception:
+            if get_vector_backend() == "pgvector":
+                raise RuntimeError(
+                    _build_vector_table_missing_message(self._collection_name)
+                )
+            # LanceDB 仍保留“首次写入自动建表”的旧行为。
+            table = self._conn.create_table(self._collection_name, data=data)
         table.add(data)
 
         return ids
 
     def delete_vectors(self, ids: List[str]) -> bool:
-        """
-        Delete vectors from the store by their IDs.
-
-        Args:
-            ids: List of vector IDs to delete
-
-        Returns:
-            True if deletion was successful
-        """
+        """按 id 批量删除向量。"""
         try:
             table = self._conn.open_table(self._collection_name)
 
@@ -328,16 +341,10 @@ class LanceDBVectorStore(VectorStore):
         top_k: int = 5,
         filters: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
-        """
-        Search for vectors similar to the query vector.
+        """按查询向量检索相似记录。
 
-        Args:
-            query_vector: Vector to search for
-            top_k: Number of top similar vectors to return
-            filters: Optional metadata filters
-
-        Returns:
-            List of search results with id, score, and metadata
+        返回值统一整理成 `id + score + metadata`，方便上层 RAG / memory
+        在不感知底层数据库差异的情况下继续编排。
         """
         import json
 
@@ -368,7 +375,7 @@ class LanceDBVectorStore(VectorStore):
         return formatted_results
 
     def clear(self) -> None:
-        """Clear all vectors and metadata from the store."""
+        """清空当前 collection 中的全部向量与 metadata。"""
         try:
             # Try to delete all records
             table = self._conn.open_table(self._collection_name)
@@ -379,45 +386,25 @@ class LanceDBVectorStore(VectorStore):
             self._ensure_table()
 
     def get_raw_connection(self) -> DBConnection:
-        """
-        Get raw LanceDB connection for advanced operations.
+        """返回底层原始连接。
 
-        This method provides access to the underlying LanceDB connection
-        for operations that go beyond the standard VectorStore interface.
-
-        Returns:
-            Raw LanceDB connection
+        这个出口只给少数需要越过 `VectorStore` 抽象层的场景使用，
+        例如 memory store 需要直接操作 table schema。
         """
         return self._conn
 
 
 # Convenience functions
 def get_connection(db_dir: str) -> DBConnection:
-    """
-    Get LanceDB connection with caching.
-
-    Args:
-        db_dir: Database directory path
-
-    Returns:
-        LanceDB connection
-    """
+    """获取带缓存的向量存储连接。"""
     manager = LanceDBConnectionManager()
     return manager.get_connection(db_dir)
 
 
 def get_connection_from_env(env_var: str = "LANCEDB_DIR") -> DBConnection:
-    """
-    Get LanceDB connection from environment variable with fallback to default path.
+    """从环境变量获取向量存储连接。
 
-    If LANCEDB_DIR is not set, uses get_default_lancedb_dir() which checks legacy
-    location first, then falls back to ~/.xagent/data/lancedb.
-
-    Args:
-        env_var: Environment variable name
-
-    Returns:
-        LanceDB connection
+    对标准 `LANCEDB_DIR` 会带默认路径兜底；其他变量名仍保持“未设置即报错”的旧语义。
     """
     manager = LanceDBConnectionManager()
     return manager.get_connection_from_env(env_var)

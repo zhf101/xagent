@@ -54,6 +54,10 @@ const en = {
     search: "Search Tasks",
     templates: "Templates",
     channels: "Channels",
+    sqlDataSources: "SQL Data Sources",
+    sqlAssets: "SQL Assets",
+    httpAssets: "HTTP Assets",
+    systemRegistry: "System Registry",
     sections: {
       agentDevelopment: "Agent Development",
       resources: "Resources",
@@ -198,6 +202,7 @@ Build when you need.`
         visual: { title: "Vision Model", description: "Understands and processes images" },
         compact: { title: "Long Context Model", description: "Handles long contexts and compression" },
         embedding: { title: "Embedding Model", description: "Generates vector embeddings" },
+        rerank: { title: "Rerank Model", description: "Reorders retrieved results by relevance" },
       },
       actions: {
         clearDefault: "Clear Default",
@@ -875,9 +880,13 @@ Build when you need.`
       description: "Store, search, and manage agent memory items",
       create: "New Memory",
     },
+    tabs: {
+      memories: "Memories",
+      jobs: "Jobs",
+    },
     createDialog: {
       title: "Create Memory",
-      description: "Fill in the content, keywords, tags, and metadata to add a new memory item. The category is \"User Added Memory\" by default.",
+      description: "Fill in the content, keywords, tags, category, and metadata to add a new memory item.",
     },
     stats: {
       total: "Total Memories",
@@ -894,6 +903,7 @@ Build when you need.`
       },
       categoryOptions: {
         general: "Memory added by users",
+        experience: "Experience memory",
         react_memory: "Execution memory",
         execution_memory: "Task memory",
       },
@@ -940,7 +950,7 @@ Build when you need.`
     },
     editDialog: {
       title: "Edit Memory",
-      description: "Modify the content, keywords, tags, or metadata",
+      description: "Modify the content, keywords, tags, category, or metadata",
     },
     deleteDialog: {
       title: "Delete Memory",
@@ -964,6 +974,74 @@ Build when you need.`
       contextSource: "Context Source",
       allMemories: "All Memories",
       byCategory: "By Category",
+    },
+    jobs: {
+      title: "Memory Governance Jobs",
+      description: "Inspect asynchronous extraction, consolidation, and expiration jobs. Retry failed jobs when needed.",
+      headerHint: "View the memory governance queue and retry failed jobs.",
+      sidebar: {
+        title: "Governance Queue",
+        description: "This panel is for operational inspection only. Use it to check queue status, failures, and retry behavior.",
+      },
+      filters: {
+        statusLabel: "Status filter",
+        statusPlaceholder: "Filter by status",
+        allStatuses: "All statuses",
+        jobTypeLabel: "Job type filter",
+        jobTypePlaceholder: "Filter by job type",
+        allJobTypes: "All job types",
+      },
+      statusOptions: {
+        pending: "Pending",
+        running: "Running",
+        succeeded: "Succeeded",
+        failed: "Failed",
+        dead: "Dead",
+        cancelled: "Cancelled",
+      },
+      jobTypeOptions: {
+        extract_memories: "Extract memories",
+        consolidate_memories: "Consolidate memories",
+        expire_memories: "Expire memories",
+      },
+      autoRefresh: {
+        label: "Auto refresh",
+        hint: "Refresh every {seconds}s",
+        lastRefreshed: "Last refreshed: {time}",
+      },
+      pagination: {
+        summary: "Showing {from}-{to} of {total} jobs",
+        page: "Page {current} of {total}",
+        prev: "Previous",
+        next: "Next",
+      },
+      actions: {
+        refresh: "Refresh",
+        retry: "Retry",
+        retrying: "Retrying...",
+      },
+      columns: {
+        job: "Job",
+        status: "Status",
+        source: "Source",
+        attempts: "Attempts",
+        updatedAt: "Updated At",
+        actions: "Actions",
+      },
+      detail: {
+        title: "Job Detail",
+        empty: "Select a job to inspect its payload and error details.",
+        jobType: "Job Type",
+        status: "Status",
+        source: "Source",
+        lastError: "Last Error",
+        payload: "Payload",
+      },
+      errors: {
+        loadFailed: "Failed to load memory jobs",
+        retryFailed: "Failed to retry memory job",
+      },
+      empty: "No memory jobs found for the current filters.",
     },
     actions: {
       exportSelected: "Export Selected ({count})",
@@ -1268,8 +1346,7 @@ Build when you need.`
     tabs: {
       llm: "LLM Models",
       embedding: "Embedding Models",
-      image: "Image Generation Models",
-      speech: "Speech Models",
+      rerank: "Rerank Models",
     },
     section: {
       enabledModels: "Enabled Models",
@@ -1292,10 +1369,7 @@ Build when you need.`
       visual: "Visual Model",
       compact: "Long Context Model",
       embedding: "Embedding Model",
-      image: "Image Generation Model",
-      image_edit: "Image Edit Model",
-      asr: "Speech Recognition Model",
-      tts: "Text-to-Speech Model",
+      rerank: "Rerank Model",
       shared: "Shared",
       shared_from_others: "Public Model",
     },
@@ -1329,7 +1403,7 @@ Build when you need.`
     empty: {
       llm: "No configured LLM models",
       embedding: "No configured embedding models",
-      image: "No configured image models",
+      rerank: "No configured rerank models",
       description: "Click 'Add Model' to start configuration",
     },
     dialog: {
@@ -1385,6 +1459,7 @@ Build when you need.`
       tool_calling: "Tool Calling",
       thinking_mode: "Thinking Mode",
       embedding: "Embedding",
+      rerank: "Rerank",
       generate: "Generate",
       edit: "Edit",
       asr: "Speech Recognition (ASR)",
@@ -1463,6 +1538,98 @@ Build when you need.`
       title: "Knowledge Base Management",
       description: "Manage document collections and search indices",
       new: "New Knowledge Base",
+    },
+    training: {
+      searchPlaceholder: "Search title, content, or table name...",
+      emptyByType: "No {type} entries in the current category.",
+      emptyDetail: "No knowledge details available for the current category.",
+      feedback: {
+        loadFailed: "Failed to load training knowledge",
+      },
+      actions: {
+        createKnowledge: "New Knowledge",
+        createQuestionSql: "New SQL Pair",
+        createDocumentation: "Add Knowledge",
+        generateSchemaSummary: "Generate Summary",
+      },
+      types: {
+        schema_summary: "Schema Summary",
+        question_sql: "SQL QA Pair",
+        documentation: "Documentation",
+      },
+      lifecycle: {
+        published: "Published",
+        candidate: "Candidate",
+        archived: "Archived",
+      },
+      quality: {
+        verified: "Verified",
+        unverified: "Unverified",
+        unknown: "Unknown",
+      },
+      sourceKind: {
+        manual: "Manual",
+        schema_harvest: "Schema Harvest",
+        bootstrap: "Bootstrap",
+        unknown: "Unknown",
+      },
+      detail: {
+        question: "Question",
+        emptyQuestion: "No question text",
+        standardSql: "Reference SQL",
+        emptySql: "No SQL",
+        explanation: "Explanation",
+        documentBody: "Document Body",
+        emptyDocument: "No documentation text",
+        emptySchemaSummary: "No schema summary",
+        lifecycle: "Lifecycle",
+        quality: "Quality",
+        schemaTable: "Schema / Table",
+        unbound: "Unbound",
+        sourceOrigin: "Source Origin",
+      },
+    },
+    trainingNew: {
+      actions: {
+        saveCandidate: "Save as Candidate",
+        publish: "Publish",
+      },
+      feedback: {
+        loadFailed: "Failed to load knowledge base",
+        questionSqlRequired: "Please provide both the question and the reference SQL",
+        documentationRequired: "Please provide both the document title and body",
+        publishSuccess: "Training knowledge published",
+        saveCandidateSuccess: "Training knowledge saved as candidate",
+        saveFailed: "Failed to save training knowledge",
+      },
+      questionSql: {
+        title: "Create SQL QA Pair",
+        description: "Add a real business question and reference SQL as a reusable SQL QA pair example.",
+        detailTitle: "Fill in the QA pair details",
+      },
+      documentation: {
+        title: "Add Documentation Knowledge",
+        description: "Add business rules, metric definitions, and glossary entries that schema facts cannot express well.",
+        detailTitle: "Fill in the knowledge details",
+      },
+      form: {
+        question: "Question",
+        standardSql: "Reference SQL",
+        documentTitle: "Document Title",
+        documentBody: "Document Body",
+      },
+      placeholders: {
+        question: "Example: Top 10 customers by sales in the last month",
+        sql: "SELECT ...",
+        documentTitle: "Example: Customer tiering definition and calculation logic",
+        documentation: "Enter the detailed business description...",
+      },
+      scope: {
+        title: "Write scope",
+        descriptionPrefix: "This version writes knowledge into the knowledge base bound to the datasource and automatically inherits the host identifier for",
+        questionSqlSuffix: ". This page only writes the SQL QA pair fields: question + reference SQL.",
+        documentationSuffix: ". This page only writes documentation knowledge fields: title + document body.",
+      },
     },
     search: {
       placeholder: "Search knowledge base...",
@@ -2215,6 +2382,8 @@ Build when you need.`
         completed: "Completed",
         failed: "Failed",
         skipped: "Skipped",
+        waitingApproval: "Waiting Approval",
+        analyzed: "Analyzed",
       },
       right: {
         titles: {

@@ -1,3 +1,9 @@
+"""任务附件与用户上传文件模型。
+
+这张表保存的是平台已经接收并落到存储层的文件元数据，
+而不是文件内容本身。真正的文件字节在 `storage_path` 指向的位置。
+"""
+
 import uuid
 
 from sqlalchemy import Column, DateTime, ForeignKey, Integer, String
@@ -8,6 +14,15 @@ from .database import Base
 
 
 class UploadedFile(Base):  # type: ignore
+    """上传文件宿主模型。
+
+    关键字段说明：
+    - `file_id`: 对外稳定暴露的文件标识
+    - `storage_path`: 文件在底层存储中的真实位置
+    - `user_id / task_id`: 文件归属于谁、是否挂在某个任务下
+    - `mime_type / file_size`: 展示和处理策略需要的基础元信息
+    """
+
     __tablename__ = "uploaded_files"
 
     id = Column(Integer, primary_key=True, index=True)

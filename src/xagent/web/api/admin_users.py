@@ -18,7 +18,13 @@ async def get_users(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> UserListResponse:
-    """Get paginated list of users (admin only)"""
+    """分页返回用户列表。
+
+    这里只做后台管理所需的最小查询能力：
+    - 用户名模糊搜索
+    - 标准分页
+    - 管理员权限校验
+    """
     if not current_user.is_admin:
         raise HTTPException(status_code=403, detail="Admin access required")
 
@@ -51,7 +57,11 @@ async def delete_user(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, str]:
-    """Delete a user (admin only)"""
+    """删除用户。
+
+    这个接口的关键点不是删 `users` 表本身，而是先清理显式不会自动级联的数据，
+    避免数据库残留悬挂记录或外键冲突。
+    """
     if not current_user.is_admin:
         raise HTTPException(status_code=403, detail="Admin access required")
 
@@ -65,6 +75,7 @@ async def delete_user(
 
     # Delete related data in correct order to respect foreign key constraints
     from ..models.mcp import UserMCPServer
+    from ..models.system_registry import UserSystemRole
     from ..models.text2sql import Text2SQLDatabase
 
     # Delete user's tasks
@@ -72,6 +83,9 @@ async def delete_user(
 
     # Delete user's Text2SQL databases
     db.query(Text2SQLDatabase).filter(Text2SQLDatabase.user_id == user_id).delete()
+
+    # 删除系统角色绑定，避免用户删除后留下悬挂成员记录。
+    db.query(UserSystemRole).filter(UserSystemRole.user_id == user_id).delete()
 
     # Delete user's MCP server associations (not the servers themselves)
     db.query(UserMCPServer).filter(UserMCPServer.user_id == user_id).delete()

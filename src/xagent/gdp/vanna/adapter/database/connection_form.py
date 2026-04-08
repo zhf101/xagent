@@ -1,4 +1,11 @@
-"""SQL 数据库连接表单与 URL 编解码能力。"""
+"""SQL 数据库连接表单与 URL 编解码能力。
+
+这个模块服务的是“数据源管理前台”与“后端连接配置”之间的契约层：
+
+- 前台需要知道不同数据库该展示哪些字段
+- 后端需要把这些字段稳定编码回 URL
+- 日志与回显场景又需要安全脱敏
+"""
 
 from __future__ import annotations
 
@@ -13,17 +20,23 @@ from .types import normalize_database_type
 
 
 def _clean_string(value: Any) -> str:
+    """把任意输入归一成去空白字符串。"""
+
     if value is None:
         return ""
     return str(value).strip()
 
 
 def _clean_optional_string(value: Any) -> str | None:
+    """把可选文本归一成字符串或 `None`。"""
+
     cleaned = _clean_string(value)
     return cleaned or None
 
 
 def _clean_int(value: Any, default: int | None = None) -> int | None:
+    """尽力把输入转成整数；失败时回退默认值。"""
+
     if value in (None, ""):
         return default
     try:
@@ -33,6 +46,8 @@ def _clean_int(value: Any, default: int | None = None) -> int | None:
 
 
 def _parse_extra_params(raw_value: Any) -> dict[str, str]:
+    """把高级参数输入解析成 query 参数字典。"""
+
     if raw_value is None:
         return {}
     if isinstance(raw_value, dict):
@@ -60,6 +75,8 @@ def _parse_extra_params(raw_value: Any) -> dict[str, str]:
 
 
 def _encode_query(query: dict[str, Any]) -> str:
+    """把 query 字典编码成 URL 查询串，并自动滤掉空值。"""
+
     filtered = {}
     for key, value in query.items():
         if value in (None, ""):
@@ -78,6 +95,8 @@ def _build_network_url(
     path: str | None = None,
     query: dict[str, Any] | None = None,
 ) -> str:
+    """构造网络型数据库 URL。"""
+
     netloc = ""
     encoded_username = quote(username or "", safe="")
     encoded_password = quote(password or "", safe="")
@@ -101,6 +120,11 @@ def _build_network_url(
 
 
 def _build_sqlite_url(file_path: str, query: dict[str, Any] | None = None) -> str:
+    """构造 SQLite URL。
+
+    这里显式兼容 Windows 盘符路径与 Unix 绝对路径，避免前台保存后再解析出错。
+    """
+
     normalized = file_path.replace("\\", "/").strip()
     if not normalized:
         raise ValueError("SQLite 文件路径不能为空")
@@ -133,7 +157,10 @@ def _extract_path_value(url: str) -> str:
 
 
 def mask_connection_url(url: str) -> str:
-    """对连接 URL 做最小必要脱敏。"""
+    """对连接 URL 做最小必要脱敏。
+
+    目标是既保留足够的排查信息，又绝不把明文密码带到日志和前台。
+    """
 
     if not url:
         return url
@@ -160,12 +187,19 @@ def mask_connection_url(url: str) -> str:
 
 @dataclass(frozen=True)
 class ConnectionFieldOption:
+    """单个表单选项定义。"""
+
     value: str
     label: str
 
 
 @dataclass(frozen=True)
 class ConnectionFieldDefinition:
+    """前台连接表单字段定义。
+
+    这些字段描述的是“怎么渲染与约束输入”，不是最终持久化模型本身。
+    """
+
     key: str
     label: str
     input_type: str = "text"
@@ -179,6 +213,8 @@ class ConnectionFieldDefinition:
     show_when: dict[str, str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        """转成前台可直接消费的字典。"""
+
         payload = asdict(self)
         payload["options"] = [asdict(item) for item in self.options]
         return payload
@@ -218,7 +254,10 @@ def _base_network_fields(profile: dict[str, Any]) -> list[ConnectionFieldDefinit
 
 
 def get_connection_form_definition(db_type: str) -> dict[str, Any]:
-    """返回指定 SQL 数据库类型的普通模式表单定义。"""
+    """返回指定 SQL 数据库类型的普通模式表单定义。
+
+    这里集中维护不同数据库的表单差异，避免这些规则散落在前端页面里。
+    """
 
     normalized = normalize_database_type(db_type)
     profile = get_database_profile(normalized)

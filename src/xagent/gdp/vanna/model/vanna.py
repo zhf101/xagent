@@ -54,6 +54,8 @@ def _compile_vector_postgresql(type_: VectorColumn, compiler, **kw) -> str:
 
 
 def _isoformat(value) -> str | None:
+    """统一处理模型时间字段序列化。"""
+
     return value.isoformat() if value else None
 
 
@@ -95,7 +97,16 @@ class VannaAskExecutionStatus(str, Enum):
 
 
 class VannaKnowledgeBase(Base):
-    """Vanna 知识库宿主。"""
+    """Vanna 知识库宿主。
+
+    这是 `gdp.vanna` 的一级聚合根，后续 schema、训练条目、ask run、SQL asset
+    都会挂在它下面。审查这个模型时，重点看这些字段：
+
+    - `datasource_id`: 这套知识到底绑定哪个数据源
+    - `system_short / database_name / env`: 问答、资产、执行时的环境收缩条件
+    - `default_top_k_*`: 检索默认策略，不同 kb 可以单独调参
+    - `embedding_model / llm_model`: 记录当前知识库训练和问答依赖的模型名称
+    """
 
     __tablename__ = "vanna_knowledge_bases"
 
@@ -186,6 +197,8 @@ class VannaKnowledgeBase(Base):
     )
 
     def to_dict(self) -> Dict[str, Any]:
+        """输出知识库对外读模型。"""
+
         return {
             "id": self.id,
             "kb_code": self.kb_code,
@@ -214,7 +227,14 @@ class VannaKnowledgeBase(Base):
 
 
 class VannaSchemaHarvestJob(Base):
-    """Schema 采集任务。"""
+    """Schema 采集任务。
+
+    它记录一次结构采集的边界与结果，关键字段包括：
+
+    - `harvest_scope`: 本次是全量、按 schema 还是按表采集
+    - `schema_names_json / table_names_json`: 用户实际选择的作用域
+    - `result_payload_json / error_message`: 采集结果摘要与失败原因
+    """
 
     __tablename__ = "vanna_schema_harvest_jobs"
 
@@ -576,7 +596,16 @@ class VannaSchemaColumnAnnotation(Base):
 
 
 class VannaTrainingEntry(Base):
-    """训练知识条目。"""
+    """训练知识条目。
+
+    这是 Vanna 检索知识的标准宿主，既可以表示 question/sql 样本，
+    也可以表示 schema 摘要或业务文档。阅读时重点关注：
+
+    - `entry_type`: 决定这条知识在 Prompt 里扮演什么角色
+    - `lifecycle_status / quality_status`: 决定它是否参与正式召回
+    - `content_hash`: 去重与幂等更新的基础
+    - `tables_read_json / columns_read_json / output_fields_json`: 为治理和资产提升提供结构线索
+    """
 
     __tablename__ = "vanna_training_entries"
 
@@ -713,7 +742,15 @@ class VannaTrainingEntry(Base):
 
 
 class VannaEmbeddingChunk(Base):
-    """训练知识切片。"""
+    """训练知识切片。
+
+    一条训练知识可能被切成多个 chunk 参与召回。关键字段包括：
+
+    - `entry_id`: 反向指回原始训练条目
+    - `chunk_type`: 指明属于问答对、schema 摘要还是文档
+    - `embedding_vector / embedding_model`: 检索时使用的向量表示及其来源模型
+    - `lifecycle_status`: 与原始条目一起控制是否允许参与召回
+    """
 
     __tablename__ = "vanna_embedding_chunks"
     __table_args__ = (
@@ -912,7 +949,16 @@ class VannaSqlAssetRunStatus(str, Enum):
 
 
 class VannaSqlAsset(Base):
-    """正式复用的 SQL 资产宿主。"""
+    """正式复用的 SQL 资产宿主。
+
+    它表示“这类查询需求已经被治理成平台资产”。关键字段包括：
+
+    - `asset_code`: 对外稳定引用标识，工具层优先用它而不是数据库 id
+    - `system_short / database_name / env`: 限定资产可复用的边界
+    - `match_keywords_json / match_examples_json`: 资产检索阶段的主要语义线索
+    - `current_version_id`: 当前对外生效的模板版本
+    - `origin_ask_run_id / origin_training_entry_id`: 追溯资产最初从哪里沉淀而来
+    """
 
     __tablename__ = "vanna_sql_assets"
     __table_args__ = (
@@ -1011,6 +1057,8 @@ class VannaSqlAsset(Base):
     )
 
     def to_dict(self) -> Dict[str, Any]:
+        """输出资产对外读模型。"""
+
         return {
             "id": int(self.id),
             "kb_id": int(self.kb_id),
@@ -1037,7 +1085,15 @@ class VannaSqlAsset(Base):
 
 
 class VannaSqlAssetVersion(Base):
-    """SQL 资产版本。"""
+    """SQL 资产版本。
+
+    它描述“同一个资产在某个时刻的具体模板实现”。关键字段包括：
+
+    - `template_sql`: 真正受治理的 SQL 模板正文
+    - `parameter_schema_json`: 参数契约，决定绑定层如何收参和校验
+    - `tables_read_json / columns_read_json / output_fields_json`: 方便治理、审计和影响面分析
+    - `quality_status / is_published`: 表示这个版本是否足够可信、是否已对外生效
+    """
 
     __tablename__ = "vanna_sql_asset_versions"
     __table_args__ = (
@@ -1103,6 +1159,8 @@ class VannaSqlAssetVersion(Base):
     )
 
     def to_dict(self) -> Dict[str, Any]:
+        """输出版本对外读模型。"""
+
         return {
             "id": int(self.id),
             "asset_id": int(self.asset_id),
@@ -1125,7 +1183,16 @@ class VannaSqlAssetVersion(Base):
 
 
 class VannaSqlAssetRun(Base):
-    """SQL 资产执行事实。"""
+    """SQL 资产执行事实。
+
+    这是资产运行态审计表，不承载资产定义，只记录一次执行发生了什么。
+    审查时重点看：
+
+    - `asset_id / asset_version_id`: 执行的是谁、哪个版本
+    - `binding_plan_json / bound_params_json`: 参数如何被解析出来
+    - `compiled_sql`: 最终真正下发到数据源的 SQL
+    - `execution_status / execution_result_json`: 执行是否成功以及返回了什么
+    """
 
     __tablename__ = "vanna_sql_asset_runs"
     __table_args__ = (
@@ -1223,4 +1290,3 @@ class VannaSqlAssetRun(Base):
             "create_user_name": self.create_user_name,
             "created_at": _isoformat(self.created_at),
         }
-

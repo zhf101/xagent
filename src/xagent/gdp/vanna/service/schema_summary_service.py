@@ -1,4 +1,8 @@
-"""把结构事实转成可读的 schema summary。"""
+"""把结构事实转成可读的 schema summary。
+
+这个模块处在“底层结构快照”和“检索友好知识”之间，负责把表字段事实翻译成
+适合问答检索和 Prompt 阅读的摘要文本。
+"""
 
 from __future__ import annotations
 
@@ -36,6 +40,10 @@ class SchemaSummaryService:
             tuple[int, str, str, str], VannaSchemaColumnAnnotation
         ] | None = None,
     ) -> str:
+        """把单张表的结构事实组装成可读摘要文本。
+
+        这里会优先使用人工 annotation 覆写值，因为这些补充信息通常比数据库原生注释更贴近业务语义。
+        """
         lines = [f"表 {table_row.schema_name or 'default'}.{table_row.table_name}:"]
 
         if table_row.table_comment:
@@ -98,6 +106,13 @@ class SchemaSummaryService:
         lifecycle_status: str = VannaTrainingLifecycleStatus.CANDIDATE.value,
         quality_status: str = VannaTrainingQualityStatus.UNVERIFIED.value,
     ) -> VannaTrainingEntry:
+        """把单表摘要写成训练条目。
+
+        状态影响：
+        - 若已存在同一 `entry_code`，做幂等更新
+        - 否则新增一条 `schema_summary` 类型训练知识
+        """
+
         column_rows = (
             self.db.query(VannaSchemaColumn)
             .filter(VannaSchemaColumn.table_id == int(table_row.id))
@@ -148,6 +163,8 @@ class SchemaSummaryService:
             )
             self.db.add(entry)
         else:
+            # schema 摘要天然会随着结构变化而更新，因此这里选择覆盖旧文本，
+            # 而不是为同一张表不断创建新 entry。
             entry.doc_text = summary_text
             entry.content_hash = table_row.content_hash
             entry.lifecycle_status = lifecycle_status

@@ -137,7 +137,8 @@ def create_db_session() -> Session:
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
     db = SessionLocal()
-    Base.metadata.create_all(engine)
+    # 注意：不再自动建表，依赖外部已初始化的数据库
+    # 如果表不存在，后续操作会报错，这是预期行为
     return db
 
 

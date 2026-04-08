@@ -426,16 +426,21 @@ class MemoryManagementRouter:
                     if search:
                         memories = self.memory_store.search(
                             query=search,
-                            k=1000,
+                            k=max(limit + offset, 1),
                             filters=filters if filters else None,
                             similarity_threshold=similarity_threshold,
                         )
+                        total_count = len(memories)
+                        memories = memories[offset : offset + limit]
                     else:
-                        memories = self.memory_store.list_all(filters)
-
-                    # 底层 store 先把结果全量返回，这里再做 API 层分页切片。
-                    total_count = len(memories)
-                    memories = memories[offset : offset + limit]
+                        # 无搜索词时优先走 store 层分页和计数，避免先全量把记忆取回再在 API 层切片。
+                        effective_filters = filters if filters else None
+                        total_count = self.memory_store.count(effective_filters)
+                        memories = self.memory_store.list_all(
+                            effective_filters,
+                            limit=limit,
+                            offset=offset,
+                        )
                     # 最终统一序列化成适合前端展示的普通 dict。
                     memory_dicts = [serialize_memory_note(memory) for memory in memories]
 

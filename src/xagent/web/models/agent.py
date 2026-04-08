@@ -1,4 +1,8 @@
-"""Agent Builder models for creating custom AI agents."""
+"""Agent Builder 宿主模型。
+
+这里保存的是用户在平台里配置出来的自定义 Agent 元信息，
+重点是描述 agent 的能力组合，不直接承载一次任务运行态。
+"""
 
 import enum
 from datetime import datetime
@@ -12,7 +16,7 @@ from .database import Base
 
 
 class AgentStatus(enum.Enum):
-    """Agent status enumeration"""
+    """Agent 生命周期状态。"""
 
     DRAFT = "draft"
     PUBLISHED = "published"
@@ -20,7 +24,7 @@ class AgentStatus(enum.Enum):
 
 
 class ExecutionMode(enum.Enum):
-    """Agent execution mode enumeration"""
+    """Agent 执行模式枚举。"""
 
     SIMPLE = "simple"  # Reserved: single LLM call (not implemented yet)
     REACT = "react"  # ReAct pattern for reasoning and acting
@@ -28,7 +32,15 @@ class ExecutionMode(enum.Enum):
 
 
 class Agent(Base):  # type: ignore
-    """Custom AI Agent model for agent builder"""
+    """自定义 Agent 宿主模型。
+
+    关键字段说明：
+    - `instructions`: agent 级系统指令
+    - `execution_mode`: 该 agent 采用哪种执行模式
+    - `models`: 该 agent 显式绑定的模型集合
+    - `knowledge_bases / skills / tool_categories`: agent 可用知识、技能和工具范围
+    - `status / published_at`: 当前是否对外可用
+    """
 
     __tablename__ = "agents"
 

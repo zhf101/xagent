@@ -1,4 +1,8 @@
-"""Vanna 训练条目写入服务。"""
+"""Vanna 训练条目写入服务。
+
+这个模块负责把“可供检索的知识”写进 Vanna。
+核心关注点不是执行 SQL，而是知识沉淀时的标准化、去重和初始状态约束。
+"""
 
 from __future__ import annotations
 
@@ -33,7 +37,11 @@ class TrainService:
         self.schema_summary_service = SchemaSummaryService(db)
 
     def _hash_text(self, payload: str) -> str:
-        """为训练内容生成稳定 hash。"""
+        """为训练内容生成稳定 hash。
+
+        这里故意只基于核心业务文本计算，不把时间、用户等易变字段带进去，
+        这样同一份知识重复导入时才能命中同一个 `entry_code`。
+        """
 
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
@@ -52,6 +60,11 @@ class TrainService:
 
         一个典型样本形态是“自然语言问题 + 对应 SQL”。
         这是 ask 检索链最重要的一类基础知识。
+
+        状态影响：
+        - 会落库/更新 `VannaTrainingEntry`
+        - `publish=True` 时直接进入 published + verified
+        - 否则进入 candidate + unverified，等待后续治理
         """
 
         kb = self.kb_service.get_or_create_default_kb(
@@ -95,6 +108,7 @@ class TrainService:
             )
             self.db.add(entry)
         else:
+            # 命中同一 entry_code 时选择“幂等更新”，避免人工反复修订同一知识时产生脏重复。
             entry.question_text = question
             entry.sql_text = sql
             entry.sql_explanation = sql_explanation
@@ -115,6 +129,7 @@ class TrainService:
         """写入 documentation 训练条目。
 
         这类条目不直接给 SQL，而是补充业务背景、指标定义等文档事实。
+        对问答生成来说，它的价值是给模型提供“为什么这么查”的解释性上下文。
         """
 
         kb = self.kb_service.get_or_create_default_kb(
@@ -173,6 +188,9 @@ class TrainService:
 
         适合冷启动场景：还没有人工整理 question/sql 时，
         先把 schema 摘要喂给系统，保证检索层至少有基础结构知识。
+
+        这里不会直接发布成正式知识，而是统一产出 candidate，
+        避免冷启动自动摘要未经确认就影响最终问答质量。
         """
 
         kb = self.kb_service.get_or_create_default_kb(

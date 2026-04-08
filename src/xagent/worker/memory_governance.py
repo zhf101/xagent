@@ -66,6 +66,13 @@ class MemoryGovernanceWorker:
         3. 找到对应 executor 执行。
         4. 根据结果标记 success / fail / requeue。
         """
+        recovered_job_ids = self._recover_stuck_jobs()
+        if recovered_job_ids:
+            logger.warning(
+                "Recovered stuck memory jobs back to pending: %s",
+                ",".join(str(job_id) for job_id in recovered_job_ids),
+            )
+
         if self._scheduler is not None:
             self._scheduler.tick()
 
@@ -151,6 +158,29 @@ class MemoryGovernanceWorker:
             repo = MemoryJobRepository(session)
             repo.requeue_job(job_id, error=error[:4000])
             session.commit()
+
+    def _recover_stuck_jobs(self) -> list[int]:
+        """回收租约已过期但仍停留在 RUNNING 的任务。
+
+        现有 `claim_next_job()` 已经支持“看到过期租约后重新 claim”，
+        但这里额外做一次显式恢复，价值在于：
+        - worker 启动后无需等到某个 job 被再次挑中，状态就能马上被纠正
+        - 日志里可以清楚看到哪些 job 是“崩溃后恢复”的
+        - 运维排查时更容易区分“正在运行”与“实际上已经卡死”
+        """
+        with self._open_session() as session:
+            repo = MemoryJobRepository(session)
+            stuck_jobs = repo.list_stuck_jobs()
+            if not stuck_jobs:
+                return []
+
+            recovered_job_ids: list[int] = []
+            for job in stuck_jobs:
+                recovered_job = repo.reset_job_for_retry(int(job.id))
+                if recovered_job is not None:
+                    recovered_job_ids.append(int(recovered_job.id))
+            session.commit()
+            return recovered_job_ids
 
     def _open_session(self):
         session_factory = self._session_factory or self._get_default_session_factory()

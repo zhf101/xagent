@@ -1,10 +1,25 @@
-"""Dynamic memory store manager for web application."""
+"""Web 层动态 memory store 管理器。
+
+这个模块解决的是“记忆存储后端会随配置变化而切换”这个问题。
+
+当前系统支持两类主要后端：
+- `InMemoryMemoryStore`：无 embedding model 时的最小可用兜底
+- `LanceDBMemoryStore` / 兼容向量后端：有 embedding model 时提供向量检索
+
+如果在启动时就把 store 固定死，会出现两个问题：
+- 用户后来补了 embedding model，但服务还停留在 in-memory
+- 模型配置切换后，记忆检索仍然使用旧的向量参数
+
+因此这里引入一个全局 manager，在每次获取 store 时做一次轻量检查，
+按当前配置动态决定是否重建底层存储。
+"""
 
 import logging
 import os
 import threading
 from typing import Optional, Union
 
+from ..config import get_vector_backend
 from ..core.memory.in_memory import InMemoryMemoryStore
 from ..core.memory.lancedb import LanceDBMemoryStore
 from ..core.model.embedding import OpenAIEmbedding
@@ -23,14 +38,20 @@ MemoryStoreType = Union[
 
 
 class DynamicMemoryStoreManager:
-    """Dynamic memory store manager that supports lazy initialization and reconfiguration."""
+    """动态 memory store 管理器。
+
+    这个类的职责不是实现记忆检索本身，而是维护“当前 Web 进程应该使用哪一种 store”。
+    它要同时满足：
+    - 延迟初始化，避免启动时强依赖 embedding model
+    - 可重配置，模型切换后能够自动切换后端
+    - 线程安全，避免并发请求下重复初始化或半初始化状态泄漏
+    """
 
     def __init__(self, similarity_threshold: Optional[float] = None):
-        """
-        Initialize the dynamic memory store manager.
+        """初始化管理器。
 
-        Args:
-            similarity_threshold: Optional similarity threshold for vector search.
+        启动时先落到 in-memory，不直接假设向量能力一定可用；
+        真正需要时再根据数据库中的 embedding model 配置决定是否升级。
         """
         self._similarity_threshold = similarity_threshold
         self._memory_store: Optional[MemoryStoreType] = None
@@ -42,7 +63,10 @@ class DynamicMemoryStoreManager:
         self._initialize_in_memory_store()
 
     def _initialize_in_memory_store(self) -> None:
-        """Initialize with basic in-memory store."""
+        """初始化为内存型 store。
+
+        这是所有失败场景和未配置场景的统一安全回退点。
+        """
         with self._lock:
             in_memory_store = InMemoryMemoryStore()
             self._memory_store = UserIsolatedMemoryStore(in_memory_store)
@@ -51,7 +75,14 @@ class DynamicMemoryStoreManager:
             logger.info("Initialized with in-memory store")
 
     def _get_embedding_model_from_db(self) -> Optional[DBModel]:
-        """Get the current embedding model from database."""
+        """从数据库读取当前生效的 embedding model。
+
+        优先级规则：
+        1. 若当前请求上下文带有 user_id，优先读该用户自己的默认 embedding model
+        2. 否则回退到系统里任意一个可用的 embedding model
+
+        这样能兼顾多租户隔离和“系统至少能跑起来”的可用性。
+        """
         try:
             db = next(get_db())
             try:
@@ -117,7 +148,11 @@ class DynamicMemoryStoreManager:
     def _create_lancedb_store(
         self, embedding_model: DBModel
     ) -> UserIsolatedMemoryStore:
-        """Create LanceDB store with the given embedding model."""
+        """基于 embedding model 创建向量型 memory store。
+
+        这里仍保留对历史 `memory_store/` 目录的兼容，
+        避免老环境升级后直接丢失已有本地数据。
+        """
         try:
             # Check legacy location (project root) first for backward compatibility
             legacy_dir = os.path.join(
@@ -148,10 +183,14 @@ class DynamicMemoryStoreManager:
                     ),
                     similarity_threshold=self._similarity_threshold or 1.5,
                 )
-                logger.info("Created LanceDB store with OpenAI-compatible embedding model")
+                logger.info(
+                    "Created %s-backed memory store with OpenAI-compatible embedding model",
+                    get_vector_backend(),
+                )
                 return UserIsolatedMemoryStore(lancedb_store)
             else:
-                # Fallback to in-memory if embedding type not supported
+                # 当前只对 OpenAI-compatible embedding 走通向量 store。
+                # 其他 provider 若未适配，宁可回退到 in-memory，也不要构造一个半可用后端。
                 logger.warning(
                     f"Unsupported embedding model type: {embedding_model.model_provider}"
                 )
@@ -159,12 +198,18 @@ class DynamicMemoryStoreManager:
                 return self._memory_store  # type: ignore[return-value]
         except Exception as e:
             logger.error(f"Error creating LanceDB store: {e}")
-            # Fallback to in-memory store
+            # 任意向量 store 构造失败都统一回退到 in-memory，确保 Web 侧记忆能力不至于整体不可用。
             self._initialize_in_memory_store()
             return self._memory_store  # type: ignore[return-value]
 
     def _check_and_update_store(self) -> None:
-        """Check if embedding model configuration has changed and update store accordingly."""
+        """检查 embedding model 是否变化，并在必要时切换底层 store。
+
+        这里是动态切换的真正核心：
+        - 从无 embedding 到有 embedding：升级到向量型 store
+        - embedding model 变更：重建向量型 store
+        - embedding model 消失：降级回 in-memory
+        """
         embedding_model = self._get_embedding_model_from_db()
         current_model_id = embedding_model.id if embedding_model else None
 
@@ -204,28 +249,23 @@ class DynamicMemoryStoreManager:
                     logger.info("Switched to in-memory memory store")
 
     def get_memory_store(self) -> MemoryStoreType:
-        """
-        Get the current memory store, initializing or updating as necessary.
+        """返回当前应生效的 memory store。
 
-        Returns:
-            Current memory store instance
+        每次取值前都会先做一次配置检查，确保调用方拿到的是“现在正确”的 store，
+        而不是某次启动时遗留下来的旧实例。
         """
         self._check_and_update_store()
         return self._memory_store  # type: ignore[return-value]
 
     def force_reinitialize(self) -> None:
-        """Force reinitialization of the memory store."""
+        """强制重建 memory store。"""
         with self._lock:
             self._initialize_in_memory_store()
             self._check_and_update_store()
             logger.info("Force reinitialized memory store")
 
     def check_embedding_model_change(self) -> bool:
-        """Check if embedding model configuration has changed and update if necessary.
-
-        Returns:
-            True if the store was updated, False otherwise.
-        """
+        """检查 embedding model 变化，并返回这次是否真的触发了 store 切换。"""
         with self._lock:
             old_is_lancedb = self._is_lancedb
             old_model_id = self._last_embedding_model_id
@@ -239,11 +279,10 @@ class DynamicMemoryStoreManager:
             )
 
     def get_store_info(self) -> dict:
-        """
-        Get information about the current memory store.
+        """返回当前 store 的诊断信息。
 
-        Returns:
-            Dictionary with store information
+        这个接口主要给启动日志、健康排查和管理页使用，
+        目的是快速回答“现在到底跑的是哪种 memory backend”。
         """
         with self._lock:
             base_store = (
@@ -255,6 +294,7 @@ class DynamicMemoryStoreManager:
             return {
                 "store_type": type(base_store).__name__,
                 "is_lancedb": self._is_lancedb,
+                "vector_backend": get_vector_backend() if self._is_lancedb else None,
                 "embedding_model_id": self._last_embedding_model_id,
                 "similarity_threshold": self._similarity_threshold,
                 "supports_vector_search": self._is_lancedb,
@@ -269,7 +309,11 @@ _manager_lock = threading.Lock()
 def get_memory_store_manager(
     similarity_threshold: Optional[float] = None,
 ) -> DynamicMemoryStoreManager:
-    """Get or create the global memory store manager."""
+    """获取全局单例 manager。
+
+    这里故意把 manager 做成进程级单例，避免每次请求都重新探测 embedding model
+    并重建底层 store，造成无谓的锁竞争和资源浪费。
+    """
     global _dynamic_manager
 
     if _dynamic_manager is None:
@@ -281,12 +325,19 @@ def get_memory_store_manager(
 
 
 def get_memory_store() -> MemoryStoreType:
-    """Get the current memory store (for backward compatibility)."""
+    """获取当前 memory store。
+
+    这个函数保留为兼容旧调用方的稳定入口。
+    新代码如果需要更多诊断或强制刷新能力，应直接拿 manager。
+    """
     manager = get_memory_store_manager()
     return manager.get_memory_store()
 
 
 def force_reinitialize_memory_store() -> None:
-    """Force reinitialization of the memory store."""
+    """强制重建当前全局 memory store。
+
+    适用于管理操作或模型配置刚变更、需要立刻生效的场景。
+    """
     manager = get_memory_store_manager()
     manager.force_reinitialize()

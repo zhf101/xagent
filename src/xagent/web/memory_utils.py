@@ -68,7 +68,8 @@ def create_memory_store(
         Base = declarative_base()
         Model = create_model_table(Base)
         db = SessionLocal()
-        Base.metadata.create_all(engine)
+        # 注意：不再自动建表，依赖主库已初始化的表结构
+        # 如果表不存在，查询会报错，这是预期行为
 
         hub = SQLAlchemyModelHub(db, Model)
         try:

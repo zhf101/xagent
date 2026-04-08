@@ -1,4 +1,10 @@
-"""User-isolated memory store for web application."""
+"""Web 场景的用户隔离 memory store。
+
+这个模块不实现真正的存储，而是在现有 `MemoryStore` 外面再包一层“按用户隔离”的约束：
+- 写入时自动打上 user_id
+- 读取、搜索、删除时自动收缩到当前用户
+- 这样底层 store 仍可保持通用实现，不必感知 Web 用户体系
+"""
 
 import contextvars
 from typing import Any, List, Optional
@@ -13,32 +19,27 @@ current_user_id: contextvars.ContextVar[Optional[int]] = contextvars.ContextVar(
 
 
 class UserIsolatedMemoryStore(MemoryStore):
-    """Memory store implementation that isolates memory by user ID using context."""
+    """基于上下文变量做用户隔离的 memory store 包装器。"""
 
     def __init__(self, base_store: MemoryStore) -> None:
-        """
-        Initialize with a base memory store for actual storage.
+        """初始化用户隔离包装器。
 
-        Args:
-            base_store: The underlying memory store for storage operations
+        `base_store` 才是真正持久化数据的实现；
+        当前类只负责把 Web 用户上下文转换成统一过滤条件和写入约束。
         """
         self._base_store = base_store
 
     def _get_current_user_id(self) -> Optional[int]:
-        """Get the current user ID from context."""
+        """从上下文变量读取当前用户 id。"""
         return current_user_id.get()
 
     def _add_user_filter(
         self, filters: Optional[dict[str, Any]] = None
     ) -> dict[str, Any]:
-        """
-        Add user filter to existing filters.
+        """给现有 filters 追加用户隔离条件。
 
-        Args:
-            filters: Existing filters to extend
-
-        Returns:
-            Updated filters with user isolation
+        这里统一把 user_id 放进 `metadata.user_id`，
+        这样底层 store 不需要认识“用户”这个 Web 概念，也能完成隔离。
         """
         if filters is None:
             filters = {}
@@ -53,14 +54,11 @@ class UserIsolatedMemoryStore(MemoryStore):
         return filters
 
     def add(self, note: MemoryNote) -> MemoryResponse:
-        """
-        Add a memory note with user isolation.
+        """写入一条带用户隔离的记忆。
 
-        Args:
-            note: Memory note to add
-
-        Returns:
-            Memory response
+        状态影响：
+        - 会在 note.metadata 上补入当前 user_id
+        - 然后把真正写入动作委托给底层 store
         """
         # Add user ID to metadata for isolation
         user_id = self._get_current_user_id()
@@ -70,15 +68,7 @@ class UserIsolatedMemoryStore(MemoryStore):
         return self._base_store.add(note)
 
     def get(self, note_id: str) -> MemoryResponse:
-        """
-        Retrieve a memory note with user isolation.
-
-        Args:
-            note_id: Memory note ID
-
-        Returns:
-            Memory response
-        """
+        """读取一条记忆，并校验其归属当前用户。"""
         response = self._base_store.get(note_id)
         if response.success and response.content:
             note = response.content
@@ -94,15 +84,7 @@ class UserIsolatedMemoryStore(MemoryStore):
         return response
 
     def update(self, note: MemoryNote) -> MemoryResponse:
-        """
-        Update a memory note with user isolation.
-
-        Args:
-            note: Memory note to update
-
-        Returns:
-            Memory response
-        """
+        """更新一条记忆，并先校验所有权。"""
         # First verify ownership
         user_id = self._get_current_user_id()
         if user_id is not None and note.id:
@@ -117,15 +99,7 @@ class UserIsolatedMemoryStore(MemoryStore):
         return self._base_store.update(note)
 
     def delete(self, note_id: str) -> MemoryResponse:
-        """
-        Delete a memory note with user isolation.
-
-        Args:
-            note_id: Memory note ID
-
-        Returns:
-            Memory response
-        """
+        """删除一条记忆，并先校验所有权。"""
         # First verify ownership
         user_id = self._get_current_user_id()
         if user_id is not None:
@@ -142,18 +116,7 @@ class UserIsolatedMemoryStore(MemoryStore):
         filters: Optional[dict[str, Any]] = None,
         similarity_threshold: Optional[float] = None,
     ) -> List[MemoryNote]:
-        """
-        Search memory notes with user isolation.
-
-        Args:
-            query: Search query
-            k: Number of results
-            filters: Additional filters
-            similarity_threshold: Similarity threshold
-
-        Returns:
-            List of matching memory notes
-        """
+        """按用户隔离条件搜索记忆。"""
         # Add user filter to existing filters
         filtered_filters = self._add_user_filter(filters)
 
@@ -165,8 +128,10 @@ class UserIsolatedMemoryStore(MemoryStore):
         )
 
     def clear(self) -> None:
-        """
-        Clear memory notes with user isolation.
+        """清空当前用户可见记忆。
+
+        若当前没有用户上下文，则退化为清空整个底层 store；
+        这是给系统级管理或测试场景保留的能力。
         """
         user_id = self._get_current_user_id()
         if user_id is not None:
@@ -178,28 +143,34 @@ class UserIsolatedMemoryStore(MemoryStore):
             # Clear all notes
             self._base_store.clear()
 
-    def list_all(self, filters: Optional[dict[str, Any]] = None) -> List[MemoryNote]:
-        """
-        List all memory notes with user isolation.
+    def list_all(
+        self,
+        filters: Optional[dict[str, Any]] = None,
+        *,
+        limit: Optional[int] = None,
+        offset: int = 0,
+    ) -> List[MemoryNote]:
+        """列出当前用户可见的全部记忆。
 
-        Args:
-            filters: Additional filters
-
-        Returns:
-            List of memory notes
+        这里的分页必须发生在“先补齐 user_id 过滤条件之后”，
+        否则 offset/limit 会先作用到全局集合，导致不同用户之间出现可见性串页。
         """
         # Add user filter to existing filters
         filtered_filters = self._add_user_filter(filters)
 
-        return self._base_store.list_all(filtered_filters)
+        return self._base_store.list_all(
+            filtered_filters,
+            limit=limit,
+            offset=offset,
+        )
+
+    def count(self, filters: Optional[dict[str, Any]] = None) -> int:
+        """返回当前用户视角下的记忆数量。"""
+        filtered_filters = self._add_user_filter(filters)
+        return self._base_store.count(filtered_filters)
 
     def get_stats(self) -> dict[str, Any]:
-        """
-        Get statistics with user isolation.
-
-        Returns:
-            Statistics dictionary
-        """
+        """返回当前用户视角下的记忆统计信息。"""
         user_id = self._get_current_user_id()
         if user_id is not None:
             # Get stats for specific user
@@ -214,16 +185,7 @@ class UserIsolatedMemoryStore(MemoryStore):
             return self._base_store.get_stats()
 
     def _calculate_stats(self, notes: List[MemoryNote]) -> dict[str, Any]:
-        """
-        Calculate statistics for a given set of notes.
-
-        Args:
-            notes: List of memory notes
-            scope: Scope description for stats
-
-        Returns:
-            Statistics dictionary
-        """
+        """基于指定记忆集合计算轻量统计。"""
         total_count = len(notes)
         category_counts: dict[str, int] = {}
         tag_counts: dict[str, int] = {}
@@ -244,30 +206,20 @@ class UserIsolatedMemoryStore(MemoryStore):
 
 
 def set_user_context(user_id: Optional[int]) -> contextvars.Token:
-    """
-    Set the current user context for memory operations.
-
-    Args:
-        user_id: User ID to set as current context
-
-    Returns:
-        Context token that can be used to reset the context
-    """
+    """设置当前线程/协程上下文中的用户 id。"""
     return current_user_id.set(user_id)
 
 
 def reset_user_context(token: contextvars.Token) -> None:
-    """
-    Reset the user context to its previous state.
-
-    Args:
-        token: Context token from set_user_context
-    """
+    """把用户上下文恢复到之前状态。"""
     current_user_id.reset(token)
 
 
 class UserContext:
-    """Context manager for setting user context."""
+    """设置用户上下文的上下文管理器。
+
+    这个类的价值是避免业务代码手动 set/reset 时遗漏恢复，导致后续请求串用户。
+    """
 
     def __init__(self, user_id: Optional[int]) -> None:
         self.user_id = user_id

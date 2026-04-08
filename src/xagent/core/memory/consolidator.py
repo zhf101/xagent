@@ -31,7 +31,8 @@ def upsert_memory_candidates(
                 filters={
                     "memory_type": candidate.memory_type,
                     "metadata": {"dedupe_key": dedupe_key},
-                }
+                },
+                limit=1,
             )
 
         if existing:

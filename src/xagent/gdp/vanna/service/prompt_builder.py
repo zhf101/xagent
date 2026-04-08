@@ -1,4 +1,8 @@
-"""把召回结果组装成 SQL 生成 Prompt。"""
+"""把召回结果组装成 SQL 生成 Prompt。
+
+这个模块只负责 Prompt 结构化，不负责检索和生成本身。
+把它单独拆出来的意义是：当 Prompt 策略调整时，不需要混进 ask 主链路代码里。
+"""
 
 from __future__ import annotations
 
@@ -9,7 +13,11 @@ from .contracts import RetrievalHit, RetrievalResult
 
 
 class PromptBuilder:
-    """面向第一版 ask 的 Prompt 装配器。"""
+    """面向第一版 ask 的 Prompt 装配器。
+
+    当前采用“system 固定约束 + user 分段上下文”的朴素结构，
+    目标是让问题定位时能快速看清模型到底看到了哪些素材。
+    """
 
     def build_prompt(
         self,
@@ -19,7 +27,10 @@ class PromptBuilder:
         retrieval: RetrievalResult,
         live_schema_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """返回 system/user prompt 以及可直接给 LLM 的 messages。"""
+        """返回 system/user prompt 以及可直接给 LLM 的 messages。
+
+        同时会生成 `snapshot`，用于 ask_run 持久化，保证 Prompt 可回放。
+        """
         system_prompt = self._build_system_prompt(kb=kb)
         user_prompt = self._build_user_prompt(
             kb=kb,
@@ -63,6 +74,8 @@ class PromptBuilder:
         }
 
     def _build_system_prompt(self, *, kb: VannaKnowledgeBase) -> str:
+        """构造 system prompt，声明最核心的生成约束。"""
+
         return (
             "你是严格的 Text2SQL 生成器。"
             f"当前数据库方言是 {kb.dialect or kb.db_type or 'sql'}。"
@@ -80,6 +93,8 @@ class PromptBuilder:
         retrieval: RetrievalResult,
         live_schema_context: dict[str, Any] | None = None,
     ) -> str:
+        """构造 user prompt，把三类召回结果按段落拼接起来。"""
+
         sections = [
             "## 数据源上下文",
             f"- datasource_id: {int(kb.datasource_id)}",
@@ -130,6 +145,8 @@ class PromptBuilder:
         *,
         formatter,
     ) -> str:
+        """把同一桶命中结果渲染成 Prompt 段落。"""
+
         if not hits:
             return "无"
         return "\n\n".join(
@@ -137,6 +154,8 @@ class PromptBuilder:
         )
 
     def _format_question_sql_hit(self, *, hit: RetrievalHit, index: int) -> str:
+        """把 question/sql 样例渲染成最适合模型复用的格式。"""
+
         parts = [f"{index}. 标题: {hit.title or '未命名样例'}"]
         if hit.question_text:
             parts.append(f"问题: {hit.question_text}")
@@ -148,6 +167,8 @@ class PromptBuilder:
         return "\n".join(parts)
 
     def _format_doc_like_hit(self, *, hit: RetrievalHit, index: int) -> str:
+        """把 schema 摘要和业务文档统一渲染成说明型片段。"""
+
         parts = [f"{index}. 标题: {hit.title or '未命名条目'}"]
         if hit.schema_name or hit.table_name:
             parts.append(

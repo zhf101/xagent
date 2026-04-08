@@ -4,11 +4,17 @@ import os
 import time
 from typing import Any, AsyncIterator, Dict, List, Optional, Union
 
+import httpx
 import openai
 from openai import AsyncOpenAI
 
 from ....utils.security import redact_sensitive_text
-from ..exceptions import LLMRetryableError, LLMTimeoutError
+from ..exceptions import (
+    LLMRequestTimeoutError,
+    LLMRetryableError,
+    LLMServiceUnavailableError,
+    LLMTimeoutError,
+)
 from ..logging_callback import (
     log_llm_request_end,
     log_llm_request_error,
@@ -135,6 +141,35 @@ class OpenAILLM(BaseLLM):
             error=error,
             extra=extra,
         )
+
+    def _raise_service_unavailable_error(
+        self, error: Exception, *, timeout: bool = False
+    ) -> None:
+        """把底层网络类异常转换成统一的中文友好异常。
+
+        这里故意不把底层 `httpx` / `openai` 异常文本直接抛给前端，因为：
+        1. 这些报错通常包含 SDK 术语，对业务同学几乎不可读。
+        2. ReAct 外层需要依赖稳定的异常类型来决定“直接失败”还是“继续下一轮”。
+        3. 原始细节仍通过日志保留，便于排查真实网络问题。
+        """
+
+        sanitized_detail = redact_sensitive_text(str(error))
+        if timeout:
+            logger.error("OpenAI request timeout: %s", sanitized_detail)
+            raise LLMRequestTimeoutError(detail=sanitized_detail) from error
+
+        logger.error("OpenAI service unavailable: %s", sanitized_detail)
+        raise LLMServiceUnavailableError(detail=sanitized_detail) from error
+
+    def _raise_rate_limit_exhausted_error(self, error: openai.RateLimitError) -> None:
+        """把限流错误也转换成可读提示，避免前端直接暴露 SDK 原始消息。"""
+
+        logger.error(
+            "OpenAI rate limit exceeded: %s", redact_sensitive_text(str(error))
+        )
+        raise LLMRetryableError(
+            "大模型服务当前请求过多，已多次重试仍失败。请稍后再试。"
+        ) from error
 
     async def chat(
         self,
@@ -427,22 +462,44 @@ class OpenAILLM(BaseLLM):
             raise RuntimeError(f"OpenAI bad request: {error_msg}") from e
 
         except openai.APITimeoutError as e:
-            # Handle timeout errors
             self._fail_llm_log(
                 call_type="chat",
                 started_at=llm_log_started_at,
                 error=e,
             )
-            raise RuntimeError(f"OpenAI API timeout: {str(e)}") from e
+            self._raise_service_unavailable_error(e, timeout=True)
+
+        except openai.APIConnectionError as e:
+            self._fail_llm_log(
+                call_type="chat",
+                started_at=llm_log_started_at,
+                error=e,
+            )
+            self._raise_service_unavailable_error(e)
+
+        except httpx.TimeoutException as e:
+            self._fail_llm_log(
+                call_type="chat",
+                started_at=llm_log_started_at,
+                error=e,
+            )
+            self._raise_service_unavailable_error(e, timeout=True)
+
+        except httpx.NetworkError as e:
+            self._fail_llm_log(
+                call_type="chat",
+                started_at=llm_log_started_at,
+                error=e,
+            )
+            self._raise_service_unavailable_error(e)
 
         except openai.RateLimitError as e:
-            # Handle rate limit errors
             self._fail_llm_log(
                 call_type="chat",
                 started_at=llm_log_started_at,
                 error=e,
             )
-            raise RuntimeError(f"OpenAI rate limit exceeded: {e.message}") from e
+            self._raise_rate_limit_exhausted_error(e)
 
         except openai.AuthenticationError as e:
             # Handle authentication errors
@@ -454,7 +511,6 @@ class OpenAILLM(BaseLLM):
             raise RuntimeError(f"OpenAI authentication failed: {e.message}") from e
 
         except openai.APIError as e:
-            # Handle OpenAI API errors
             error_msg = f"OpenAI API error: {e.message}"
             if (status_code := getattr(e, "status_code", None)) is not None:
                 error_msg = f"OpenAI API error ({status_code}): {e.message}"
@@ -463,7 +519,17 @@ class OpenAILLM(BaseLLM):
                 started_at=llm_log_started_at,
                 error=e,
             )
+            if status_code is not None and 500 <= status_code < 600:
+                self._raise_service_unavailable_error(e)
             raise RuntimeError(error_msg) from e
+
+        except TimeoutError as e:
+            self._fail_llm_log(
+                call_type="chat",
+                started_at=llm_log_started_at,
+                error=e,
+            )
+            self._raise_service_unavailable_error(e, timeout=True)
 
         except Exception as e:
             # Handle any other unexpected errors
@@ -1092,34 +1158,53 @@ class OpenAILLM(BaseLLM):
                 usage=last_usage_payload,
             )
 
-        except LLMTimeoutError:
-            # Re-raise timeout errors for retry
+        except LLMTimeoutError as e:
             self._fail_llm_log(
                 call_type="stream_chat",
                 started_at=llm_log_started_at,
-                error=LLMTimeoutError("stream timeout"),
+                error=e,
             )
-            raise
+            self._raise_service_unavailable_error(e, timeout=True)
 
         except openai.APITimeoutError as e:
-            logger.error(f"OpenAI API timeout: {e}")
             self._fail_llm_log(
                 call_type="stream_chat",
                 started_at=llm_log_started_at,
                 error=e,
             )
-            raise LLMRetryableError(f"OpenAI API timeout: {str(e)}") from e
+            self._raise_service_unavailable_error(e, timeout=True)
+
+        except openai.APIConnectionError as e:
+            self._fail_llm_log(
+                call_type="stream_chat",
+                started_at=llm_log_started_at,
+                error=e,
+            )
+            self._raise_service_unavailable_error(e)
+
+        except httpx.TimeoutException as e:
+            self._fail_llm_log(
+                call_type="stream_chat",
+                started_at=llm_log_started_at,
+                error=e,
+            )
+            self._raise_service_unavailable_error(e, timeout=True)
+
+        except httpx.NetworkError as e:
+            self._fail_llm_log(
+                call_type="stream_chat",
+                started_at=llm_log_started_at,
+                error=e,
+            )
+            self._raise_service_unavailable_error(e)
 
         except openai.RateLimitError as e:
-            logger.error(
-                "OpenAI rate limit exceeded: %s", redact_sensitive_text(str(e))
-            )
             self._fail_llm_log(
                 call_type="stream_chat",
                 started_at=llm_log_started_at,
                 error=e,
             )
-            raise LLMRetryableError(f"OpenAI rate limit exceeded: {e.message}") from e
+            self._raise_rate_limit_exhausted_error(e)
 
         except openai.AuthenticationError as e:
             logger.error(
@@ -1151,15 +1236,17 @@ class OpenAILLM(BaseLLM):
                 started_at=llm_log_started_at,
                 error=e,
             )
+            if status_code is not None and 500 <= status_code < 600:
+                self._raise_service_unavailable_error(e)
             raise RuntimeError(error_msg) from e
 
-        except TimeoutError:
+        except TimeoutError as e:
             self._fail_llm_log(
                 call_type="stream_chat",
                 started_at=llm_log_started_at,
-                error=TimeoutError("stream timeout"),
+                error=e,
             )
-            raise
+            self._raise_service_unavailable_error(e, timeout=True)
 
         except Exception as e:
             logger.error("OpenAI stream chat failed: %s", redact_sensitive_text(str(e)))

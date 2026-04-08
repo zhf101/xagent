@@ -1,4 +1,8 @@
-"""Template statistics model for tracking template usage"""
+"""模板使用统计模型。
+
+这张表保存的是模板维度的轻量统计，服务展示排序、热度判断等场景，
+不承担审计级明细留痕职责。
+"""
 
 from datetime import datetime
 
@@ -9,7 +13,13 @@ from .database import Base
 
 
 class TemplateStats(Base):  # type: ignore
-    """Template usage statistics model"""
+    """模板使用统计宿主模型。
+
+    关键字段说明：
+    - `views`: 浏览次数
+    - `likes`: 点赞次数
+    - `used_count`: 被真正采用或创建任务的次数
+    """
 
     __tablename__ = "template_stats"
 

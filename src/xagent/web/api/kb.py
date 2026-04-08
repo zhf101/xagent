@@ -1,4 +1,8 @@
-"""Knowledge base API route handlers"""
+"""知识库 API。
+
+这个模块仍然承载传统 KB 路由，但当前分支已经把 SQL/Vanna 相关能力拆到新的 GDP 目录。
+因此这里更像“通用文档知识库入口”，而不是所有知识能力的总入口。
+"""
 
 import asyncio
 import concurrent.futures
@@ -19,8 +23,6 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.responses import JSONResponse
-from googleapiclient.discovery import build  # type: ignore
-from googleapiclient.http import MediaIoBaseDownload  # type: ignore
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -86,14 +88,17 @@ from ..services.kb_file_service import (
 from ..services.kb_file_service import (
     upsert_uploaded_file_record as _upsert_uploaded_file_record,
 )
-from .cloud_storage import get_google_credentials
 
 T = TypeVar("T", bound=Callable[..., Any])
 logger = logging.getLogger(__name__)
 
 
 def handle_kb_exceptions(func: T) -> T:
-    """Decorator to handle common exceptions in KB API routes."""
+    """统一知识库路由异常语义。
+
+    这里的目标不是把所有异常都吞掉，而是把常见的格式错误、文件系统错误、
+    未知服务端错误转换成更稳定的 HTTP 语义，减少前端分支判断复杂度。
+    """
 
     @functools.wraps(func)
     async def wrapper(*args: Any, **kwargs: Any) -> Any:
@@ -121,31 +126,13 @@ def handle_kb_exceptions(func: T) -> T:
 kb_router = APIRouter(prefix="/api/kb", tags=["kb"])
 
 
-class CloudFile(BaseModel):
-    provider: str
-    fileId: str
-    fileName: str
-
-
-class CloudIngestRequest(BaseModel):
-    files: List[CloudFile]
-    collection: str
-    parse_method: Optional[ParseMethod] = None
-    chunk_strategy: Optional[ChunkStrategy] = None
-    chunk_size: Optional[int] = None
-    chunk_overlap: Optional[int] = None
-    separators: Optional[List[str]] = None
-    embedding_model_id: str = "text-embedding-v4"
-    embedding_batch_size: Optional[int] = None
-    max_retries: Optional[int] = None
-    retry_delay: Optional[float] = None
-
-
 def _parse_separators(separators: Optional[str]) -> Optional[List[str]]:
-    """Parse optional custom separators (JSON array of strings) from form input.
+    """解析前端表单上传的自定义分隔符。
 
-    Returns None if input is missing/empty or invalid; returns a list of
-    non-empty strings when valid (possibly empty list for input '[]').
+    这里约束得比较保守：
+    - 缺失、空串、非法 JSON 一律回退为 `None`
+    - 只有“字符串数组”才视为有效配置
+    - 返回值里会过滤掉空串，避免后续 chunk 逻辑出现无意义分隔符
     """
     if not separators or not separators.strip():
         return None
@@ -169,7 +156,12 @@ async def save_collection_config(
     config: IngestionConfig = Body(...),
     _user: User = Depends(get_current_user),
 ) -> CollectionOperationResult:
-    """Save ingestion configuration for a specific collection."""
+    """保存某个 collection 的 ingestion 配置。
+
+    当前仍使用兼容性表 `collection_config` 持久化配置，
+    目的是在不大改现有 RAG 管线的前提下，先把“每个 collection 有独立 ingestion 参数”
+    这件事稳定跑起来。
+    """
     from datetime import datetime, timezone
 
     from ...core.tools.core.RAG_tools.LanceDB.schema_manager import (
@@ -461,160 +453,6 @@ async def ingest(
         status_code=200,
         content={**result.model_dump(), "file_id": file_record.file_id},
     )
-
-
-@kb_router.post("/ingest-cloud", response_model=List[IngestionResult])
-async def ingest_cloud(
-    request: CloudIngestRequest,
-    db: Session = Depends(get_db),
-    _user: User = Depends(get_current_user),
-) -> List[IngestionResult]:
-    """Ingest files from cloud storage."""
-    results = []
-
-    # Common configuration setup
-    final_chunk_size = (
-        request.chunk_size if request.chunk_size and request.chunk_size > 0 else 1000
-    )
-    final_chunk_overlap = (
-        request.chunk_overlap
-        if request.chunk_overlap and request.chunk_overlap >= 0
-        else 200
-    )
-    if final_chunk_overlap >= final_chunk_size:
-        final_chunk_overlap = min(int(final_chunk_size * 0.2), final_chunk_size - 1)
-
-    config = IngestionConfig(
-        parse_method=request.parse_method or ParseMethod.DEFAULT,
-        chunk_strategy=request.chunk_strategy or ChunkStrategy.RECURSIVE,
-        chunk_size=final_chunk_size,
-        chunk_overlap=final_chunk_overlap,
-        separators=request.separators,
-        embedding_model_id=request.embedding_model_id,
-        embedding_batch_size=request.embedding_batch_size or 10,
-        max_retries=request.max_retries or 3,
-        retry_delay=request.retry_delay or 1.0,
-    )
-
-    progress_manager = get_progress_manager()
-
-    # Concurrency limit for cloud ingestion to avoid overloading
-    semaphore = asyncio.Semaphore(5)
-
-    async def process_file(file_info: CloudFile) -> IngestionResult:
-        async with semaphore:
-            try:
-                if file_info.provider == "google-drive":
-                    # Get credentials (run in thread to avoid blocking)
-                    try:
-                        creds = await asyncio.to_thread(
-                            get_google_credentials, int(_user.id), db
-                        )
-                    except HTTPException as e:
-                        return IngestionResult(
-                            status="error",
-                            message=f"Authentication error: {e.detail}",
-                            doc_id=file_info.fileName,
-                        )
-
-                    # Build service (blocking)
-                    service = await asyncio.to_thread(
-                        build, "drive", "v3", credentials=creds, cache_discovery=False
-                    )
-
-                    # Save to local path
-                    safe_filename = Path(file_info.fileName).name
-                    file_path = get_upload_path(safe_filename, user_id=int(_user.id))
-
-                    # Download file directly to disk
-                    try:
-
-                        def _download_file() -> None:
-                            request_file = service.files().get_media(
-                                fileId=file_info.fileId
-                            )
-                            with open(file_path, "wb") as fh:
-                                downloader = MediaIoBaseDownload(fh, request_file)
-                                done = False
-                                while done is False:
-                                    status, done = downloader.next_chunk()
-
-                        await asyncio.to_thread(_download_file)
-
-                    except Exception as e:
-                        return IngestionResult(
-                            status="error",
-                            message=f"Download failed: {str(e)}",
-                            doc_id=file_info.fileName,
-                        )
-
-                    import mimetypes
-
-                    file_record = _upsert_uploaded_file_record(
-                        db,
-                        user_id=int(_user.id),
-                        filename=safe_filename,
-                        storage_path=file_path,
-                        mime_type=(
-                            mimetypes.guess_type(safe_filename)[0]
-                            or "application/octet-stream"
-                        ),
-                        file_size=int(file_path.stat().st_size),
-                    )
-
-                    # Run ingestion (blocking)
-                    try:
-                        result = await asyncio.to_thread(
-                            run_document_ingestion,
-                            collection=request.collection,
-                            source_path=str(file_path),
-                            ingestion_config=config,
-                            progress_manager=progress_manager,
-                            user_id=int(_user.id),
-                            is_admin=bool(_user.is_admin),
-                            file_id=str(file_record.file_id),
-                        )
-                        return result
-                    except Exception as e:
-                        # Clean up the file record and physical file on failure
-                        try:
-                            db.delete(file_record)
-                            db.commit()
-                        except Exception:
-                            db.rollback()
-                        try:
-                            if file_path.exists():
-                                file_path.unlink()
-                        except OSError:
-                            pass
-                        return IngestionResult(
-                            status="error",
-                            message=f"Ingestion failed: {str(e)}",
-                            doc_id=file_info.fileName,
-                        )
-
-                else:
-                    return IngestionResult(
-                        status="error",
-                        message=f"Unsupported provider: {file_info.provider}",
-                        doc_id=file_info.fileName,
-                    )
-
-            except Exception as e:
-                logger.exception(
-                    f"Unexpected error ingesting {file_info.fileName}: {e}"
-                )
-                return IngestionResult(
-                    status="error",
-                    message=f"Unexpected error: {str(e)}",
-                    doc_id=file_info.fileName,
-                )
-
-    # Run all file processings concurrently
-    results = await asyncio.gather(*[process_file(f) for f in request.files])
-
-    return results
-
 
 @kb_router.get(
     "/collections",

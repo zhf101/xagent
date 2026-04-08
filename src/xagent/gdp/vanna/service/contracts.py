@@ -1,4 +1,8 @@
-"""Vanna 服务层输入输出契约。"""
+"""Vanna 服务层输入输出契约。
+
+这些 dataclass 的作用是把 service 间传递的数据形状固定下来，避免上层直接依赖 ORM。
+这样测试、工具层和 API 层都能用同一套稳定结构。
+"""
 
 from __future__ import annotations
 
@@ -8,7 +12,10 @@ from typing import Any
 
 @dataclass(slots=True)
 class HarvestTablePreview:
-    """单表采集预览结果。"""
+    """单表采集预览结果。
+
+    它描述“如果现在提交采集，这张表大概会带来什么结构量级”。
+    """
 
     schema_name: str | None
     table_name: str
@@ -20,7 +27,10 @@ class HarvestTablePreview:
 
 @dataclass(slots=True)
 class HarvestPreviewResult:
-    """采集预览结果。"""
+    """采集预览结果。
+
+    这是前台确认采集范围时使用的读模型，不代表任何持久化任务已经创建。
+    """
 
     datasource_id: int
     system_short: str
@@ -34,7 +44,10 @@ class HarvestPreviewResult:
 
 @dataclass(slots=True)
 class HarvestCommitResult:
-    """采集提交结果。"""
+    """采集提交结果。
+
+    这里返回的是一次提交后最核心的汇总信息，完整执行细节仍以 job 表为准。
+    """
 
     job_id: int
     kb_id: int
@@ -45,7 +58,10 @@ class HarvestCommitResult:
 
 @dataclass(slots=True)
 class RetrievalHit:
-    """单条召回命中。"""
+    """单条召回命中。
+
+    它同时保留了命中内容和评分原因，便于后续 Prompt 组装、问题排查和快照回放。
+    """
 
     entry_id: int
     chunk_id: int
@@ -84,7 +100,11 @@ class RetrievalHit:
 
 @dataclass(slots=True)
 class RetrievalResult:
-    """按桶组织的召回结果。"""
+    """按桶组织的召回结果。
+
+    `sql_hits / schema_hits / doc_hits` 分桶是核心设计点，
+    因为下游 PromptBuilder 会按不同语义角色来摆放这些内容。
+    """
 
     query_text: str
     sql_hits: list[RetrievalHit] = field(default_factory=list)
@@ -105,7 +125,10 @@ class RetrievalResult:
 
 @dataclass(slots=True)
 class AskResult:
-    """一次 ask 的最终结果。"""
+    """一次 ask 的最终结果。
+
+    它是 ask 主链路对外暴露的最小完成态结果，不包含完整快照；完整事实仍在 `VannaAskRun`。
+    """
 
     ask_run_id: int
     execution_status: str
@@ -117,7 +140,11 @@ class AskResult:
 
 @dataclass(slots=True)
 class QueryResult:
-    """统一 query 编排结果。"""
+    """统一 query 编排结果。
+
+    这个结构需要同时承载 asset 路径与 ask fallback 路径，所以字段较多。
+    阅读时先看 `mode` 和 `route`，再看对应分支专属字段。
+    """
 
     mode: str
     route: str

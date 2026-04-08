@@ -15,12 +15,8 @@ from pathlib import Path
 from typing import cast
 
 import uvicorn
-from dotenv import load_dotenv
 
 from .logging_config import LogLevel, setup_logging
-
-# Load environment variables from .env file
-load_dotenv()
 
 
 JWT_ENV_KEYS = (
@@ -121,7 +117,8 @@ def main() -> None:
     """Main function"""
     args = parse_args()
 
-    # Configure logging BEFORE importing app
+    # 日志需要在导入 app 前先初始化；
+    # `.env` 则已经在 `xagent.config` 模块导入阶段统一加载，不再在入口脚本重复处理。
     log_level = "debug" if args.debug else args.log_level
     setup_logging(level=cast(LogLevel, log_level) if log_level else None)
 

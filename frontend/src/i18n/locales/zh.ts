@@ -54,6 +54,10 @@ const zh = {
     search: "搜索任务",
     templates: "模板",
     channels: "渠道",
+    sqlDataSources: "SQL 数据源",
+    sqlAssets: "SQL 资产",
+    httpAssets: "HTTP 资产",
+    systemRegistry: "系统管理",
     sections: {
       agentDevelopment: "Agent 开发",
       resources: "资源",
@@ -198,6 +202,7 @@ Build when you need.`
         visual: { title: "视觉模型", description: "理解并处理图像" },
         compact: { title: "长上下文模型", description: "处理长上下文与压缩" },
         embedding: { title: "嵌入模型", description: "生成向量嵌入" },
+        rerank: { title: "重排序模型", description: "对召回结果进行相关性重排" },
       },
       actions: {
         clearDefault: "清除默认",
@@ -875,9 +880,13 @@ Build when you need.`
       description: "存储、搜索并管理智能体的记忆项",
       create: "新建记忆",
     },
+    tabs: {
+      memories: "记忆列表",
+      jobs: "治理任务",
+    },
     createDialog: {
       title: "创建记忆",
-      description: "填写内容、关键词、标签和元数据以添加新的记忆项，类别默认为\"用户添加的记忆\"。",
+      description: "填写内容、关键词、标签、类别和元数据以添加新的记忆项。",
     },
     stats: {
       total: "记忆总数",
@@ -894,6 +903,7 @@ Build when you need.`
       },
       categoryOptions: {
         general: "用户添加的记忆",
+        experience: "经验记忆",
         react_memory: "运行记忆",
         execution_memory: "任务记忆",
       },
@@ -940,7 +950,7 @@ Build when you need.`
     },
     editDialog: {
       title: "编辑记忆",
-      description: "修改内容、关键词、标签或元数据",
+      description: "修改内容、关键词、标签、类别或元数据",
     },
     deleteDialog: {
       title: "删除记忆",
@@ -964,6 +974,74 @@ Build when you need.`
       contextSource: "上下文来源",
       allMemories: "所有记忆",
       byCategory: "按类别",
+    },
+    jobs: {
+      title: "记忆治理任务",
+      description: "查看异步记忆提取、合并、过期治理任务，并对失败任务执行重试。",
+      headerHint: "查看记忆治理队列状态，并对失败任务进行重试。",
+      sidebar: {
+        title: "治理队列",
+        description: "这个面板只用于运维治理，不做记忆编辑。重点看队列状态、失败原因和重试结果。",
+      },
+      filters: {
+        statusLabel: "状态筛选",
+        statusPlaceholder: "按状态筛选",
+        allStatuses: "全部状态",
+        jobTypeLabel: "任务类型筛选",
+        jobTypePlaceholder: "按任务类型筛选",
+        allJobTypes: "全部任务类型",
+      },
+      statusOptions: {
+        pending: "待处理",
+        running: "执行中",
+        succeeded: "已成功",
+        failed: "失败",
+        dead: "已死亡",
+        cancelled: "已取消",
+      },
+      jobTypeOptions: {
+        extract_memories: "提取记忆",
+        consolidate_memories: "合并记忆",
+        expire_memories: "过期治理",
+      },
+      autoRefresh: {
+        label: "自动刷新",
+        hint: "每 {seconds} 秒刷新一次",
+        lastRefreshed: "最近刷新：{time}",
+      },
+      pagination: {
+        summary: "显示 {from}-{to} 条，共 {total} 条任务",
+        page: "第 {current} / {total} 页",
+        prev: "上一页",
+        next: "下一页",
+      },
+      actions: {
+        refresh: "刷新",
+        retry: "重试",
+        retrying: "重试中...",
+      },
+      columns: {
+        job: "任务",
+        status: "状态",
+        source: "来源",
+        attempts: "尝试次数",
+        updatedAt: "更新时间",
+        actions: "操作",
+      },
+      detail: {
+        title: "任务详情",
+        empty: "选择一条任务后，可查看其负载和错误详情。",
+        jobType: "任务类型",
+        status: "状态",
+        source: "来源",
+        lastError: "最近错误",
+        payload: "任务负载",
+      },
+      errors: {
+        loadFailed: "加载记忆治理任务失败",
+        retryFailed: "重试记忆治理任务失败",
+      },
+      empty: "当前筛选条件下没有记忆治理任务。",
     },
     actions: {
       exportSelected: "导出选中 ({count})",
@@ -1268,8 +1346,7 @@ Build when you need.`
     tabs: {
       llm: "LLM 模型",
       embedding: "Embedding 模型",
-      image: "图像生成模型",
-      speech: "语音模型",
+      rerank: "Rerank 模型",
     },
     section: {
       enabledModels: "已启用模型",
@@ -1292,10 +1369,7 @@ Build when you need.`
       visual: "视觉模型",
       compact: "长上下文模型",
       embedding: "嵌入模型",
-      image: "图像生成模型",
-      image_edit: "图像编辑模型",
-      asr: "语音识别模型",
-      tts: "文本转语音模型",
+      rerank: "重排序模型",
       shared: "已分享",
       shared_from_others: "公共模型",
     },
@@ -1329,7 +1403,7 @@ Build when you need.`
     empty: {
       llm: "暂无配置的 LLM 模型",
       embedding: "暂无配置的嵌入模型",
-      image: "暂无配置的图像模型",
+      rerank: "暂无配置的重排序模型",
       description: "点击 '添加模型' 开始配置",
     },
     dialog: {
@@ -1385,6 +1459,7 @@ Build when you need.`
       tool_calling: "工具调用",
       thinking_mode: "思考模式",
       embedding: "嵌入",
+      rerank: "重排序",
       generate: "生成",
       edit: "编辑",
       asr: "语音识别 (ASR)",
@@ -1463,6 +1538,98 @@ Build when you need.`
       title: "知识库管理",
       description: "管理文档集合和搜索索引",
       new: "新建知识库",
+    },
+    training: {
+      searchPlaceholder: "搜索标题、内容或表名...",
+      emptyByType: "当前 {type} 分类下暂无训练知识。",
+      emptyDetail: "当前分类下暂无可查看的知识详情。",
+      feedback: {
+        loadFailed: "加载训练知识失败",
+      },
+      actions: {
+        createKnowledge: "新建知识",
+        createQuestionSql: "新建问答对",
+        createDocumentation: "去填写知识",
+        generateSchemaSummary: "去生成摘要",
+      },
+      types: {
+        schema_summary: "结构摘要",
+        question_sql: "SQL 问答对",
+        documentation: "文档知识",
+      },
+      lifecycle: {
+        published: "已发布",
+        candidate: "候选",
+        archived: "已归档",
+      },
+      quality: {
+        verified: "已校验",
+        unverified: "未校验",
+        unknown: "未知",
+      },
+      sourceKind: {
+        manual: "手工录入",
+        schema_harvest: "结构采集",
+        bootstrap: "初始化生成",
+        unknown: "未知来源",
+      },
+      detail: {
+        question: "用户问题",
+        emptyQuestion: "暂无问题文本",
+        standardSql: "标准 SQL",
+        emptySql: "暂无 SQL",
+        explanation: "补充说明",
+        documentBody: "文档正文",
+        emptyDocument: "暂无文档正文",
+        emptySchemaSummary: "暂无结构摘要",
+        lifecycle: "生命周期",
+        quality: "质量",
+        schemaTable: "结构 / 表",
+        unbound: "未绑定",
+        sourceOrigin: "来源",
+      },
+    },
+    trainingNew: {
+      actions: {
+        saveCandidate: "保存为候选",
+        publish: "直接发布",
+      },
+      feedback: {
+        loadFailed: "知识库加载失败",
+        questionSqlRequired: "请填写用户问题和标准 SQL",
+        documentationRequired: "请填写文档标题和正文",
+        publishSuccess: "训练知识已发布",
+        saveCandidateSuccess: "训练知识已保存为候选",
+        saveFailed: "保存训练知识失败",
+      },
+      questionSql: {
+        title: "新建 SQL 问答对",
+        description: "录入真实业务问题与标准 SQL，沉淀为可复用的 SQL 问答对样例。",
+        detailTitle: "填写问答对详情",
+      },
+      documentation: {
+        title: "填写文档知识",
+        description: "录入口径定义、业务规则和术语说明，补足结构事实无法表达的业务语义。",
+        detailTitle: "填写知识详情",
+      },
+      form: {
+        question: "用户问题",
+        standardSql: "标准 SQL",
+        documentTitle: "文档标题",
+        documentBody: "文档正文",
+      },
+      placeholders: {
+        question: "例如：查询近一个月销售额最高的前 10 名客户",
+        sql: "SELECT ...",
+        documentTitle: "例如：客户分级定义与计算逻辑",
+        documentation: "请输入业务详细说明...",
+      },
+      scope: {
+        title: "写入范围说明",
+        descriptionPrefix: "当前版本会把知识写入与数据源强绑定的知识库中，并自动继承",
+        questionSqlSuffix: "宿主标识。该页面只会写入 SQL 问答对的“问题 + 标准 SQL”。",
+        documentationSuffix: "宿主标识。该页面只会写入文档知识的“标题 + 文档正文”。",
+      },
     },
     search: {
       placeholder: "搜索知识库...",
@@ -2215,6 +2382,8 @@ Build when you need.`
         completed: "已完成",
         failed: "失败",
         skipped: "已跳过",
+        waitingApproval: "等待审批",
+        analyzed: "已分析",
       },
       right: {
         titles: {

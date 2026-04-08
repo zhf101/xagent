@@ -1,4 +1,8 @@
-"""平台内部统一使用的 SQL 数据库类型定义。"""
+"""平台内部统一使用的 SQL 数据库类型定义。
+
+这一层的价值在于把前台展示名、SQLAlchemy driver 名、历史别名都收敛成平台自己的
+canonical 枚举，避免后续 service / adapter / API 各写一套判断。
+"""
 
 from __future__ import annotations
 
@@ -40,7 +44,11 @@ DATABASE_TYPE_CANONICAL_VALUES = tuple(item.value for item in DatabaseType)
 
 
 def normalize_database_type(raw_type: str) -> str:
-    """把别名收敛成平台内部稳定的 canonical 数据库类型。"""
+    """把别名收敛成平台内部稳定的 canonical 数据库类型。
+
+    这里会对未知类型直接报错，因为调用方通常是在“正式接入平台能力”的路径上，
+    失败要尽早暴露，而不是把脏值继续往后传。
+    """
 
     normalized = raw_type.strip().lower()
     normalized = DATABASE_TYPE_ALIASES.get(normalized, normalized)

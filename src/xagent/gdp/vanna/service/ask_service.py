@@ -1,4 +1,14 @@
-"""Vanna ask 主链路服务。"""
+"""Vanna ask 主链路服务。
+
+这个模块承接的是“用户提问后，平台如何尽量给出可执行 SQL”这一条主链路。
+它本身不关心前端页面或工具形态，只关心后端编排顺序是否稳定：
+
+1. 解析本次请求要落到哪个知识库
+2. 从 question/sql、schema、documentation 三类知识中做召回
+3. 在检索不足时补实时 schema，避免冷启动完全无上下文
+4. 调大模型生成 SQL，并把生成快照完整落库
+5. 按需执行 SQL，并把成功结果沉淀为候选训练样本
+"""
 
 from __future__ import annotations
 
@@ -80,7 +90,19 @@ class AskService:
         auto_run: bool = False,
         auto_train_on_success: bool = False,
     ) -> AskResult:
-        """执行 ask 主链路。"""
+        """执行一次 ask 请求并返回结构化结果。
+
+        输入语义：
+        - `datasource_id` / `kb_id` 决定本次问题落在哪个数据语境里
+        - `owner_user_id` 用于权限收缩，确保只能访问当前用户自己的 datasource / kb
+        - `auto_run` 决定是否只预览 SQL，还是直接执行
+        - `auto_train_on_success` 决定是否把成功样本回流为候选训练条目
+
+        状态影响：
+        - 会落库一条 `VannaAskRun`
+        - 会刷新知识库的 `last_ask_at`
+        - 在 `auto_train_on_success=True` 且满足条件时，会新增训练条目
+        """
         kb = self._resolve_kb(
             datasource_id=datasource_id,
             owner_user_id=owner_user_id,
@@ -117,6 +139,8 @@ class AskService:
             retrieval=retrieval,
         )
 
+        # ask_run 是主链路审计事实。即使后续不执行 SQL，也要把检索快照、
+        # Prompt 快照和生成结果留下来，便于问题追查与训练回放。
         ask_run = VannaAskRun(
             kb_id=int(kb.id),
             datasource_id=int(kb.datasource_id),
@@ -164,6 +188,7 @@ class AskService:
             generated_sql=generation["sql"],
             execution_status=ask_run.execution_status,
         ):
+            # 自动回流只落候选态，不直接发布，避免错误 SQL 立刻污染主检索语料。
             auto_train_entry = self.train_service.train_question_sql(
                 datasource_id=int(datasource_id),
                 owner_user_id=int(owner_user_id),
@@ -199,7 +224,14 @@ class AskService:
         create_user_name: str | None,
         kb_id: int | None,
     ) -> VannaKnowledgeBase:
-        """解析本次 ask 实际使用的知识库。"""
+        """解析本次 ask 实际使用的知识库。
+
+        这里约定：
+        - 显式传 `kb_id` 时，尊重调用方指定知识库
+        - 未指定时，按 datasource 懒创建默认知识库
+
+        这样既支持高级调用方精确控制，也保证普通入口不需要先显式建库。
+        """
 
         if kb_id is not None:
             return self.kb_service.get_kb(
@@ -246,6 +278,7 @@ class AskService:
         if llm is None:
             raise VannaGenerationError("No default chat model is configured")
 
+        # 线上默认强制要求 JSON，尽量把模型输出收敛到稳定契约，减少解析分支。
         raw = await llm.chat(
             prompt_bundle["messages"],
             response_format={"type": "json_object"},
@@ -285,7 +318,12 @@ class AskService:
             return None
 
     def _should_fallback_to_live_schema(self, retrieval: RetrievalResult) -> bool:
-        """只有完全没有召回内容时才回退实时 schema。"""
+        """判断是否需要回退实时 schema。
+
+        当前策略较保守：只有三类检索结果全空时才命中。
+        这样做的原因是实时拉库开销大，而且会把 Prompt 变长；
+        一旦已有离线整理过的知识，优先相信离线知识而不是每次都连源库。
+        """
 
         return not (
             retrieval.sql_hits or retrieval.schema_hits or retrieval.doc_hits
@@ -298,7 +336,11 @@ class AskService:
         owner_user_id: int,
         question: str,
     ) -> dict[str, Any] | None:
-        """从数据源实时抓 schema，并整理成 Prompt 可读文本。"""
+        """从数据源实时抓 schema，并整理成 Prompt 可读文本。
+
+        这是冷启动兜底路径，不负责做持久化 schema 采集；真正的结构入库由
+        `SchemaHarvestService` 负责，这里只拿一次瞬时快照给模型补上下文。
+        """
 
         if self.schema_loader is not None:
             schema_snapshot = await self._call_maybe_async(
@@ -385,7 +427,11 @@ class AskService:
         tables: list[dict[str, Any]],
         limit: int = 12,
     ) -> list[dict[str, Any]]:
-        """按问题相关度选出最值得放进 Prompt 的表。"""
+        """按问题相关度选出最值得放进 Prompt 的表。
+
+        排序不是只看表名命中，还会把字段名、注释等都纳入候选 token。
+        这样即便用户提的是指标或业务术语，也有机会映射到正确表。
+        """
 
         if not tables:
             return []
@@ -440,7 +486,11 @@ class AskService:
         max_columns: int = 40,
         max_foreign_keys: int = 12,
     ) -> str:
-        """当源库没直接给 DDL 时，用字段信息拼一份近似 DDL。"""
+        """当源库没直接给 DDL 时，用字段信息拼一份近似 DDL。
+
+        这份 DDL 的目标是“给模型读”，不是数据库可 100% 回放的精确建表语句，
+        所以这里优先保留字段、主键、外键等推理最关键的信息。
+        """
 
         column_defs: list[str] = []
         columns = [
@@ -601,7 +651,11 @@ class AskService:
         ask_run: VannaAskRun,
         execution_result: dict[str, Any],
     ) -> None:
-        """把执行结果投影成 ask_run 的状态字段。"""
+        """把执行结果投影成 ask_run 的状态字段。
+
+        当前分支虽然弱化了审批流程，但底层状态位仍保留 `WAITING_APPROVAL`
+        等兼容值，目的是兼容历史数据结构与未来策略收紧时的扩展点。
+        """
 
         ask_run.execution_result_json = execution_result
         decision = str(execution_result.get("decision") or "")
@@ -671,6 +725,8 @@ class AskService:
                     "notes": self._strip_or_none(payload.get("notes")),
                 }
 
+        # 有些模型仍可能返回 markdown 或自然语言包裹的 SQL，这里做最后兜底，
+        # 避免因为格式不完美而把本来可用的结果整条丢弃。
         sql = self._extract_sql_from_text(content)
         if sql is None:
             raise VannaGenerationError("Failed to parse SQL from LLM response")
@@ -708,4 +764,3 @@ class AskService:
             return None
         normalized = value.strip()
         return normalized or None
-

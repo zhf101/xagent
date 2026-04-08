@@ -24,10 +24,8 @@ import {
   XCircle,
   AlertCircle,
   FileText,
-  Cloud,
 } from "lucide-react"
 import { toast } from "sonner"
-import { CloudConnectDialog, CloudFile } from "./cloud-connect-dialog"
 
 interface IngestionResult {
   collection: string
@@ -65,7 +63,7 @@ export function KnowledgeBaseCreationDialog({ open, onOpenChange, onSuccess }: K
   // State from KnowledgeBasePage
   const [newCollectionName, setNewCollectionName] = useState("")
   const [newCollectionDescription, setNewCollectionDescription] = useState("")
-  const [activeImportTab, setActiveImportTab] = useState<"file" | "web" | "cloud">("file")
+  const [activeImportTab, setActiveImportTab] = useState<"file" | "web">("file")
 
   // File upload state
   const [selectedFiles, setSelectedFiles] = useState<File[]>([])
@@ -93,14 +91,6 @@ export function KnowledgeBaseCreationDialog({ open, onOpenChange, onSuccess }: K
     timeout: 30,
     respect_robots_txt: true,
   })
-
-  // Cloud connect state
-  const [selectedCloudProvider, setSelectedCloudProvider] = useState<string | null>(null)
-  const [isCloudConnecting, setIsCloudConnecting] = useState(false)
-  const [isCloudDialogOpen, setIsCloudDialogOpen] = useState(false)
-  const [cloudSelections, setCloudSelections] = useState<Record<string, CloudFile[]>>({})
-
-  const totalCloudFiles = Object.values(cloudSelections).reduce((acc, files) => acc + files.length, 0)
 
   // Ingestion config state
   const [ingestionConfig, setIngestionConfig] = useState({
@@ -231,9 +221,6 @@ export function KnowledgeBaseCreationDialog({ open, onOpenChange, onSuccess }: K
     setNewCollectionName("")
     setNewCollectionDescription("")
     setActiveImportTab("file")
-    setSelectedCloudProvider(null)
-    setIsCloudDialogOpen(false)
-    setCloudSelections({})
     setWebIngestionConfig({
       start_url: "",
       max_pages: 100,
@@ -385,100 +372,6 @@ export function KnowledgeBaseCreationDialog({ open, onOpenChange, onSuccess }: K
     }
   }
 
-  const handleCloudIngest = async () => {
-    if (totalCloudFiles === 0) return
-
-    setIsCloudConnecting(true)
-    setIngestionResults([])
-
-    try {
-      // Aggregate all selected files from all providers
-      const filesToIngest = Object.entries(cloudSelections).flatMap(([provider, files]) =>
-        files.map(file => ({ provider, fileId: file.id, fileName: file.name }))
-      )
-
-      // Determine collection name
-      let collectionName = newCollectionName
-      if (!collectionName && filesToIngest.length > 0) {
-        // Use first file name without extension as default collection name
-        collectionName = filesToIngest[0].fileName.replace(/\.[^/.]+$/, "")
-      }
-      if (!collectionName) collectionName = "cloud_collection"
-
-      // Prepare separators
-      let separators: string[] | undefined = undefined
-      if (ingestionConfig.separators) {
-        try {
-          const parsed = JSON.parse(ingestionConfig.separators)
-          if (Array.isArray(parsed) && parsed.every(s => typeof s === 'string')) {
-            separators = parsed
-          }
-        } catch (e) {
-          console.warn("Invalid separators JSON", e)
-        }
-      }
-
-      const requestBody = {
-        files: filesToIngest,
-        collection: collectionName,
-        parse_method: ingestionConfig.parse_method,
-        chunk_strategy: ingestionConfig.chunk_strategy,
-        chunk_size: ingestionConfig.chunk_size,
-        chunk_overlap: ingestionConfig.chunk_overlap,
-        separators: separators,
-        embedding_model_id: ingestionConfig.embedding_model_id,
-        embedding_batch_size: ingestionConfig.embedding_batch_size,
-        max_retries: ingestionConfig.max_retries,
-        retry_delay: ingestionConfig.retry_delay
-      }
-
-      const response = await apiRequest(`${getApiUrl()}/api/kb/ingest-cloud`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify(requestBody)
-      })
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}))
-        throw new Error(errorData.detail || t("kb.errors.cloudIngestFailed"))
-      }
-
-      const results: IngestionResult[] = await response.json()
-      setIngestionResults(results)
-
-      // Check for errors
-      const errors = results.filter(r => r.status === 'error')
-      if (errors.length > 0) {
-        toast.error(t("kb.errors.someFilesFailed"))
-        // Don't close dialog so user can see errors
-      } else {
-        toast.success(t("kb.dialog.fileUpload.processSuccess"))
-
-        // Reset and close
-        resetState()
-        onOpenChange(false)
-        onSuccess?.()
-      }
-    } catch (error) {
-      console.error("Cloud ingest error:", error)
-      toast.error(error instanceof Error ? error.message : t("kb.dialog.fileUpload.processFailed"))
-    } finally {
-      setIsCloudConnecting(false)
-    }
-  }
-
-  const cloudProviders = [
-    {
-      id: "google-drive",
-      name: t("kb.dialog.cloudConnect.googleDrive"),
-      hasDrives: true,
-      authPath: "google",
-      logo: "/google-drive.svg"
-    },
-  ]
-
   return (
     <>
       <Dialog open={open} onOpenChange={onOpenChange}>
@@ -515,9 +408,9 @@ export function KnowledgeBaseCreationDialog({ open, onOpenChange, onSuccess }: K
               </div>
             </div>
 
-            {/* Tabs: File Upload / Web Import / Cloud Connect */}
-            <Tabs value={activeImportTab} onValueChange={(v) => setActiveImportTab(v as "file" | "web" | "cloud")} className="w-full">
-              <TabsList className="grid w-full grid-cols-3">
+            {/* Tabs: File Upload / Web Import */}
+            <Tabs value={activeImportTab} onValueChange={(v) => setActiveImportTab(v as "file" | "web")} className="w-full">
+              <TabsList className="grid w-full grid-cols-2">
                 <TabsTrigger value="file">
                   <FileText size={16} className="mr-2" />
                   {t("kb.dialog.tabs.file")}
@@ -525,10 +418,6 @@ export function KnowledgeBaseCreationDialog({ open, onOpenChange, onSuccess }: K
                 <TabsTrigger value="web">
                   <Globe size={16} className="mr-2" />
                   {t("kb.dialog.tabs.web")}
-                </TabsTrigger>
-                <TabsTrigger value="cloud">
-                  <Cloud size={16} className="mr-2" />
-                  {t("kb.dialog.tabs.cloud")}
                 </TabsTrigger>
               </TabsList>
 
@@ -847,90 +736,6 @@ export function KnowledgeBaseCreationDialog({ open, onOpenChange, onSuccess }: K
                 </div>
               </TabsContent>
 
-              {/* Cloud Connect Tab */}
-              <TabsContent value="cloud" className="space-y-6">
-                <div className="space-y-4 w-full">
-                  <div className="flex items-center gap-2">
-                    <Cloud className="h-5 w-5 text-blue-500" />
-                    <h3 className="text-lg font-medium">{t("kb.dialog.cloudConnect.title")}</h3>
-                  </div>
-                  <p className="text-sm text-muted-foreground">
-                    {t("kb.dialog.cloudConnect.description")}
-                  </p>
-
-                  <div className="grid grid-cols-2 gap-4">
-                    {cloudProviders.map((provider) => (
-                      <Card
-                        key={provider.id}
-                        className={`p-4 cursor-pointer transition-all hover:border-blue-500 relative ${cloudSelections[provider.id]?.length > 0 ? "border-blue-500 border-2" : ""}`}
-                        onClick={() => {
-                          setSelectedCloudProvider(provider.id)
-                          setIsCloudDialogOpen(true)
-                        }}
-                      >
-                        <div className="flex items-center gap-2">
-                          <img src={provider.logo} alt={provider.name} className="h-8 w-8" />
-                          <span className="font-medium">{provider.name}</span>
-                        </div>
-                        {cloudSelections[provider.id]?.length > 0 && (
-                          <Badge variant="default" className="absolute top-2 right-2 w-4 h-4 flex items-center justify-center rounded-full text-[10px]">
-                            {cloudSelections[provider.id].length}
-                          </Badge>
-                        )}
-                      </Card>
-                    ))}
-                  </div>
-
-                  {/* Selected Cloud Files List */}
-                  {totalCloudFiles > 0 && (
-                    <div className="mt-6">
-                      <Label>{t("kb.dialog.fileUpload.selectedTitle")}</Label>
-                      <ScrollArea className="h-32 border rounded-md p-2 mt-2">
-                        <div className="space-y-2">
-                          {Object.entries(cloudSelections)
-                            .flatMap(([providerId, files]) => {
-                              const provider = cloudProviders.find(p => p.id === providerId)
-                              return files.map(file => ({ ...file, providerId, provider }))
-                            })
-                            .map((file) => (
-                              <div key={`${file.providerId}-${file.id}`} className="flex items-center justify-between p-2 bg-muted rounded">
-                                <div className="flex items-center gap-2">
-                                  {file.provider ? (
-                                    <img src={file.provider.logo} alt={file.provider.name} className="h-4 w-4" />
-                                  ) : (
-                                    <Cloud className="h-4 w-4 text-blue-500" />
-                                  )}
-                                  <span className="text-xs text-muted-foreground">
-                                    {file.provider ? file.provider.name : file.providerId}:
-                                  </span>
-                                  <span className="text-sm truncate max-w-[200px]" title={file.name}>{file.name}</span>
-                                  {file.size && (
-                                    <Badge variant="outline" className="text-xs">
-                                      {file.size}
-                                    </Badge>
-                                  )}
-                                </div>
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  className="h-6 w-6 p-0"
-                                  onClick={() => {
-                                    setCloudSelections(prev => ({
-                                      ...prev,
-                                      [file.providerId]: prev[file.providerId].filter(f => f.id !== file.id)
-                                    }))
-                                  }}
-                                >
-                                  <XCircle className="h-4 w-4 text-muted-foreground hover:text-destructive" />
-                                </Button>
-                              </div>
-                            ))}
-                        </div>
-                      </ScrollArea>
-                    </div>
-                  )}
-                </div>
-              </TabsContent>
             </Tabs>
 
             {/* Index Configuration */}
@@ -1035,8 +840,6 @@ export function KnowledgeBaseCreationDialog({ open, onOpenChange, onSuccess }: K
               onClick={() => {
                 if (activeImportTab === "web") {
                   handleWebIngest()
-                } else if (activeImportTab === "cloud") {
-                  handleCloudIngest()
                 } else {
                   handleUpload()
                 }
@@ -1044,39 +847,17 @@ export function KnowledgeBaseCreationDialog({ open, onOpenChange, onSuccess }: K
               disabled={
                 (activeImportTab === "file" && selectedFiles.length === 0) ||
                 (activeImportTab === "web" && !webIngestionConfig.start_url) ||
-                (activeImportTab === "cloud" && totalCloudFiles === 0) ||
                 isUploading ||
-                isWebIngesting ||
-                isCloudConnecting
+                isWebIngesting
               }
             >
-              {isUploading || isWebIngesting || isCloudConnecting
-                ? activeImportTab === "cloud"
-                  ? t("kb.dialog.cloudConnect.connecting")
-                  : t("kb.dialog.fileUpload.processing")
+              {isUploading || isWebIngesting
+                ? t("kb.dialog.fileUpload.processing")
                 : t("kb.index.startImport")}
             </Button>
           </div>
         </DialogContent>
       </Dialog>
-
-      {/* Cloud Connect Dialog */}
-      <CloudConnectDialog
-        open={isCloudDialogOpen}
-        onOpenChange={setIsCloudDialogOpen}
-        provider={cloudProviders.find(p => p.id === selectedCloudProvider) || null}
-        initialSelectedFiles={
-          selectedCloudProvider ? cloudSelections[selectedCloudProvider] || [] : []
-        }
-        onConfirm={(files) => {
-          if (selectedCloudProvider) {
-            setCloudSelections((prev) => ({
-              ...prev,
-              [selectedCloudProvider]: files,
-            }))
-          }
-        }}
-      />
     </>
    )
  }

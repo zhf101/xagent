@@ -1,4 +1,8 @@
-"""数据库 adapter 工厂。"""
+"""数据库 adapter 工厂。
+
+这里是“canonical 数据库类型”到“具体 adapter 实现类”的唯一映射入口。
+上层 service 不应该自己 import 某个具体方言类，统一从这里拿实例。
+"""
 
 from __future__ import annotations
 
@@ -45,7 +49,11 @@ def create_adapter_for_type(
     db_type: str,
     config: DatabaseConnectionConfig,
 ) -> DatabaseAdapter:
-    """按 canonical 数据库类型返回真实 adapter。"""
+    """按 canonical 数据库类型返回真实 adapter。
+
+    如果类型能被平台识别但当前分支还没实现 adapter，会明确报错，
+    避免静默回退到错误驱动路径。
+    """
 
     normalized = normalize_database_type(db_type)
     adapter_cls = ADAPTER_CLASSES.get(normalized)

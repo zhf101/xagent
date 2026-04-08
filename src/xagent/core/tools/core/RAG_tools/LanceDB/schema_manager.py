@@ -7,6 +7,8 @@ from typing import Protocol
 import pyarrow as pa  # type: ignore
 from lancedb.db import DBConnection
 
+from ......config import get_vector_backend
+
 
 class DataTypeLike(Protocol):
     """Structural type placeholder for pyarrow DataType-like values."""
@@ -43,6 +45,44 @@ def _table_exists(conn: DBConnection, name: str) -> bool:
         return False
 
 
+def _runtime_schema_patch_message(table_name: str) -> str:
+    """统一生成 pgvector 模式下的缺表/缺列提示。
+
+    现在项目已经约定：
+    - LanceDB 后端仍可沿用历史上的运行时自举方式
+    - pgvector 后端必须严格通过 SQL 脚本维护结构
+
+    因此这里只给 pgvector 使用者返回明确指引，避免再次退回“代码里偷偷改库”。
+    """
+    return (
+        f"Vector schema for table '{table_name}' is not ready in pgvector backend. "
+        "Please update db/postgresql/init.sql or add a patch under "
+        "db/postgresql/patches instead of relying on runtime auto-DDL."
+    )
+
+
+def _is_pgvector_backend() -> bool:
+    return get_vector_backend() == "pgvector"
+
+
+def _validate_required_fields(
+    conn: DBConnection, table_name: str, target_schema: Iterable[FieldLike]
+) -> None:
+    """在 pgvector 模式下校验表和必需字段是否已经就绪。"""
+    if not _table_exists(conn, table_name):
+        raise RuntimeError(_runtime_schema_patch_message(table_name))
+
+    table = conn.open_table(table_name)
+    existing_field_names = {field.name for field in table.schema}
+    required_field_names = {field.name for field in target_schema}
+    missing_fields = sorted(required_field_names - existing_field_names)
+    if missing_fields:
+        raise RuntimeError(
+            f"{_runtime_schema_patch_message(table_name)} Missing columns: "
+            f"{', '.join(missing_fields)}."
+        )
+
+
 def _is_table_already_exists_error(exc: Exception) -> bool:
     """Best-effort check for table-already-exists errors across LanceDB versions."""
     message = str(exc).lower()
@@ -74,6 +114,10 @@ def _ensure_schema_fields(
     if not _table_exists(conn, table_name):
         return
 
+    if _is_pgvector_backend():
+        _validate_required_fields(conn, table_name, target_schema)
+        return
+
     table = conn.open_table(table_name)
     existing_schema = table.schema
     existing_field_names = {field.name for field in existing_schema}
@@ -103,6 +147,13 @@ def _ensure_schema_fields(
 def _create_table(
     conn: DBConnection, name: str, schema: Iterable[FieldLike] | None = None
 ) -> None:
+    if _is_pgvector_backend():
+        if schema is not None:
+            _validate_required_fields(conn, name, schema)
+        elif not _table_exists(conn, name):
+            raise RuntimeError(_runtime_schema_patch_message(name))
+        return
+
     # Avoid check-then-act race: attempt creation first.
     try:
         conn.create_table(name, schema=schema)
@@ -118,6 +169,14 @@ def _create_table(
 def _add_user_id_column(conn: DBConnection, table_name: str) -> None:
     """Add missing `user_id` column with NULL default for migration correctness."""
     if not _table_exists(conn, table_name):
+        return
+
+    if _is_pgvector_backend():
+        table = conn.open_table(table_name)
+        if "user_id" not in table.schema.names:
+            raise RuntimeError(
+                f"{_runtime_schema_patch_message(table_name)} Missing columns: user_id."
+            )
         return
 
     try:

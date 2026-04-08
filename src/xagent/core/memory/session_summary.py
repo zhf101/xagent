@@ -67,7 +67,8 @@ def upsert_session_summary(
         filters={
             "memory_type": MemoryType.SESSION_SUMMARY.value,
             "metadata": {"session_id": session_id},
-        }
+        },
+        limit=1,
     )
     latest_existing = existing[0] if existing else None
     previous_summary = None

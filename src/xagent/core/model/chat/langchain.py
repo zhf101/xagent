@@ -9,7 +9,7 @@ from langchain_openai import ChatOpenAI
 
 from ...model import ChatModelConfig, ModelConfig
 from ...retry import ExponentialBackoff, RetryStrategy, create_retry_wrapper
-from .error import retry_on
+from .error import normalize_llm_retry_count, retry_on
 from .logging_callback import (
     enable_llm_request_logging,
     is_llm_logging_enabled,
@@ -24,17 +24,18 @@ class ChatModelRetryWrapper(Runnable):
         strategy: RetryStrategy,
         max_retries: int = 10,
     ):
+        normalized_max_retries = normalize_llm_retry_count(max_retries)
         self._retry_wrapper = create_retry_wrapper(
             model,
             Runnable,  # type: ignore[type-abstract]
             retry_methods={"invoke", "ainvoke"},
             strategy=strategy,
-            max_retries=max_retries,
+            max_retries=normalized_max_retries,
             retry_on=retry_on,
         )
         self.model = model
         self.strategy = strategy
-        self.max_retries = max_retries
+        self.max_retries = normalized_max_retries
 
     def invoke(
         self,

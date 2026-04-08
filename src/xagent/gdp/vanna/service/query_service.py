@@ -1,4 +1,14 @@
-"""统一 asset-first / ask-fallback 编排服务。"""
+"""统一 asset-first / ask-fallback 编排服务。
+
+这里是 SQL 问答能力最贴近产品语义的入口之一。调用方只关心“回答这个问题”，
+至于背后应该：
+
+- 复用治理过的 SQL 资产
+- 先补参数
+- 还是回退到 ask 实时生成 SQL
+
+都由这里集中裁决，避免入口层散落多套路由逻辑。
+"""
 
 from __future__ import annotations
 
@@ -83,6 +93,11 @@ class QueryService:
         2. 判断命中是否足够可信
         3. 命中则绑定/编译/执行
         4. 未命中则回退 ask
+
+        返回语义：
+        - `mode=asset` 表示命中了治理资产
+        - `mode=ask` 表示未命中资产，回退到了现生成 SQL
+        - `route` 用来区分是预览、缺参还是直接执行
         """
 
         normalized_question = str(question or "").strip()
@@ -110,6 +125,8 @@ class QueryService:
             ),
         )
         if selected is None:
+            # 路由到 ask 之前不做“模糊猜一个资产”，宁可退回生成链路，
+            # 也不要把问题错误地绑定到相似但不正确的资产上。
             return await self._fallback_to_ask(
                 datasource_id=datasource_id,
                 owner_user_id=owner_user_id,
@@ -128,6 +145,8 @@ class QueryService:
         version = selected["version"]
         inference: dict[str, Any] | None = None
         if auto_infer:
+            # 参数推理只负责猜 bindings，不允许改写模板 SQL，
+            # 这样资产治理边界才清晰：模板受版本控制，参数受推理控制。
             inference = await self.inference_service.infer_bindings(
                 asset=asset,
                 version=version,
@@ -146,6 +165,7 @@ class QueryService:
             inference_assumptions=list((inference or {}).get("assumptions") or []),
         )
         if binding["missing_params"]:
+            # 缺参时直接返回，不进入编译和执行，避免把半成品 SQL 暴露成“可运行”状态。
             return QueryResult(
                 mode="asset",
                 route="asset_missing_params",
@@ -168,6 +188,8 @@ class QueryService:
             bound_params=dict(binding["bound_params"]),
         )
         if not auto_run:
+            # preview 路径的价值是给前台或工具层展示“这条资产会怎么被绑定”，
+            # 便于人工确认，不强迫每次都真正下库执行。
             return QueryResult(
                 mode="asset",
                 route="asset_preview",

@@ -7,6 +7,8 @@ from cryptography.fernet import Fernet
 from sqlalchemy import JSON, Boolean, Column, DateTime, Float, Integer, String, Text
 from sqlalchemy.sql import func
 
+from xagent.core.model.retry_config import DEFAULT_LLM_MAX_RETRIES
+
 
 def create_model_table(Base: Type[Any]) -> Type[Any]:
     """
@@ -43,7 +45,11 @@ def create_model_table(Base: Type[Any]) -> Type[Any]:
             JSON, nullable=True
         )  # Model abilities: ["chat", "vision", etc.]
         description = Column(Text, nullable=True)
-        max_retries = Column(Integer, nullable=True, default=10)
+        # 这里是 ORM 层对“新建模型记录”的默认值。
+        # 旧库里已有数据不会被这行自动迁移，但至少后续新增/编辑时不再写入过高默认值。
+        max_retries = Column(
+            Integer, nullable=True, default=DEFAULT_LLM_MAX_RETRIES
+        )
         created_at = Column(DateTime(timezone=True), server_default=func.now())
         updated_at = Column(DateTime(timezone=True), onupdate=func.now())
         is_active = Column(Boolean, default=True)

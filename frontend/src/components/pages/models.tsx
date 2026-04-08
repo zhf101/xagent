@@ -37,16 +37,11 @@ import {
   Trash2,
   Edit,
   Brain,
-  Image as ImageIcon,
-  Hash,
   Star,
   Zap,
-  Globe,
-  Box,
   Settings,
   CheckCircle2,
   Loader2,
-  Search,
   RefreshCw,
   X
 } from "lucide-react"
@@ -122,10 +117,23 @@ interface ProviderConfig {
   requires_base_url?: boolean
 }
 
+function getDefaultAbilitiesForCategory(category: string): string[] {
+  if (category === "llm") {
+    return ["chat"]
+  }
+  if (category === "embedding") {
+    return ["embedding"]
+  }
+  if (category === "rerank") {
+    return ["rerank"]
+  }
+  return []
+}
+
 const LOCAL_PROVIDER_CONFIGS: Record<string, Partial<ProviderConfig>> = {
   openai: {
     icon: <img src="/openai.svg" alt="OpenAI" className="w-6 h-6" />,
-    category: ["llm", "embedding"],
+    category: ["llm", "embedding", "rerank"],
     defaultBaseUrl: "https://api.openai.com/v1"
   },
   "minimax-coding-plan": {
@@ -175,12 +183,12 @@ const LOCAL_PROVIDER_CONFIGS: Record<string, Partial<ProviderConfig>> = {
   },
   dashscope: {
     icon: <img src="/dashscope.png" alt="DashScope" className="w-6 h-6" />,
-    category: ["embedding", "image"],
+    category: ["embedding"],
     defaultBaseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1"
   },
   gemini: {
     icon: <img src="/gemini.svg" alt="Gemini" className="w-6 h-6" />,
-    category: ["llm", "image"],
+    category: ["llm"],
     defaultBaseUrl: "https://generativelanguage.googleapis.com/v1beta"
   },
   claude: {
@@ -190,7 +198,7 @@ const LOCAL_PROVIDER_CONFIGS: Record<string, Partial<ProviderConfig>> = {
   },
   xinference: {
     icon: <img src="/xagent_logo.svg" alt="Xinference" className="w-6 h-6" />,
-    category: ["llm", "embedding", "image", "speech"],
+    category: ["llm", "embedding"],
     defaultBaseUrl: "http://localhost:9997"
   }
 }
@@ -227,6 +235,7 @@ export function ModelsPage() {
     visual?: Model
     compact?: Model
     embedding?: Model
+    rerank?: Model
   }>({})
 
   const [formData, setFormData] = useState<ModelCreate>({
@@ -254,14 +263,8 @@ export function ModelsPage() {
     { value: "embedding", label: t('models.abilities.embedding') }
   ], [t])
 
-  const imageAbilityOptions = useMemo(() => [
-    { value: "generate", label: t('models.abilities.generate') },
-    { value: "edit", label: t('models.abilities.edit') }
-  ], [t])
-
-  const speechAbilityOptions = useMemo(() => [
-    { value: "asr", label: t('models.abilities.asr') },
-    { value: "tts", label: t('models.abilities.tts') }
+  const rerankAbilityOptions = useMemo(() => [
+    { value: "rerank", label: t('models.abilities.rerank') }
   ], [t])
 
   useEffect(() => {
@@ -281,7 +284,7 @@ export function ModelsPage() {
           description: p.description,
           icon: localConfig.icon || <Brain className="w-6 h-6" />,
           defaultBaseUrl: p.default_base_url || localConfig.defaultBaseUrl, // Use API default or local fallback
-          category: localConfig.category || ["llm", "embedding", "image", "speech"], // Default to all if unknown
+          category: localConfig.category || ["llm", "embedding", "rerank"], // Default to page-supported categories if unknown
           requires_base_url: p.requires_base_url
         }
       })
@@ -349,8 +352,7 @@ export function ModelsPage() {
     return {
       llm: models.filter(m => m.category === 'llm').length,
       embedding: models.filter(m => m.category === 'embedding').length,
-      image: models.filter(m => m.category === 'image').length,
-      speech: models.filter(m => m.category === 'speech').length
+      rerank: models.filter(m => m.category === 'rerank').length
     }
   }, [models])
 
@@ -680,7 +682,7 @@ export function ModelsPage() {
       base_url: "",
       temperature: activeTab === 'llm' ? undefined : undefined,
       dimension: activeTab === 'embedding' ? undefined : undefined,
-      abilities: activeTab === 'llm' ? ["chat"] : activeTab === 'embedding' ? ["embedding"] : activeTab === 'image' ? ["generate"] : activeTab === 'speech' ? ["asr"] : [],
+      abilities: getDefaultAbilitiesForCategory(activeTab),
       default_config_types: []
     })
     setViewMode('form')
@@ -820,7 +822,7 @@ export function ModelsPage() {
       base_url: provider.defaultBaseUrl || "",
       temperature: activeTab === 'llm' ? undefined : undefined,
       dimension: activeTab === 'embedding' ? undefined : undefined,
-      abilities: activeTab === 'llm' ? ["chat"] : activeTab === 'embedding' ? ["embedding"] : activeTab === 'image' ? ["generate"] : activeTab === 'speech' ? ["asr"] : [],
+      abilities: getDefaultAbilitiesForCategory(activeTab),
       default_config_types: []
     })
 
@@ -847,7 +849,7 @@ export function ModelsPage() {
       base_url: providerConfig?.defaultBaseUrl || "",
       temperature: activeTab === 'llm' ? undefined : undefined,
       dimension: activeTab === 'embedding' ? undefined : undefined,
-      abilities: activeTab === 'llm' ? ["chat"] : activeTab === 'embedding' ? ["embedding"] : activeTab === 'image' ? ["generate"] : activeTab === 'speech' ? ["asr"] : [],
+      abilities: getDefaultAbilitiesForCategory(activeTab),
       default_config_types: []
     })
     setViewMode('form')
@@ -908,24 +910,13 @@ export function ModelsPage() {
               </div>
             </TabsTrigger>
             <TabsTrigger
-              value="image"
+              value="rerank"
               className="flex-none rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent px-0 py-2"
             >
               <div className="flex items-center gap-2">
-                <span className="font-medium">{t('models.tabs.image')}</span>
+                <span className="font-medium">{t('models.tabs.rerank')}</span>
                 <Badge variant="secondary" className="rounded-full px-2 py-0.5 text-xs">
-                  {modelCounts.image}
-                </Badge>
-              </div>
-            </TabsTrigger>
-            <TabsTrigger
-              value="speech"
-              className="flex-none rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent px-0 py-2"
-            >
-              <div className="flex items-center gap-2">
-                <span className="font-medium">{t('models.tabs.speech')}</span>
-                <Badge variant="secondary" className="rounded-full px-2 py-0.5 text-xs">
-                  {modelCounts.speech}
+                  {modelCounts.rerank}
                 </Badge>
               </div>
             </TabsTrigger>
@@ -1279,8 +1270,7 @@ export function ModelsPage() {
                     options={[
                       { value: "llm", label: t('models.tabs.llm') },
                       { value: "embedding", label: t('models.tabs.embedding') },
-                      { value: "image", label: t('models.tabs.image') },
-                      { value: "speech", label: t('models.tabs.speech') }
+                      { value: "rerank", label: t('models.tabs.rerank') }
                     ]}
                   />
                 </div>
@@ -1385,8 +1375,7 @@ export function ModelsPage() {
                   options={
                     formData.category === 'llm' ? abilityOptions :
                     formData.category === 'embedding' ? embeddingAbilityOptions :
-                    formData.category === 'image' ? imageAbilityOptions :
-                    speechAbilityOptions
+                    rerankAbilityOptions
                   }
                   placeholder={t('models.form.abilitiesPlaceholder')}
                 />
@@ -1442,13 +1431,8 @@ export function ModelsPage() {
                         ...(formData.category === 'embedding' ? [
                           { value: "embedding", label: t('models.defaults.embedding') }
                         ] : []),
-                        ...(formData.category === 'image' ? [
-                          { value: "image", label: t('models.defaults.image') },
-                          ...(formData.abilities?.includes('edit') ? [{ value: "image_edit", label: t('models.defaults.image_edit') }] : [])
-                        ] : []),
-                        ...(formData.category === 'speech' ? [
-                          ...(formData.abilities?.includes('asr') ? [{ value: "asr", label: t('models.defaults.asr') }] : []),
-                          ...(formData.abilities?.includes('tts') ? [{ value: "tts", label: t('models.defaults.tts') }] : [])
+                        ...(formData.category === 'rerank' ? [
+                          { value: "rerank", label: t('models.defaults.rerank') }
                         ] : [])
                       ]}
                       placeholder={t('models.form.defaultPlaceholder')}

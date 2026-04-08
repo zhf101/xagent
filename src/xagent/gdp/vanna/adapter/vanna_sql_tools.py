@@ -3,6 +3,11 @@
    先根据问题找最可能的 SQL 资产，顺带给出参数绑定预览
 2. `execute_vanna_sql_asset`
    再执行具体 SQL 资产
+
+这里是 Vanna SQL 能力进入 Agent 工具体系的桥接层：
+- 运行时上下文从 Web 任务里来
+- 真正的业务编排交给 `VannaToolRuntimeService`
+- 本模块只负责把它们注册成模型可调用的工具函数
 """
 
 from __future__ import annotations
@@ -130,6 +135,7 @@ async def create_vanna_sql_runtime_tools(config: "WebToolConfig") -> list[Any]:
             ),
         ]
     except Exception as exc:
+        # 工具注册阶段失败时选择吞掉异常并返回空列表，
+        # 避免单个 SQL 能力异常把整组工具初始化拖垮。
         logger.warning("Failed to create SQL runtime tools: %s", exc)
         return []
-

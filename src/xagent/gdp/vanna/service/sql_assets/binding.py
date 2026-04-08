@@ -1,4 +1,8 @@
-"""SQL Asset 参数装配与校验。"""
+"""SQL Asset 参数装配与校验。
+
+这里是真正决定“最终绑定结果”的地方。LLM 推理、显式入参、任务上下文、
+默认值、派生规则都会在这里汇总，并按固定优先级收敛成可执行参数集。
+"""
 
 from __future__ import annotations
 
@@ -22,6 +26,19 @@ class SqlAssetBindingService:
         inferred_params: dict[str, Any] | None = None,
         inference_assumptions: list[str] | None = None,
     ) -> dict[str, Any]:
+        """根据版本参数契约生成最终绑定计划。
+
+        优先级从高到低：
+        1. 用户显式传参
+        2. 任务上下文
+        3. 系统运行时参数
+        4. LLM 推断结果
+        5. schema 默认值
+        6. 派生参数
+
+        返回值除了 `bound_params`，还会包含 `binding_plan` 和 `assumptions`，
+        便于前台或日志做解释型展示。
+        """
         del asset, question
         explicit_params = dict(explicit_params or {})
         context = dict(context or {})
@@ -93,6 +110,8 @@ class SqlAssetBindingService:
     def _resolve_system_runtime_value(
         self, *, name: str, spec: dict[str, Any]
     ) -> tuple[Any, str] | tuple[None, None]:
+        """解析系统运行时参数，例如今天、当前时间等。"""
+
         kind = str(spec.get("runtime_kind") or name).strip().lower()
         now = datetime.now(UTC).replace(tzinfo=None)
         if kind in {"today", "current_date"}:
@@ -108,6 +127,11 @@ class SqlAssetBindingService:
         spec: dict[str, Any],
         bound_params: dict[str, Any],
     ) -> tuple[Any, str] | tuple[None, None]:
+        """根据已绑定参数派生额外参数。
+
+        当前只实现少量确定性规则，避免把复杂业务推导塞进模板层后变得不可维护。
+        """
+
         derive_from = dict(spec.get("derive_from") or {})
         kind = str(derive_from.get("kind") or "").strip()
         ref = str(derive_from.get("ref") or "").strip()
@@ -123,6 +147,8 @@ class SqlAssetBindingService:
         return None, None
 
     def _normalize_value(self, *, name: str, value: Any, data_type: str) -> Any:
+        """按契约把原始值归一化成最终执行值。"""
+
         normalized_type = data_type.strip().lower()
         if normalized_type == "string":
             return str(value)

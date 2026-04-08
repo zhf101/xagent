@@ -1,4 +1,8 @@
-"""Vanna 知识库宿主服务。"""
+"""Vanna 知识库宿主服务。
+
+这个模块管理的是“知识应该挂在哪个 kb 下”这一层边界。
+它不负责训练、检索或执行，只负责把 datasource 与知识库宿主关系稳定下来。
+"""
 
 from __future__ import annotations
 
@@ -43,7 +47,11 @@ class KnowledgeBaseService:
         return datasource
 
     def _resolve_datasource_database_name(self, datasource: Text2SQLDatabase) -> str | None:
-        """尽量为 datasource 推导出稳定的 database_name。"""
+        """尽量为 datasource 推导出稳定的 database_name。
+
+        这个值后续会影响 SQL 资产复用与执行校验，因此这里优先保证稳定一致，
+        而不是追求展示层的花样格式。
+        """
 
         return clean_database_name(datasource.database_name) or resolve_database_name_from_url(
             str(datasource.url)
@@ -73,6 +81,7 @@ class KnowledgeBaseService:
             .first()
         )
         if kb is not None:
+            # 现有默认 kb 不重建，只做必要字段同步，避免下游 schema / 训练条目丢失归属。
             changed = False
             for field_name, value in (
                 ("owner_user_name", owner_user_name),

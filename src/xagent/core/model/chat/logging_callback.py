@@ -13,6 +13,7 @@ import logging
 import os
 import time
 from logging.handlers import RotatingFileHandler
+from pathlib import Path
 from typing import Any
 
 from langchain_core.callbacks.base import BaseCallbackHandler
@@ -23,6 +24,20 @@ from ...utils.security import redact_sensitive_text
 LLM_LOGGER_NAME = "xagent.llm"
 _LLM_LOGGING_CONFIGURED = False
 _LLM_HTTP_LOGGING_CONFIGURED = False
+
+
+def _get_default_llm_log_file() -> str:
+    """返回项目内固定的 LLM 日志文件路径。
+
+    这里刻意把默认路径收口到仓库根目录下的 `logs/llm_requests.log`，
+    原因是：
+    - 纯文件名会受启动 cwd 影响，`uvicorn`、脚本、测试三种启动方式可能把日志写到不同目录
+    - 用户排障时最怕“日志功能开了，但不知道文件到底落在哪”
+
+    因此默认值直接返回绝对路径，保证无论从哪里启动，日志都落到同一个位置。
+    """
+    repo_root = Path(__file__).resolve().parents[5]
+    return str(repo_root / "logs" / "llm_requests.log")
 
 
 def is_llm_logging_enabled() -> bool:
@@ -115,7 +130,7 @@ def summarize_tools(tools: list[dict[str, Any]] | None) -> list[str]:
 
 
 def setup_llm_logging(
-    log_file: str = "llm_requests.log",
+    log_file: str | None = None,
     log_level: int = logging.INFO,
     max_bytes: int = 10 * 1024 * 1024,
     backup_count: int = 5,
@@ -127,8 +142,14 @@ def setup_llm_logging(
     if _LLM_LOGGING_CONFIGURED:
         return llm_logger
 
+    resolved_log_file = log_file or _get_default_llm_log_file()
+    log_path = Path(resolved_log_file)
+    # 独立日志的主要价值是“出问题时一定能落盘”。
+    # 因此这里在初始化阶段主动补齐父目录，避免目录不存在导致 handler 创建失败。
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+
     file_handler = RotatingFileHandler(
-        log_file,
+        log_path,
         maxBytes=max_bytes,
         backupCount=backup_count,
         encoding="utf-8",
@@ -144,7 +165,7 @@ def setup_llm_logging(
     llm_logger.setLevel(log_level)
     llm_logger.addHandler(file_handler)
     llm_logger.propagate = False
-    llm_logger.info("LLM 独立日志已启用: %s", log_file)
+    llm_logger.info("LLM 独立日志已启用: %s", str(log_path))
 
     _LLM_LOGGING_CONFIGURED = True
     return llm_logger
@@ -158,7 +179,7 @@ def setup_llm_logging_from_env() -> bool:
         return False
 
     llm_logger = setup_llm_logging(
-        log_file=os.getenv("LLM_LOG_FILE", "llm_requests.log"),
+        log_file=os.getenv("LLM_LOG_FILE") or _get_default_llm_log_file(),
         log_level=logging.INFO,
         max_bytes=int(os.getenv("LLM_LOG_MAX_BYTES", str(10 * 1024 * 1024))),
         backup_count=int(os.getenv("LLM_LOG_BACKUP_COUNT", "5")),

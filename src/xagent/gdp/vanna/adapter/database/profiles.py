@@ -1,4 +1,8 @@
-"""SQL 数据库接入模板与支持深度注册表。"""
+"""SQL 数据库接入模板与支持深度注册表。
+
+它定义的是“平台目前如何看待每一种数据库产品”，包括展示名、默认端口、
+接入级别、依赖驱动和备注。前台表单、帮助信息、后端兼容逻辑都会复用这里。
+"""
 
 from __future__ import annotations
 
@@ -9,7 +13,14 @@ from .types import normalize_database_type
 
 @dataclass(frozen=True)
 class DatabaseProfile:
-    """描述单种 SQL 数据库在平台里的接入方式。"""
+    """描述单种 SQL 数据库在平台里的接入方式。
+
+    关键字段说明：
+    - `db_type`: 平台内部 canonical 类型
+    - `support_level`: 当前代码分支对它支持到什么深度
+    - `driver_packages`: 宿主机需要具备的驱动依赖
+    - `connection_example`: 给用户或前端展示的标准连接示例
+    """
 
     db_type: str
     display_name: str
@@ -217,7 +228,10 @@ def list_database_profiles() -> list[dict]:
 
 
 def get_database_profile(db_type: str) -> dict:
-    """按 canonical/alias 查询单个 SQL 数据库模板。"""
+    """按 canonical/alias 查询单个 SQL 数据库模板。
+
+    统一先做类型归一化，避免前台和后端分别维护一套别名规则。
+    """
 
     normalized = normalize_database_type(db_type)
     for profile in DATABASE_PROFILES:

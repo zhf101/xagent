@@ -1,5 +1,6 @@
 "use client"
 
+import React from "react"
 import Link from "next/link"
 import { usePathname, useRouter } from "next/navigation"
 import { cn } from "@/lib/utils"
@@ -19,6 +20,7 @@ import {
   LogOut,
   Menu,
   X,
+  ChevronLeft,
   ChevronDown,
   ChevronRight,
   Sparkles,
@@ -27,6 +29,7 @@ import {
   Wrench,
   Users,
   Brain,
+  Database,
   Server,
   HardDrive,
   Layers,
@@ -44,6 +47,7 @@ import {
   Tag,
   Github,
   Star,
+  ShieldCheck,
   MoreHorizontal,
   Edit2,
   Search,
@@ -140,6 +144,27 @@ const navigationGroups: NavigationGroup[] = [
         color: "text-gray-500"
       },
       {
+        name: "SQL Assets",
+        nameKey: "nav.sqlAssets",
+        href: "/gdp/vanna/knowledge-bases",
+        icon: Database,
+        color: "text-gray-500"
+      },
+      {
+        name: "SQL Data Sources",
+        nameKey: "nav.sqlDataSources",
+        href: "/gdp/vanna/sql/datasources",
+        icon: Server,
+        color: "text-gray-500"
+      },
+      {
+        name: "HTTP Assets",
+        nameKey: "nav.httpAssets",
+        href: "/gdp/hrun/http-assets",
+        icon: Layers,
+        color: "text-gray-500"
+      },
+      {
         name: "Models",
         nameKey: "nav.models",
         href: "/models",
@@ -156,6 +181,22 @@ const navigationGroups: NavigationGroup[] = [
     ]
   }
 ]
+
+function getNavigationGroupKey(group: NavigationGroup): string {
+  return group.titleKey || group.title
+}
+
+function groupContainsPath(group: NavigationGroup, pathname: string): boolean {
+  return group.items.some((item) => {
+    if (pathname === item.href || pathname.startsWith(`${item.href}/`)) {
+      return true
+    }
+
+    return item.children?.some(
+      (child) => pathname === child.href || pathname.startsWith(`${child.href}/`)
+    ) ?? false
+  })
+}
 
 const baseUserMenuItems: NavigationItem[] = [
   {
@@ -200,6 +241,12 @@ const getUserMenuItemsForUser = (user: any): NavigationItem[] => {
 
   if (user?.is_admin) {
     menuItems.splice(-1, 0, {
+      name: "System Registry",
+      nameKey: "nav.systemRegistry",
+      href: "/system-registry",
+      icon: ShieldCheck,
+      color: "text-blue-400"
+    }, {
       name: "User Management",
       nameKey: "nav.userManagement",
       href: "/users/",
@@ -319,7 +366,14 @@ export function Sidebar({ className }: SidebarProps) {
     setEditingTitle("")
   }
 
+  // `isExpanded` 只保留给 agent 页“默认收起后临时展开”的场景使用。
   const [isExpanded, setIsExpanded] = useState(false)
+  // 普通页面的全局收缩状态单独维护，避免和 agent 页的自动收起规则相互干扰。
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false)
+  // 分组折叠状态与条目 children 折叠状态拆开维护，避免两类交互互相覆盖。
+  const [expandedGroups, setExpandedGroups] = useState<string[]>(
+    navigationGroups.map(getNavigationGroupKey)
+  )
   const [expandedMenus, setExpandedMenus] = useState<string[]>(["/agent"]) // Use href as a stable key
   const [showUserMenu, setShowUserMenu] = useState(false)
   const [isAboutOpen, setIsAboutOpen] = useState(false)
@@ -364,6 +418,7 @@ export function Sidebar({ className }: SidebarProps) {
   const [page, setPage] = useState(1)
   const [hasMore, setHasMore] = useState(true)
   const [isLoadingMore, setIsLoadingMore] = useState(false)
+  const [isTaskListUnavailable, setIsTaskListUnavailable] = useState(false)
   const navRef = useRef<HTMLElement | null>(null)
   const pathnameRef = useRef(pathname)
   pathnameRef.current = pathname // Synchronous update during render
@@ -382,6 +437,8 @@ export function Sidebar({ className }: SidebarProps) {
   // Loading state ref for polling interval
   const loadingRef = useRef({ isLoadingTasks, isLoadingMore })
   loadingRef.current = { isLoadingTasks, isLoadingMore }
+  const taskListUnavailableRef = useRef(isTaskListUnavailable)
+  taskListUnavailableRef.current = isTaskListUnavailable
 
   useEffect(() => {
     let isCancelled = false
@@ -470,6 +527,10 @@ export function Sidebar({ className }: SidebarProps) {
 
   // Load task list
   const loadTasks = useCallback(async (pageNum = 1, isAppending = false, isPolling = false) => {
+    if (taskListUnavailableRef.current) {
+      return
+    }
+
     if (isAppending) {
       setIsLoadingMore(true)
     } else if (!isPolling) {
@@ -533,6 +594,13 @@ export function Sidebar({ className }: SidebarProps) {
         const totalPages = data.pagination?.total_pages || 1
         setHasMore(pageNum < totalPages)
         setPage(pageNum)
+        if (taskListUnavailableRef.current) {
+          setIsTaskListUnavailable(false)
+        }
+      } else if (response.status === 404) {
+        // 当前后端若不提供任务历史接口，侧边栏应降级为空状态，而不是持续重试占满区域。
+        setHasMore(false)
+        setIsTaskListUnavailable(true)
       }
     } catch (error) {
       console.error('Failed to load tasks:', error)
@@ -546,7 +614,12 @@ export function Sidebar({ className }: SidebarProps) {
   useEffect(() => {
     const interval = setInterval(() => {
       // Only poll if window is visible and not already loading
-      if (document.visibilityState === 'visible' && !loadingRef.current.isLoadingTasks && !loadingRef.current.isLoadingMore) {
+      if (
+        document.visibilityState === 'visible' &&
+        !taskListUnavailableRef.current &&
+        !loadingRef.current.isLoadingTasks &&
+        !loadingRef.current.isLoadingMore
+      ) {
         loadTasks(1, false, true)
       }
     }, 30000) // Poll every 30 seconds
@@ -570,7 +643,7 @@ export function Sidebar({ className }: SidebarProps) {
 
   // Monitor task list changes, if content is not enough to fill the container and there is more data, automatically load the next page
   useEffect(() => {
-    if (!navRef.current || !isHistoryExpanded) return
+    if (!navRef.current || !isHistoryExpanded || isTaskListUnavailable) return
 
     const { scrollHeight, clientHeight } = navRef.current
     // If content height is less than or equal to container height (plus a buffer), and there is more data, and not loading
@@ -581,13 +654,13 @@ export function Sidebar({ className }: SidebarProps) {
       }, 100)
       return () => clearTimeout(timer)
     }
-  }, [tasks, hasMore, isLoadingMore, isLoadingTasks, page, loadTasks, isHistoryExpanded])
+  }, [tasks, hasMore, isLoadingMore, isLoadingTasks, page, loadTasks, isHistoryExpanded, isTaskListUnavailable])
 
   useEffect(() => {
-    if (isHistoryExpanded) {
+    if (isHistoryExpanded && !isTaskListUnavailable) {
       loadTasks(1, false)
     }
-  }, [isHistoryExpanded, loadTasks, state.lastTaskUpdate])
+  }, [isHistoryExpanded, isTaskListUnavailable, loadTasks, state.lastTaskUpdate])
 
   // Debounce search query
   useEffect(() => {
@@ -598,35 +671,39 @@ export function Sidebar({ className }: SidebarProps) {
         // Auto-expand when searching
         if (searchQuery && !isHistoryExpanded) {
           setIsHistoryExpanded(true)
-        } else if (isHistoryExpanded) {
+        } else if (isHistoryExpanded && !isTaskListUnavailable) {
           loadTasks(1, false)
         }
       }
     }, 500)
     return () => clearTimeout(timer)
-  }, [searchQuery, loadTasks, isHistoryExpanded])
+  }, [searchQuery, loadTasks, isHistoryExpanded, isTaskListUnavailable])
 
   const handleScroll = (e: React.UIEvent<HTMLElement>) => {
     const { scrollTop, scrollHeight, clientHeight } = e.currentTarget
-    if (isHistoryExpanded && scrollHeight - scrollTop <= clientHeight + 20 && hasMore && !isLoadingMore && !isLoadingTasks) {
+    if (
+      isHistoryExpanded &&
+      !isTaskListUnavailable &&
+      scrollHeight - scrollTop <= clientHeight + 20 &&
+      hasMore &&
+      !isLoadingMore &&
+      !isLoadingTasks
+    ) {
       loadTasks(page + 1, true)
     }
   }
 
-  // Sidebar is hidden by default on Agent pages, but kept visible on Vibe and Build pages, and shown on other pages
-  // For agent pages, sidebar is only shown when isExpanded is true
-  // Build page no longer automatically hides
-  // /agent/[id] page does not auto-collapse (for agent chat)
+  // agent 详情页之外的 /agent 页面仍沿用历史行为：默认只显示一条窄边，点击后临时展开。
   const isAgentChatPage = pathname.match(/^\/agent\/\d+$/)
-  const shouldShowSidebar = !((pathname.startsWith('/agent') && !pathname.startsWith('/agent/vibe') && !isAgentChatPage)) || isExpanded
-  const isAgentPage = (pathname.startsWith('/agent') && !pathname.startsWith('/agent/vibe') && !isAgentChatPage)
+  const isAgentPage = pathname.startsWith('/agent') && !pathname.startsWith('/agent/vibe') && !isAgentChatPage
+  // 普通页面走全局折叠开关；agent 页面走“默认收起 + 临时展开”的旧逻辑。
+  const isSidebarVisible = isAgentPage ? isExpanded : !isSidebarCollapsed
 
-  // When in collapsible state and expanded, click outside sidebar to automatically collapse
+  // agent 页临时展开时，点击外部自动收起，保持之前“主工作区优先”的体验。
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent | TouchEvent) => {
       if (!sidebarRef.current) return
-      // Only process when in collapsible page and currently expanded
-      if (isAgentPage && shouldShowSidebar && isExpanded) {
+      if (isAgentPage && isSidebarVisible && isExpanded) {
         if (!sidebarRef.current.contains(event.target as Node)) {
           setIsExpanded(false)
         }
@@ -640,7 +717,7 @@ export function Sidebar({ className }: SidebarProps) {
       document.removeEventListener('mousedown', handleClickOutside)
       document.removeEventListener('touchstart', handleClickOutside)
     }
-  }, [isAgentPage, shouldShowSidebar, isExpanded])
+  }, [isAgentPage, isSidebarVisible, isExpanded])
 
   const toggleMenu = (menuName: string) => {
     setExpandedMenus(prev =>
@@ -654,6 +731,18 @@ export function Sidebar({ className }: SidebarProps) {
     return expandedMenus.includes(menuName)
   }
 
+  const toggleGroup = (groupKey: string) => {
+    setExpandedGroups((prev) =>
+      prev.includes(groupKey)
+        ? prev.filter((name) => name !== groupKey)
+        : [...prev, groupKey]
+    )
+  }
+
+  const isGroupExpanded = (groupKey: string) => {
+    return expandedGroups.includes(groupKey)
+  }
+
   const isPathActive = (href: string) => {
     if (href === "/") {
       return pathname === "/"
@@ -661,12 +750,33 @@ export function Sidebar({ className }: SidebarProps) {
     return pathname === href || pathname.startsWith(`${href}/`)
   }
 
-  if (isAgentPage && !shouldShowSidebar) {
+  useEffect(() => {
+    const activeGroup = navigationGroups.find((group) => groupContainsPath(group, pathname))
+    if (!activeGroup) {
+      return
+    }
+
+    const activeGroupKey = getNavigationGroupKey(activeGroup)
+    setExpandedGroups((prev) => (
+      prev.includes(activeGroupKey) ? prev : [...prev, activeGroupKey]
+    ))
+  }, [pathname])
+
+  if (!isSidebarVisible) {
     return (
       <div className="flex items-center justify-center w-12 bg-card border-r border-border">
         <button
-          onClick={() => setIsExpanded(true)}
+          type="button"
+          onClick={() => {
+            if (isAgentPage) {
+              setIsExpanded(true)
+              return
+            }
+            setIsSidebarCollapsed(false)
+          }}
           className="p-2 text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition-colors"
+          aria-label="展开侧边栏"
+          title="展开侧边栏"
         >
           <Menu className="h-5 w-5" />
         </button>
@@ -678,7 +788,7 @@ export function Sidebar({ className }: SidebarProps) {
     <div ref={sidebarRef} className={cn(
       "flex flex-col bg-card border-r border-border transition-all duration-300 shrink-0",
       isAgentPage ? "h-full" : "h-full",
-      shouldShowSidebar ? "w-72" : "w-0",
+      isSidebarVisible ? "w-72" : "w-0",
       className
     )}>
       {/* Logo */}
@@ -691,14 +801,21 @@ export function Sidebar({ className }: SidebarProps) {
           />
           <h1 className="text-xl font-bold text-foreground">{branding.appName}</h1>
         </Link>
-        {isAgentPage && (
-          <button
-            onClick={() => setIsExpanded(false)}
-            className="p-1 text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition-colors"
-          >
-            <X className="h-5 w-5" />
-          </button>
-        )}
+        <button
+          type="button"
+          onClick={() => {
+            if (isAgentPage) {
+              setIsExpanded(false)
+              return
+            }
+            setIsSidebarCollapsed(true)
+          }}
+          className="p-1 text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition-colors"
+          aria-label="收起侧边栏"
+          title="收起侧边栏"
+        >
+          <ChevronLeft className="h-5 w-5" />
+        </button>
       </div>
 
       {/* Navigation */}
@@ -707,16 +824,30 @@ export function Sidebar({ className }: SidebarProps) {
         className="flex-1 min-h-0 overflow-y-auto px-3 pb-4 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:'none'] [scrollbar-width:'none']"
         onScroll={handleScroll}
       >
-        {/* Sticky Navigation Groups */}
-        <div className="sticky top-0 z-10 bg-card -mx-3 px-3 py-2">
+        {/* Navigation Groups */}
+        <div className="-mx-3 px-3 py-2">
           {/* Groups */}
-          {navigationGroups.map((group, groupIndex) => (
-            <div key={group.title} className={cn("mb-6", groupIndex === 0 && "mt-0")}>
-              <div className="px-4 py-2 text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">
-                {group.titleKey ? t(group.titleKey) : group.title}
-              </div>
-              <div className="space-y-1">
-                {group.items.map((item) => {
+          {navigationGroups.map((group, groupIndex) => {
+            const groupKey = getNavigationGroupKey(group)
+            const groupExpanded = isGroupExpanded(groupKey)
+
+            return (
+              <div key={group.title} className={cn("mb-6", groupIndex === 0 && "mt-0")}>
+                <button
+                  type="button"
+                  onClick={() => toggleGroup(groupKey)}
+                  className="flex w-full items-center justify-between px-4 py-2 text-xs font-bold text-slate-400 uppercase tracking-wider mb-1 rounded-md transition-colors hover:bg-accent/40 hover:text-slate-500"
+                >
+                  <span>{group.titleKey ? t(group.titleKey) : group.title}</span>
+                  {groupExpanded ? (
+                    <ChevronDown className="h-3.5 w-3.5" />
+                  ) : (
+                    <ChevronRight className="h-3.5 w-3.5" />
+                  )}
+                </button>
+                {groupExpanded && (
+                  <div className="space-y-1">
+                    {group.items.map((item) => {
                   const isActive = isPathActive(item.href)
                   const hasChildren = item.children && item.children.length > 0
                   const isExpanded = isMenuExpanded(item.href)
@@ -790,10 +921,12 @@ export function Sidebar({ className }: SidebarProps) {
                       {item.nameKey ? t(item.nameKey) : item.name}
                     </Link>
                   )
-                })}
+                    })}
+                  </div>
+                )}
               </div>
-            </div>
-          ))}
+            )
+          })}
         </div>
 
         {/* History Section */}

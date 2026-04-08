@@ -1,4 +1,8 @@
-"""数据库连接配置与 URL 归一化工具。"""
+"""数据库连接配置与 URL 归一化工具。
+
+这个模块位于“用户输入的连接信息”和“实际 adapter 运行配置”之间，
+负责把不同来源的 URL / driver 方言收敛成平台内部可比较、可复用的统一结构。
+"""
 
 from __future__ import annotations
 
@@ -12,7 +16,14 @@ from .types import try_normalize_database_type
 
 @dataclass(frozen=True)
 class DatabaseConnectionConfig:
-    """统一数据库连接配置。"""
+    """统一数据库连接配置。
+
+    关键字段说明：
+    - `db_type`: 平台内部使用的 canonical 数据库类型
+    - `database` / `file_path`: 网络型数据库与 SQLite 文件型数据库的两种目标表达
+    - `read_only`: 运行层是否必须按只读策略建连
+    - `extra`: URL query 中的附加参数，供具体 adapter 再解释
+    """
 
     db_type: str
     host: str | None = None
@@ -43,6 +54,7 @@ def database_connection_config_from_url(
     上层可据此决定走 adapter 还是走历史 SQLAlchemy 兼容路径。
     """
 
+    # 这里只解析“连接配置”，不做网络探测；调用方后续可以选择先测连再持久化。
     raw_type = url.drivername.split("+", 1)[0]
     db_type = try_normalize_database_type(raw_type) or raw_type.strip().lower()
     extra = dict(url.query) if url.query else {}
@@ -70,7 +82,11 @@ def clean_database_name(value: str | None) -> str | None:
 
 
 def normalize_database_name(value: str | None) -> str | None:
-    """把数据库名归一化成可比较值。"""
+    """把数据库名归一化成可比较值。
+
+    当前策略只做大小写归一，不主动改写路径、schema 等更强语义，
+    避免不同数据库产品的命名规则被错误折叠。
+    """
 
     cleaned = clean_database_name(value)
     if cleaned is None:
@@ -79,7 +95,10 @@ def normalize_database_name(value: str | None) -> str | None:
 
 
 def resolve_database_name_from_url(url_str: str) -> str | None:
-    """从连接 URL 中推导逻辑数据库名。"""
+    """从连接 URL 中推导逻辑数据库名。
+
+    它主要用于旧数据或历史分支里 `database_name` 尚未显式落库时的兜底推导。
+    """
 
     parsed = make_url(url_str)
     config = database_connection_config_from_url(parsed, read_only=True)

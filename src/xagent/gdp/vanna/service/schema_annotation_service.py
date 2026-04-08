@@ -1,4 +1,8 @@
-"""结构事实人工补充/覆写服务。"""
+"""结构事实人工补充/覆写服务。
+
+数据库原生注释往往不完整，或者完全是技术命名。这个模块允许平台补充一层
+“更贴近业务语义”的 annotation，并在摘要生成时覆盖原始结构事实。
+"""
 
 from __future__ import annotations
 
@@ -10,6 +14,8 @@ from xagent.gdp.vanna.model.vanna import VannaSchemaColumn, VannaSchemaColumnAnn
 
 
 def normalize_schema_name(schema_name: str | None) -> str:
+    """统一 schema 名归一化策略。"""
+
     return (schema_name or "").strip()
 
 
@@ -20,6 +26,8 @@ def annotation_key(
     table_name: str,
     column_name: str,
 ) -> tuple[int, str, str, str]:
+    """构造 annotation 的稳定键。"""
+
     return (
         int(kb_id),
         normalize_schema_name(schema_name),
@@ -31,6 +39,8 @@ def annotation_key(
 def annotation_key_for_column(
     column_row: VannaSchemaColumn,
 ) -> tuple[int, str, str, str]:
+    """从字段行对象构造 annotation 键。"""
+
     return annotation_key(
         kb_id=int(column_row.kb_id),
         schema_name=column_row.schema_name,
@@ -40,6 +50,8 @@ def annotation_key_for_column(
 
 
 def effective_text_value(override: str | None, raw: str | None) -> str | None:
+    """优先使用人工覆写文本，缺失时回退原始值。"""
+
     return raw if override is None else override
 
 
@@ -47,18 +59,24 @@ def effective_list_value(
     override: list[str] | None,
     raw: list[str] | None,
 ) -> list[str]:
+    """优先使用人工覆写列表，缺失时回退原始值。"""
+
     if override is None:
         return list(raw or [])
     return list(override or [])
 
 
 def sanitize_text(value: str | None) -> str | None:
+    """清洗单个文本输入。"""
+
     if value is None:
         return None
     return value.strip()
 
 
 def sanitize_string_list(values: Iterable[str] | None) -> list[str] | None:
+    """清洗字符串列表，去空白和空项。"""
+
     if values is None:
         return None
     normalized: list[str] = []
@@ -79,6 +97,8 @@ class SchemaAnnotationService:
         self,
         column_rows: list[VannaSchemaColumn],
     ) -> dict[tuple[int, str, str, str], VannaSchemaColumnAnnotation]:
+        """批量读取字段 annotation，并整理成按字段键索引的映射。"""
+
         if not column_rows:
             return {}
 
@@ -106,6 +126,8 @@ class SchemaAnnotationService:
         self,
         column_row: VannaSchemaColumn,
     ) -> VannaSchemaColumnAnnotation | None:
+        """读取单字段当前生效的 annotation。"""
+
         return (
             self.db.query(VannaSchemaColumnAnnotation)
             .filter(
@@ -131,6 +153,13 @@ class SchemaAnnotationService:
         user_id: int,
         user_name: str | None,
     ) -> VannaSchemaColumnAnnotation:
+        """为单字段新增或更新 annotation。
+
+        状态影响：
+        - 新建时会落库一条 annotation
+        - 更新时只覆盖人工可维护字段，不改原始结构快照
+        """
+
         row = self.get_annotation_for_column(column_row)
         if row is None:
             row = VannaSchemaColumnAnnotation(

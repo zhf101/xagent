@@ -118,7 +118,11 @@ class Text2SQLDatabase(Base):
     user = relationship("User", back_populates="text2sql_databases")
 
     def to_dict(self) -> Dict[str, Any]:
-        """转成 API 可序列化字典。"""
+        """转成 API 可序列化字典。
+
+        这里保留的是“平台可展示、可编辑”的连接元数据，而不是运行期连接对象；
+        调用方应把它视为配置快照，而不是活跃连接句柄。
+        """
         return {
             "id": self.id,
             "user_id": self.user_id,
@@ -145,6 +149,7 @@ class Text2SQLDatabase(Base):
         """从字典恢复模型。
 
         这里对数据库类型做 canonical 归一化，保证别名输入不会把宿主表写脏。
+        这个方法只负责模型装配，不做连通性校验。
         """
         return cls(
             user_id=data.get("user_id"),

@@ -3,6 +3,8 @@ from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
+from .retry_config import DEFAULT_LLM_MAX_RETRIES
+
 
 class VectorDBType(str, Enum):
     """Supported vector database backend types."""
@@ -24,6 +26,14 @@ class VectorDBType(str, Enum):
 
 
 class ModelConfig(BaseModel):
+    """统一的模型配置基类。
+
+    `max_retries` 是这次修复里最关键的控制项之一：
+    - 它表示“单次模型调用内部”的最大重试次数。
+    - 它不应该被当成外层 Agent 总循环次数使用。
+    - 默认值现在收敛为 3，避免服务不可达时后台长时间挂起。
+    """
+
     id: str
     model_name: str
     base_url: Optional[str] = None
@@ -31,7 +41,7 @@ class ModelConfig(BaseModel):
     timeout: float = 180.0
     abilities: Optional[List[str]] = None
     description: Optional[str] = None
-    max_retries: int = 10
+    max_retries: int = Field(default=DEFAULT_LLM_MAX_RETRIES)
 
 
 class ChatModelConfig(ModelConfig):

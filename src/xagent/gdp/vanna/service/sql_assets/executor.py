@@ -1,4 +1,8 @@
-"""SQL Asset 执行服务。"""
+"""SQL Asset 执行服务。
+
+这个模块负责把“已治理的 SQL 模板版本”真正执行出去，并沉淀运行事实。
+与 ask 即时执行相比，它额外承担了资产级约束校验，避免模板跨系统、跨库误用。
+"""
 
 from __future__ import annotations
 
@@ -91,6 +95,10 @@ class SqlAssetExecutionService:
         3. 校验目标 datasource 与资产所属系统/库一致
         4. 执行 SQL
         5. 写入 run 记录
+
+        状态影响：
+        - 成功/失败都会落一条 `VannaSqlAssetRun`
+        - 不会修改 asset/version 本身的定义
         """
 
         binding = self.binding_service.bind(
@@ -126,6 +134,7 @@ class SqlAssetExecutionService:
         )
         if target_datasource is None:
             raise ValueError(f"Datasource {target_datasource_id} was not found")
+        # 资产是治理成果，不能因为模型随手换了 datasource 就跨系统执行。
         if str(target_datasource.system_short) != str(asset.system_short):
             raise ValueError(
                 "Target datasource must belong to the same system as the SQL asset"
@@ -188,7 +197,11 @@ class SqlAssetExecutionService:
         bound_params: dict,
         task_id: int | None,
     ) -> dict:
-        """执行已经编译完成的 SQL。"""
+        """执行已经编译完成的 SQL。
+
+        这里假设 SQL 模板已通过上游治理，当前只处理运行层问题：
+        datasource 解析、连接、执行、结果标准化。
+        """
 
         datasource = (
             self.db.query(Text2SQLDatabase)

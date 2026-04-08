@@ -1,4 +1,13 @@
-"""Vanna 训练切片检索服务。"""
+"""Vanna 训练切片检索服务。
+
+这个模块的职责很克制：只负责“从已经入库的知识里找候选”，
+不负责生成 Prompt，也不负责决定最终 SQL 是否可执行。
+
+当前检索分三桶：
+- `question_sql_pair`: 历史问答对，最接近直接复用 SQL
+- `schema_table_summary`: 结构摘要，帮助模型理解库表关系
+- `documentation`: 业务文档，补齐口径、术语和背景知识
+"""
 
 from __future__ import annotations
 
@@ -15,7 +24,12 @@ from .contracts import RetrievalHit, RetrievalResult
 
 
 class RetrievalService:
-    """按桶召回 `question_sql / schema_summary / documentation`。"""
+    """按桶召回 `question_sql / schema_summary / documentation`。
+
+    这里采用“词法打分 + 可选向量打分”的混合策略：
+    - 没有 embedding 时，仍能靠词法检索工作
+    - 有 embedding 时，用向量相似度增强召回鲁棒性
+    """
 
     def __init__(
         self,
@@ -40,7 +54,11 @@ class RetrievalService:
         top_k_doc: int = 6,
         lifecycle_statuses: list[str] | None = None,
     ) -> RetrievalResult:
-        """执行一次按桶召回。"""
+        """执行一次按桶召回。
+
+        返回值不是扁平 hits，而是按知识类型分桶后的 `RetrievalResult`。
+        这样 PromptBuilder 可以按语义角色来组织上下文，而不是把所有片段混成一堆。
+        """
         statuses = list(lifecycle_statuses or ["published"])
         query_text = str(question or "").strip()
         query_vector = self._encode_query(query_text)
@@ -95,6 +113,8 @@ class RetrievalService:
         env: str | None,
         lifecycle_statuses: list[str],
     ) -> list[RetrievalHit]:
+        """在指定知识桶里做候选检索并排序。"""
+
         if limit <= 0:
             return []
 
@@ -138,6 +158,8 @@ class RetrievalService:
         chunk_row: VannaEmbeddingChunk,
         entry_row: VannaTrainingEntry,
     ) -> RetrievalHit | None:
+        """为单个 chunk 计算综合得分，并组装成命中结果。"""
+
         lexical_score, lexical_reasons = self._compute_lexical_score(
             question,
             "\n".join(
@@ -159,6 +181,8 @@ class RetrievalService:
         if query_vector is not None and vector is not None:
             vector_score = self._cosine_similarity(query_vector, vector)
 
+        # 当前权重更偏向向量，是为了减少自然语言改写后纯关键词失效的问题；
+        # 但词法仍保留 30%，避免向量模型漂移时完全失去可解释性。
         total_score = (
             0.7 * vector_score + 0.3 * lexical_score if query_vector else lexical_score
         )
@@ -192,6 +216,8 @@ class RetrievalService:
         )
 
     def _encode_query(self, text: str) -> list[float] | None:
+        """把查询文本编码成向量；编码不可用时返回 `None`。"""
+
         if self.embedding_model is None or not text.strip():
             return None
         raw = self.embedding_model.encode(text)
@@ -205,6 +231,8 @@ class RetrievalService:
     def _compute_lexical_score(
         self, question: str, candidate_text: str
     ) -> tuple[float, list[str]]:
+        """计算轻量词法分，并给出可解释原因。"""
+
         query_tokens = self._tokenize(question)
         candidate_tokens = self._tokenize(candidate_text)
         if not query_tokens or not candidate_tokens:
@@ -221,6 +249,8 @@ class RetrievalService:
         return score, reasons
 
     def _tokenize(self, text: str) -> set[str]:
+        """把中英文混合文本切成适合粗粒度召回的 token 集。"""
+
         normalized = str(text or "").lower()
         tokens: set[str] = set()
         for match in re.findall(r"[a-z0-9_]+|[\u4e00-\u9fff]+", normalized):
@@ -235,6 +265,8 @@ class RetrievalService:
         return {token for token in tokens if token}
 
     def _parse_vector_literal(self, payload: Any) -> list[float] | None:
+        """兼容数据库里可能存在的 list / JSON 字符串两种向量存储形式。"""
+
         if payload is None:
             return None
         if isinstance(payload, list):
@@ -257,6 +289,8 @@ class RetrievalService:
     def _cosine_similarity(
         self, left: list[float] | None, right: list[float] | None
     ) -> float:
+        """计算余弦相似度，并把异常值钳制到 0~1。"""
+
         if not left or not right or len(left) != len(right):
             return 0.0
         dot = sum(left_item * right_item for left_item, right_item in zip(left, right))

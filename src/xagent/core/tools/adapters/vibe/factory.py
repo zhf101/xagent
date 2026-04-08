@@ -1,8 +1,16 @@
-"""
-Tool Factory for xagent
+"""统一工具工厂。
 
-Provides a unified interface for creating tools with proper workspace binding
-and configuration management.
+这个模块是“运行时到底能拿到哪些工具”的最终收口点。
+
+它不关心调用入口来自哪里，而只做三件事：
+1. 发现所有已注册的工具构造器
+2. 根据配置过滤出当前上下文真正允许使用的工具
+3. 在需要时补上 workspace / sandbox 等运行时绑定
+
+为什么这里必须作为统一收口点？
+- 前端页面隐藏某个工具，并不等于后端运行时真的拿不到它
+- Agent Builder、正式任务、预览任务都在复用同一套工具创建逻辑
+- 只有在这里做最终过滤，管理员禁用、allowed_tools、沙箱包装等策略才能全局一致
 """
 
 # mypy: ignore-errors
@@ -23,11 +31,15 @@ __all__ = ["ToolFactory", "ToolRegistry", "register_tool"]
 
 
 class ToolRegistry:
-    """
-    Global registry for tool creators using decorator pattern.
+    """工具构造器注册表。
 
-    Tools are registered using @register_tool decorator and automatically
-    discovered during create_all_tools().
+    每个工具模块通过 `@register_tool` 把自己的 creator 挂进来，
+    工厂在运行时统一遍历这些 creator 构造工具实例。
+
+    这套模式的价值在于：
+    - 新增工具时，不需要维护一份巨大的手工清单
+    - 每个工具模块自己负责注册，边界更清晰
+    - 运行时入口只依赖注册结果，不依赖具体工具文件名
     """
 
     _tool_creators: List[Callable] = []
@@ -51,7 +63,11 @@ class ToolRegistry:
 
     @classmethod
     def _import_tool_modules(cls):
-        """Import tool modules to trigger @register_tool decorator registration."""
+        """导入工具模块并触发注册副作用。
+
+        这里的 import 看起来像“未使用”，但它们的核心价值就是副作用：
+        模块 import 后，`@register_tool` 才会执行，creator 才会进入注册表。
+        """
         if cls._modules_imported:
             return
 
@@ -87,7 +103,7 @@ class ToolRegistry:
 
     @classmethod
     async def create_registered_tools(cls, config: BaseToolConfig) -> List[Tool]:
-        """Create tools from all registered creators."""
+        """执行所有已注册 creator，拿到原始工具集合。"""
         # Import tool modules on first call to trigger decorator registration
         cls._import_tool_modules()
 
@@ -152,26 +168,26 @@ register_tool = ToolRegistry.register
 
 
 class ToolFactory:
-    """
-    Unified tool factory that handles tool creation with proper workspace binding.
+    """统一工具工厂。
 
-    Tool categories are self-describing - each tool declares its own category
-    via the metadata.category field. No need for manual category mapping.
+    对上层来说，`create_all_tools()` 是唯一应该依赖的入口。
+    它返回的不是“系统里理论存在的全部工具”，而是：
+    当前用户、当前任务、当前治理策略、当前运行环境共同作用后的最终工具集。
     """
 
     @staticmethod
     async def create_all_tools(config: BaseToolConfig) -> List[Tool]:
-        """
-        Create all tools based on configuration.
+        """根据配置创建当前运行时真正可用的工具集合。
 
-        This is the unified entry point for tool creation. All tools are discovered
-        automatically via @register_tool decorators based on the provided configuration.
+        过滤顺序有意固定为：
+        1. 先发现全部可注册工具
+        2. 再做产品级硬裁剪（例如当前分支不开放 image/audio）
+        3. 再做调用上下文白名单过滤（`allowed_tools`）
+        4. 最后做管理员治理策略过滤（全局禁用）
 
-        Args:
-            config: Tool configuration object
-
-        Returns:
-            List of configured tools
+        这样能保证：
+        - 治理策略永远作用在“最终候选集”上
+        - 任何入口都不会绕开最后的禁用过滤
         """
         # Auto-discover tools from @register_tool decorators
         tools = await ToolRegistry.create_registered_tools(config)
@@ -198,6 +214,20 @@ class ToolFactory:
                 "⚠️ allowed_tools is empty list - this will filter out all tools! If you want to allow all tools, set allowed_tools to None"
             )
 
+        # 运行时最后再执行一层“管理员禁用策略”过滤，确保：
+        # 1. 前端页面即便遗漏了按钮禁用，后端也不会把工具交给普通用户
+        # 2. 已保存的 Agent / 历史任务在重建执行上下文时，同样拿不到被停用的工具
+        # 3. 工具治理不依赖某个具体页面，而是后端统一生效
+        disabled_tool_names = set(config.get_disabled_tool_names())
+        if config.should_enforce_tool_policy() and disabled_tool_names:
+            original_count = len(tools)
+            tools = [tool for tool in tools if tool.name not in disabled_tool_names]
+            logger.info(
+                "Filtered tools by disabled tool policy: %s -> %s",
+                original_count,
+                len(tools),
+            )
+
         # Wrap sandbox-enabled tools if sandbox is available
         sandbox = config.get_sandbox()
         if sandbox is not None:
@@ -215,14 +245,12 @@ class ToolFactory:
 
     @staticmethod
     async def _wrap_sandbox_tools(tools: List[Tool], sandbox: Any) -> List[Tool]:
-        """Wrap sandbox-enabled tools with SandboxedToolWrapper.
+        """为需要沙箱隔离的工具补一层 SandboxedToolWrapper。
 
-        Args:
-            tools: Original tool list
-            sandbox: Sandbox instance
-
-        Returns:
-            Tool list with sandbox-enabled tools wrapped
+        这里不是“有 sandbox 就全包一遍”，而是只包装显式声明需要沙箱的工具。
+        这样可以避免：
+        - 没必要的工具也被强行走远端执行
+        - 某个包装失败时把整个工具集都拖垮
         """
         from .sandboxed_tool.sandboxed_tool_config import is_sandbox_enabled
         from .sandboxed_tool.sandboxed_tool_wrapper import create_sandboxed_tool
@@ -252,10 +280,11 @@ class ToolFactory:
     def _create_workspace(
         workspace_config: Optional[Dict[str, Any]],
     ) -> Optional[TaskWorkspace]:
-        """Create workspace from configuration.
+        """根据配置构造 workspace。
 
-        Uses MockWorkspace for tool listing scenarios to avoid creating
-        unnecessary directories on disk.
+        这里区分真实任务和“仅列举工具”的场景：
+        - 真任务：创建实际 workspace，供文件工具和沙箱同步使用
+        - 列表页：使用 MockWorkspace，避免光看工具列表就创建一堆磁盘目录
         """
         if not workspace_config:
             return None

@@ -94,3 +94,6 @@ from .user import User, UserDefaultModel, UserModel  # noqa: F401,E402
 from .user_channel import UserChannel  # noqa: F401,E402
 from .user_oauth import UserOAuth  # noqa: F401,E402
 from ...gdp.vanna.model.text2sql import Text2SQLDatabase  # noqa: F401,E402
+
+# `Text2SQLDatabase` 当前只要求“确保模型已注册”，所以没有放进 __all__。
+# 如果后续外部需要从统一入口直接 import 它，再显式纳入导出列表。

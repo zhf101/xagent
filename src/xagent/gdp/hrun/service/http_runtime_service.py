@@ -12,7 +12,8 @@
 设计边界：
 - 不接管 CRUD；CRUD 仍然留在 `GdpHttpResourceService`
 - 不把数据库原始字段直接暴露给模型；统一投影成运行时结构
-- `url_mode=tag` 当前只保留协议位，不偷偷实现半套逻辑；明确返回未接入错误
+- `url_mode=tag` 优先读取系统管理里配置的环境标签地址映射；
+  找不到时再回退到环境变量，兼容已有部署方式
 """
 
 from __future__ import annotations
@@ -58,7 +59,13 @@ _SECRET_HEADER_NAMES = {
 
 
 class _TemplateObject:
-    """Jinja 上下文代理，优先把点号访问解释成 JSON key。"""
+    """Jinja 上下文代理。
+
+    Jinja 模板天然倾向于把 `foo.bar` 理解成对象属性访问，
+    但 HTTP 资产里的上下文大多来自 JSON/dict。
+    这里包一层代理后，模板作者可以直接按 JSON key 的心智使用点号访问，
+    减少“明明数据里有字段，但模板里取不到”的困惑。
+    """
 
     def __init__(self, data: dict[str, Any]) -> None:
         self._data = data
@@ -110,22 +117,32 @@ def _unwrap_template_value(value: Any) -> Any:
 
 
 def _tojson_filter(value: Any) -> str:
+    """把上下文值序列化成 JSON 字符串，供模板直接拼接。"""
     return json.dumps(_unwrap_template_value(value), ensure_ascii=False, default=str)
 
 
 def _fromjson_filter(value: str) -> Any:
+    """把 JSON 字符串重新解析回结构化对象。"""
     return json.loads(value)
 
 
 def _urlencode_filter(value: Any) -> str:
+    """对模板变量执行 URL 编码。"""
     return quote(str(value), safe="")
 
 
 def _b64encode_filter(value: Any) -> str:
+    """对模板变量执行 Base64 编码。"""
     return base64.b64encode(str(value).encode("utf-8")).decode("ascii")
 
 
 def _dig(value: Any, path: str, default: Any = None) -> Any:
+    """模板里的安全取值助手。
+
+    这个 helper 的目标不是实现完整 JSONPath，而是提供一个稳定的最小能力：
+    模板里可以用 `dig(arguments, "payload.items[0].id")` 这种形式安全取深层值，
+    中途任一层不存在时直接返回默认值。
+    """
     current = value
     for match in _TOKEN_RE.finditer(str(path or "")):
         key = match.group(1)
@@ -475,22 +492,32 @@ class HttpArgumentValidator:
 class HttpBaseUrlResolver:
     """`url_mode=tag` 的基础地址解析器。
 
-    当前阶段先不引入新的宿主配置表，而是采用环境变量作为最小可运维方案。
-    解析约定如下：
+    当前解析顺序如下：
 
-    1. 优先读取 `XAGENT_GDP_HTTP_BASE_URL_<SYSTEM_SHORT>_<SYS_LABEL>`
-    2. 若未命中，再回退读取 `XAGENT_GDP_HTTP_BASE_URL_<SYSTEM_SHORT>`
+    1. 优先读取系统管理里配置的 `system_short + env_label -> base_url`
+    2. 若数据库未命中，再回退到环境变量：
+       - `XAGENT_GDP_HTTP_BASE_URL_<SYSTEM_SHORT>_<SYS_LABEL>`
+       - `XAGENT_GDP_HTTP_BASE_URL_<SYSTEM_SHORT>`
 
-    这样可以满足两类场景：
-    - 一个系统只有一个默认 HTTP 基址
-    - 一个系统在不同标签下有多个 HTTP 基址，例如 `public`、`internal`、`prod`
+    这样做的原因是：
+    - 后台页面负责可视化维护，业务同学不需要再找部署环境变量
+    - 旧部署仍然可以沿用环境变量兜底，不强制一次性迁移
     """
+
+    def __init__(self, db: Session | None = None) -> None:
+        self.db = db
 
     def resolve(self, *, system_short: str, sys_label: str | None) -> str:
         """解析 `tag` 模式下的 base_url。"""
 
         normalized_system = self._normalize_env_segment(system_short)
         normalized_label = self._normalize_env_segment(sys_label)
+        db_value = self._resolve_from_database(
+            system_short=system_short,
+            sys_label=sys_label,
+        )
+        if db_value:
+            return db_value.rstrip("/")
         candidate_keys: list[str] = []
 
         if normalized_system and normalized_label:
@@ -507,10 +534,63 @@ class HttpBaseUrlResolver:
 
         raise ValueError(
             "url_mode=tag 未找到可用 base_url，"
-            f"请配置环境变量: {', '.join(candidate_keys)}"
+            f"system_short={normalized_system or system_short}，"
+            f"env_label={normalized_label or sys_label or '-'}。"
+            f"若未在系统管理中维护环境地址，请配置环境变量: {', '.join(candidate_keys)}"
         )
 
+    def _resolve_from_database(
+        self,
+        *,
+        system_short: str,
+        sys_label: str | None,
+    ) -> str | None:
+        """优先从系统环境地址映射表读取基地址。
+
+        这里只认 active 记录，目的是让停用标签不会继续被新的预览和执行命中。
+        """
+
+        if self.db is None:
+            return None
+
+        normalized_system = self._normalize_db_segment(system_short)
+        normalized_label = self._normalize_db_segment(sys_label)
+        if not normalized_system or not normalized_label:
+            return None
+
+        from xagent.web.models.system_registry import SystemEnvironmentEndpoint
+
+        row = (
+            self.db.query(SystemEnvironmentEndpoint)
+            .filter(
+                SystemEnvironmentEndpoint.system_short == normalized_system,
+                SystemEnvironmentEndpoint.env_label == normalized_label,
+                SystemEnvironmentEndpoint.status == "active",
+            )
+            .first()
+        )
+        if row is None:
+            return None
+        return str(row.base_url or "").strip() or None
+
+    def _normalize_db_segment(self, value: str | None) -> str:
+        """按数据库主数据的存储规则规范 system/env 标签。
+
+        数据库里保留业务真实标签形式，只做去空格和大写，
+        不能复用环境变量键名那套“非字母数字转下划线”的规则。
+        """
+
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        return text.upper()
+
     def _normalize_env_segment(self, value: str | None) -> str:
+        """按环境变量键名规范收口 system/env 片段。
+
+        环境变量名只允许安全字符，因此这里会把非字母数字字符统一压成下划线。
+        这套规则只用于拼环境变量 key，不能反向拿去写数据库。
+        """
         text = str(value or "").strip()
         if not text:
             return ""
@@ -536,7 +616,18 @@ class HttpRequestAssembler:
         definition: HttpRuntimeDefinition,
         arguments: dict[str, Any],
     ) -> HttpRequestSnapshot:
-        """组装最终请求快照。"""
+        """组装最终请求快照。
+
+        这是 HTTP 资产 runtime 最关键的“纯计算阶段”：
+        - 不访问数据库
+        - 不发网络请求
+        - 只把 definition + arguments 规整成稳定的请求快照
+
+        这么拆的好处是：
+        - 预览场景可以直接复用
+        - dry-run 可以直接返回快照给模型看
+        - 真正调用失败时，也能把调用前的完整请求结构保留下来做排查
+        """
 
         url = self._build_base_url(definition)
         method = str(definition.method or "GET").upper()
@@ -918,7 +1009,12 @@ class HttpRequestAssembler:
 
 
 class HttpInvoker:
-    """真实 HTTP 调用器。"""
+    """真实 HTTP 调用器。
+
+    这层只负责把 `HttpRequestSnapshot` 交给底层 API client，
+    不再关心参数抽取、模板渲染或响应解释。
+    这样一旦底层 HTTP client 要替换，影响面会被限制在这里。
+    """
 
     def __init__(self, api_client: APIClientCore | None = None) -> None:
         self.api_client = api_client or APIClientCore()
@@ -1046,6 +1142,14 @@ class HttpResponseInterpreter:
         raw_result: dict[str, Any],
         arguments: dict[str, Any],
     ) -> HttpExecutionResponse:
+        """把底层 HTTP client 返回值解释成模型可消费的响应结构。
+
+        这里会同时产出两层结果：
+        - 结构化字段：状态码、body、抽取结果、business_ok
+        - 文本结果：`rendered_text`，给模型直接阅读和总结
+
+        这样模型既可以按结构化字段做流程判断，也能直接把结果展示给用户。
+        """
         status_code = int(raw_result.get("status_code") or 0)
         protocol_ok = bool(raw_result.get("success"))
         headers = (
@@ -1342,7 +1446,14 @@ class HttpResponseInterpreter:
 
 
 class HttpResourceQueryService:
-    """HTTP 资产检索服务。"""
+    """HTTP 资产检索服务。
+
+    这层不是向量检索，而是规则驱动的轻量召回与排序。
+    目标不是“语义最强”，而是：
+    - 打分逻辑透明，方便调优
+    - 对小规模 HTTP 资产足够稳定
+    - 模型在收到候选结果时，能看见为什么它会被排到前面
+    """
 
     _QUERY_HINT_WORDS = {
         "查询",
@@ -1386,7 +1497,13 @@ class HttpResourceQueryService:
         system_short: str | None = None,
         top_k: int = 5,
     ) -> HttpResourceQueryResult:
-        """检索当前用户可见的 HTTP 资产。"""
+        """检索当前用户可见的 HTTP 资产。
+
+        这里只返回“当前用户此刻真的可能用到的候选项”：
+        - 已删除或停用资产不会参与
+        - 不可见资产不会泄露给非创建人
+        - 返回值里会附带参数提纲，方便模型先判断能否调用
+        """
 
         normalized_query = (query or "").strip()
         normalized_system_short = (system_short or "").strip() or None
@@ -1797,7 +1914,21 @@ class HttpResourceQueryService:
 
 
 class HttpResourceRuntimeService:
-    """HTTP 资产执行服务。"""
+    """HTTP 资产执行服务。
+
+    这是 runtime 主入口，负责把一条 HTTP 资产真正跑起来。
+
+    职责顺序固定为：
+    1. 读取并校验当前用户有权访问的资产
+    2. 组装运行时 definition
+    3. 校验调用参数
+    4. 生成请求快照
+    5. 发起 HTTP 调用
+    6. 解释响应，并统一生成模型友好的错误结构
+
+    这里故意不直接抛大量异常给上层，而是尽量收敛成 `HttpExecuteResult`，
+    因为模型侧更需要稳定的结构化错误，而不是 Python 异常栈。
+    """
 
     def __init__(
         self,
@@ -1814,7 +1945,9 @@ class HttpResourceRuntimeService:
             definition_assembler or HttpRuntimeDefinitionAssembler()
         )
         self.argument_validator = argument_validator or HttpArgumentValidator()
-        self.request_assembler = request_assembler or HttpRequestAssembler()
+        self.request_assembler = request_assembler or HttpRequestAssembler(
+            base_url_resolver=HttpBaseUrlResolver(db)
+        )
         self.invoker = invoker or HttpInvoker()
         self.response_interpreter = response_interpreter or HttpResponseInterpreter(
             self.request_assembler
@@ -2066,7 +2199,14 @@ class HttpResourceRuntimeService:
         arguments: dict[str, Any] | None = None,
         dry_run: bool = False,
     ) -> HttpExecuteResult:
-        """执行指定 HTTP 资产。"""
+        """执行指定 HTTP 资产。
+
+        `dry_run=True` 时只做到“请求快照生成完成”为止，不发真实请求。
+        这个模式主要给：
+        - 后台预览
+        - 模型在正式调用前先看一下请求结构
+        - 排查参数路由是否正确
+        """
 
         if not resource_key and resource_id is None:
             raise ValueError("resource_key 与 resource_id 至少提供一个")
@@ -2189,6 +2329,10 @@ class HttpResourceRuntimeService:
         resource_key: str | None,
         resource_id: int | None,
     ) -> GdpHttpResource | None:
+        """按“可见且激活”的规则读取资产。
+
+        这里统一收口资源访问边界，避免 query/execute 各写一套权限判断。
+        """
         query = self.db.query(GdpHttpResource).filter(
             GdpHttpResource.status == int(GdpHttpAssetStatus.ACTIVE),
             or_(
@@ -2210,6 +2354,7 @@ class HttpResourceRuntimeService:
         resource_id: int | None,
         message: str,
     ) -> HttpExecuteResult:
+        """构造“资源本身不可用”时的统一错误结果。"""
         return HttpExecuteResult(
             resource=HttpExecutionResourceRef(
                 resource_id=int(resource_id or 0),
@@ -2239,6 +2384,11 @@ class HttpResourceRuntimeService:
         request: HttpRequestSnapshot | None = None,
         details: dict[str, Any] | None = None,
     ) -> HttpExecuteResult:
+        """构造带有统一错误契约的执行结果。
+
+        这样上层不需要区分“参数错误”“调用错误”“业务错误”分别怎么拼结构，
+        只要关心 `error.type` 和 `error.details.resolution` 即可。
+        """
         return HttpExecuteResult(
             resource=self._build_resource_ref(definition),
             request=self._redact_request_snapshot(request) if request else None,
@@ -2258,6 +2408,7 @@ class HttpResourceRuntimeService:
         self,
         definition: HttpRuntimeDefinition,
     ) -> HttpExecutionResourceRef:
+        """把 definition 收口成响应里的最小资源引用。"""
         return HttpExecutionResourceRef(
             resource_id=definition.resource_id,
             resource_key=definition.resource_key,

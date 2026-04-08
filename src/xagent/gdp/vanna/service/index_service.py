@@ -1,4 +1,8 @@
-"""把训练知识条目固化成检索切片。"""
+"""把训练知识条目固化成检索切片。
+
+这个模块解决的是“训练条目如何变成可检索单元”。
+训练条目更像原始知识文档，而 embedding chunk 才是检索时真正扫描的对象。
+"""
 
 from __future__ import annotations
 
@@ -34,7 +38,13 @@ class IndexService:
         self.embedding_model_name = embedding_model_name
 
     def reindex_entry(self, *, entry_id: int) -> list[VannaEmbeddingChunk]:
-        """重建单条训练知识的切片。"""
+        """重建单条训练知识的切片。
+
+        状态影响：
+        - 会删除该 entry 旧的全部 chunk
+        - 会重新生成并落库新的 chunk
+        - 会更新知识库的 `last_train_at`
+        """
         entry = self.db.get(VannaTrainingEntry, int(entry_id))
         if entry is None:
             raise VannaTrainingEntryNotFoundError(
@@ -103,7 +113,10 @@ class IndexService:
         kb_id: int,
         lifecycle_statuses: list[str] | None = None,
     ) -> list[VannaEmbeddingChunk]:
-        """重建知识库下若干条目的切片。"""
+        """重建知识库下若干条目的切片。
+
+        这里按 entry 逐条重建而不是写复杂批处理，是为了复用单条重建逻辑并保持行为一致。
+        """
         query = self.db.query(VannaTrainingEntry).filter(
             VannaTrainingEntry.kb_id == int(kb_id)
         )
@@ -119,6 +132,8 @@ class IndexService:
         return created_rows
 
     def _build_chunk_specs(self, entry: VannaTrainingEntry) -> list[dict[str, Any]]:
+        """根据训练条目类型生成切片规格。"""
+
         if entry.entry_type == "question_sql":
             chunk_text = self._build_question_sql_chunk_text(entry)
             return [
@@ -173,6 +188,8 @@ class IndexService:
         ]
 
     def _build_question_sql_chunk_text(self, entry: VannaTrainingEntry) -> str:
+        """把问答对条目渲染成单个 question/sql 检索片段。"""
+
         lines = []
         if entry.question_text:
             lines.append(f"问题: {entry.question_text.strip()}")
@@ -184,6 +201,8 @@ class IndexService:
         return "\n".join(lines).strip()
 
     def _encode_embedding_if_needed(self, text: str) -> list[float] | None:
+        """按需调用 embedding 模型编码。"""
+
         if self.embedding_model is None or not text.strip():
             return None
         raw = self.embedding_model.encode(text)
@@ -195,17 +214,23 @@ class IndexService:
         return vector or None
 
     def _format_vector_literal(self, vector: list[float] | None) -> str | None:
+        """把向量转成数据库可存储的 JSON 字面量。"""
+
         if not vector:
             return None
         return json.dumps([round(float(item), 8) for item in vector], ensure_ascii=False)
 
     def _estimate_token_count(self, text: str) -> int:
+        """粗略估算 token 数，供诊断和调参使用。"""
+
         normalized = text.strip()
         if not normalized:
             return 0
         return max(1, math.ceil(len(normalized) / 4))
 
     def _hash_payload(self, payload: dict[str, Any]) -> str:
+        """为 chunk 计算稳定哈希，便于后续去重与问题排查。"""
+
         return hashlib.sha256(
             json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
         ).hexdigest()

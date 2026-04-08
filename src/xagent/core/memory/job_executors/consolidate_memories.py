@@ -12,6 +12,8 @@ from .base import MemoryJobExecutor
 
 logger = logging.getLogger(__name__)
 
+_SCAN_BATCH_SIZE = 200
+
 
 class ConsolidateMemoriesExecutor(MemoryJobExecutor):
     @property
@@ -50,16 +52,42 @@ class ConsolidateMemoriesExecutor(MemoryJobExecutor):
         limit = int(raw_limit) if raw_limit is not None else 100
 
         with self._get_user_context(effective_user_id):
-            # 先筛出要处理的记忆，再交给 consolidator 真正合并。
-            memories = memory_store.list_all(filters=filters)
-            if older_than is not None:
-                memories = [
-                    memory
-                    for memory in memories
-                    if (memory.freshness_at or memory.timestamp) <= older_than
-                ]
-            if limit > 0:
-                memories = memories[:limit]
+            # 这里不能再一次性 `list_all()` 后整体切片。
+            # 原因有两个：
+            # 1. 数据量大时会把整批记忆都搬进内存；
+            # 2. 存在 `older_than` 时，如果先 limit 再过滤，会漏掉后面页里的旧记忆。
+            #
+            # 所以这里改成“按页扫描 + 命中过滤后累积”：
+            # - 每次只取一页 active 记录
+            # - 再在执行器里判断 older_than
+            # - 一旦收集够 limit 条候选就立刻停止
+            memories = []
+            scan_offset = 0
+            batch_size = max(_SCAN_BATCH_SIZE, limit if limit > 0 else _SCAN_BATCH_SIZE)
+
+            while True:
+                page = memory_store.list_all(
+                    filters=filters,
+                    limit=batch_size,
+                    offset=scan_offset,
+                )
+                if not page:
+                    break
+
+                scan_offset += len(page)
+                for memory in page:
+                    if older_than is not None and (
+                        memory.freshness_at or memory.timestamp
+                    ) > older_than:
+                        continue
+
+                    memories.append(memory)
+                    if limit > 0 and len(memories) >= limit:
+                        break
+
+                if (limit > 0 and len(memories) >= limit) or len(page) < batch_size:
+                    break
+
             consolidation = consolidate_memory_notes(memory_store, memories)
 
         logger.info(

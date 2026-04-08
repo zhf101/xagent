@@ -26,6 +26,7 @@ from ...memory import MemoryStore
 from ...memory.prompt_builder import build_memory_prompt_sections
 from ...memory.session_summary import upsert_session_summary
 from ...model.chat.basic.base import BaseLLM
+from ...model.chat.exceptions import LLMServiceUnavailableError
 from ...tools.adapters.vibe import Tool
 from ..context import AgentContext
 from ..exceptions import (
@@ -262,6 +263,53 @@ class ReActPattern(AgentPattern):
             threshold=compact_threshold or CompactConfig().threshold,
         )
         self._compact_stats = {"total_compacts": 0, "tokens_saved": 0}
+
+    @staticmethod
+    def _find_exception_in_chain(
+        error: BaseException, expected_type: type[BaseException]
+    ) -> BaseException | None:
+        """沿异常链查找指定类型的异常。
+
+        这里不能只看最外层异常，因为模型适配器、重试包装器、PatternExecutionError
+        都可能继续包一层。只有把整条链都看一遍，才能稳定判断这次失败是不是
+        “模型服务不可达”这类应该立即终止的错误。
+        """
+
+        visited: set[int] = set()
+        current: BaseException | None = error
+
+        while current is not None and id(current) not in visited:
+            if isinstance(current, expected_type):
+                return current
+
+            visited.add(id(current))
+
+            next_error: BaseException | None = None
+            if getattr(current, "__cause__", None) is not None:
+                next_error = current.__cause__
+            elif getattr(current, "__context__", None) is not None:
+                next_error = current.__context__
+            elif getattr(current, "cause", None) is not None:
+                next_error = current.cause
+
+            current = next_error
+
+        return None
+
+    def _extract_user_friendly_llm_error(self, error: Exception) -> str | None:
+        """提取需要直接反馈给前端的 LLM 友好错误。
+
+        设计边界：
+        - 只对“模型服务不可达/超时”这类已经没有继续空转价值的问题直接失败。
+        - 其他解析异常、工具异常仍保持现有 ReAct 自恢复行为，避免误改业务语义。
+        """
+
+        matched_error = self._find_exception_in_chain(
+            error, LLMServiceUnavailableError
+        )
+        if matched_error is None:
+            return None
+        return str(matched_error)
 
     def _estimate_message_tokens(self, messages: List[Dict[str, str]]) -> int:
         """
@@ -989,13 +1037,20 @@ class ReActPattern(AgentPattern):
                 except Exception as mem_error:
                     logger.error(f"Failed to store failure memories: {mem_error}")
 
+                friendly_llm_error = self._extract_user_friendly_llm_error(e)
+                error_message = (
+                    friendly_llm_error
+                    if friendly_llm_error
+                    else f"Iteration {iteration + 1} failed: {str(e)}"
+                )
+
                 # Trace error
                 await trace_error(
                     self.tracer,
                     task_id,
                     step_id,
-                    error_type="PatternExecutionError",
-                    error_message=f"Iteration {iteration + 1} failed: {str(e)}",
+                    error_type=type(e).__name__,
+                    error_message=error_message,
                     data={
                         "task": task_description[:100],
                         "messages_count": len(messages),
@@ -1005,6 +1060,23 @@ class ReActPattern(AgentPattern):
                         "action_id": action_id,
                     },
                 )
+
+                # 这里是本次修复的核心收口：
+                # 单次 LLM 调用内部已经做过有限次重试，如果最终仍然是“服务不可达/超时”，
+                # 说明继续跑下一轮 ReAct 也只会重复同样的失败，不应该再把后台任务拖住。
+                if friendly_llm_error:
+                    logger.error(
+                        "Stopping ReAct after unrecoverable LLM availability failure "
+                        "at iteration %s: %s",
+                        iteration + 1,
+                        friendly_llm_error,
+                    )
+                    raise PatternExecutionError(
+                        pattern_name="ReAct",
+                        message=friendly_llm_error,
+                        iteration=iteration + 1,
+                        cause=e,
+                    ) from e
 
                 # Retryable errors - continue to next iteration
                 logger.warning(

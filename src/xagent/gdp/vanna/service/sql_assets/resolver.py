@@ -1,4 +1,8 @@
-"""SQL Asset 候选检索。"""
+"""SQL Asset 候选检索。
+
+这个模块的目标不是“尽量找一个像的”，而是“只返回可以安全复用的候选”。
+因此检索前会先收窄到同用户、同系统、同数据库，再做名称/关键词等打分。
+"""
 
 from __future__ import annotations
 
@@ -17,7 +21,11 @@ from xagent.gdp.vanna.model.vanna import (
 
 
 class SqlAssetResolver:
-    """按规则检索 SQL Asset 候选。"""
+    """按规则检索 SQL Asset 候选。
+
+    当前 deliberately 没引入重量级向量检索，而是先靠治理字段和规则打分，
+    这样命中原因更可解释，也方便资产运营阶段快速调优。
+    """
 
     _token_pattern = re.compile(r"[a-z0-9_]+")
 
@@ -25,6 +33,8 @@ class SqlAssetResolver:
         self.db = db
 
     def _resolve_asset_database_name(self, asset: VannaSqlAsset) -> str | None:
+        """解析资产最终绑定的逻辑数据库名。"""
+
         normalized = normalize_database_name(getattr(asset, "database_name", None))
         if normalized is not None:
             return normalized
@@ -48,6 +58,12 @@ class SqlAssetResolver:
         kb_id: int | None = None,
         top_k: int = 5,
     ) -> list[dict[str, Any]]:
+        """为当前问题解析 SQL 资产候选列表。
+
+        返回结果里同时带上 `asset`、`version`、`score`、`reason`，
+        是因为上层不仅要决定“选谁”，还要给前台/工具解释“为什么选它”。
+        """
+
         normalized_question = str(question or "").strip().lower()
         if not normalized_question:
             return []
@@ -124,6 +140,14 @@ class SqlAssetResolver:
         target_database_name: str,
         kb_id: int | None,
     ) -> tuple[float, str]:
+        """给单个资产打分。
+
+        打分顺序遵循“强约束优先，弱语义次之”：
+        1. 先校验数据库名，不一致直接淘汰
+        2. 再奖励同 datasource / 同 env / 同 kb
+        3. 最后才看名称、关键词、示例问题等软匹配信号
+        """
+
         score = 0.0
         reasons: list[str] = []
 

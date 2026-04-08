@@ -12,6 +12,8 @@ from .base import MemoryJobExecutor
 
 logger = logging.getLogger(__name__)
 
+_SCAN_BATCH_SIZE = 200
+
 
 class ExpireMemoriesExecutor(MemoryJobExecutor):
     @property
@@ -56,8 +58,38 @@ class ExpireMemoriesExecutor(MemoryJobExecutor):
         stale_count = 0
 
         with self._get_user_context(effective_user_id):
-            memories = memory_store.list_all(filters=filters)
-            for memory in memories:
+            # 这里分成“两阶段”处理：
+            # 1. 先分页扫描当前 active 记录，只收集待处理 id
+            # 2. 再逐条重新读取并更新
+            #
+            # 这样做是为了避免一个隐蔽问题：
+            # 如果边扫描边把 status 改成 expired，后续 `offset` 会因为结果集缩小而跳页，
+            # 导致部分 active 记录被直接漏掉。
+            target_memory_ids: list[str] = []
+            scan_offset = 0
+            while True:
+                page = memory_store.list_all(
+                    filters=filters,
+                    limit=_SCAN_BATCH_SIZE,
+                    offset=scan_offset,
+                )
+                if not page:
+                    break
+
+                target_memory_ids.extend(
+                    [memory.id for memory in page if isinstance(memory.id, str)]
+                )
+                scan_offset += len(page)
+
+                if len(page) < _SCAN_BATCH_SIZE:
+                    break
+
+            for memory_id in target_memory_ids:
+                get_response = memory_store.get(memory_id)
+                if not get_response.success or get_response.content is None:
+                    continue
+
+                memory = get_response.content
                 reference_time = memory.freshness_at or memory.timestamp
                 should_expire = bool(
                     (memory.expires_at and memory.expires_at <= now)
@@ -97,13 +129,13 @@ class ExpireMemoriesExecutor(MemoryJobExecutor):
             "Executed memory expiration job id=%s type=%s scanned=%s expired=%s stale=%s",
             job_id,
             memory_type,
-            len(memories),
+            len(target_memory_ids),
             expired_count,
             stale_count,
         )
         return {
             "memory_type": memory_type,
-            "scanned_count": len(memories),
+            "scanned_count": len(target_memory_ids),
             "updated_count": updated_count,
             "expired_count": expired_count,
             "stale_count": stale_count,

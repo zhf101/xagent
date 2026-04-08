@@ -16,6 +16,7 @@ import logging
 from typing import Any, List, Optional, Union
 from uuid import uuid4
 
+from ...config import get_vector_backend
 from ...providers.vector_store.lancedb import (
     LanceDBConnectionManager,
     LanceDBVectorStore,
@@ -30,8 +31,28 @@ from .schema import matches_memory_filter
 logger = logging.getLogger(__name__)
 
 
+def _build_memory_table_missing_message(collection_name: str) -> str:
+    """返回 pgvector 缺少记忆表时的统一指引。
+
+    记忆系统切到 pgvector 后，也必须遵守“结构由 SQL 脚本维护”的规则。
+    因此这里不再在首次写入时隐式补表，而是要求先完成数据库初始化。
+    """
+    return (
+        f"Memory table '{collection_name}' does not exist in pgvector backend. "
+        "Please initialize PostgreSQL with db/postgresql/init.sql "
+        "or add an explicit patch before using memory storage."
+    )
+
+
 class LanceDBMemoryStore(MemoryStore):
-    """LanceDB-based memory store implementation with vector search capabilities."""
+    """基于 LanceDB/兼容向量后端的记忆存储实现。
+
+    这层处在“记忆领域模型”和“底层向量数据库”之间：
+    - 上层只关心 `MemoryNote / MemoryResponse`
+    - 下层只关心表结构、向量列和 metadata JSON
+
+    因此这里最核心的职责是做双向映射，而不是暴露底层数据库细节。
+    """
 
     _embedding_model: Optional[BaseEmbedding]
 
@@ -43,15 +64,14 @@ class LanceDBMemoryStore(MemoryStore):
         similarity_threshold: float = 1.0,
         **embedding_kwargs: Any,
     ):
-        """
-        Initialize LanceDB memory store.
+        """初始化记忆存储。
 
-        Args:
-            db_dir: Database directory path
-            collection_name: Collection name for storing memories
-            embedding_model: Optional BaseEmbedding instance or EmbeddingModel config
-            similarity_threshold: Cosine distance threshold for vector search (lower = more strict)
-            **embedding_kwargs: Additional arguments for embedding model
+        这里兼容三种 embedding 配置方式：
+        - 已构造好的 `BaseEmbedding`
+        - `EmbeddingModelConfig`
+        - 旧调用方直接传 `embedding_kwargs`
+
+        这样迁移过程中不用强迫所有调用点一次性改完。
         """
         self._collection_name = collection_name
 
@@ -121,7 +141,15 @@ class LanceDBMemoryStore(MemoryStore):
             self._create_empty_table()
 
     def _create_empty_table(self) -> None:
-        """创建一张空表，并按是否有 embedding 决定是否包含 vector 列。"""
+        """创建一张空表，并按是否有 embedding 决定是否包含 vector 列。
+
+        注意：
+        - LanceDB 模式下仍允许历史上的“按 sample row 自动建表”
+        - pgvector 模式下已明确禁用运行时 DDL，这里应直接失败
+        """
+        if get_vector_backend() == "pgvector":
+            raise RuntimeError(_build_memory_table_missing_message(self._collection_name))
+
         conn = self._vector_store.get_raw_connection()
 
         # Check if we have an embedding model
@@ -219,7 +247,11 @@ class LanceDBMemoryStore(MemoryStore):
         }
 
     def _dict_to_memory_note(self, data: dict[str, Any]) -> MemoryNote:
-        """Convert dictionary from storage to MemoryNote."""
+        """把底层存储行恢复成 `MemoryNote`。
+
+        这里会优先从 metadata 里恢复新字段，
+        这样旧表结构和新字段扩展可以在一段时间内共存。
+        """
         try:
             metadata = json.loads(data.get("metadata", "{}"))
         except (json.JSONDecodeError, TypeError):
@@ -250,7 +282,11 @@ class LanceDBMemoryStore(MemoryStore):
         )
 
     def _apply_filters(self, note: MemoryNote, filters: dict[str, Any]) -> bool:
-        """Apply filters to a MemoryNote for vector search results."""
+        """对向量检索命中的 `MemoryNote` 应用统一过滤条件。
+
+        这里复用领域层 `matches_memory_filter`，目的是让向量检索与文本兜底检索
+        在过滤语义上保持完全一致，避免同一组 filters 在两条路径下表现不同。
+        """
         for key, value in filters.items():
             if not matches_memory_filter(
                 note_category=note.category,
@@ -273,7 +309,10 @@ class LanceDBMemoryStore(MemoryStore):
     def _apply_text_search_filters(
         self, metadata_dict: dict[str, Any], filters: dict[str, Any]
     ) -> bool:
-        """Apply filters to metadata dict for text search results."""
+        """对文本兜底检索结果应用过滤条件。
+
+        文本检索阶段还没恢复成 `MemoryNote` 对象，因此这里直接基于 metadata 字典判定。
+        """
         for key, value in filters.items():
             if not matches_memory_filter(
                 note_category=metadata_dict.get("category"),
@@ -296,14 +335,102 @@ class LanceDBMemoryStore(MemoryStore):
     def _apply_metadata_filters(
         self, metadata: dict[str, Any], metadata_filters: dict[str, Any]
     ) -> bool:
-        """Apply nested metadata filters."""
+        """对嵌套 metadata 做精确匹配过滤。
+
+        当前策略是字符串级精确比较，保持简单和可预测，不在这里引入模糊匹配语义。
+        """
         for key, value in metadata_filters.items():
             if str(metadata.get(key, "")) != str(value):
                 return False
         return True
 
+    def _matches_list_filters(
+        self,
+        note: MemoryNote,
+        filters: Optional[dict[str, Any]] = None,
+    ) -> bool:
+        """判断一条记忆是否命中 `list_all/count` 使用的过滤条件。
+
+        这里不能简单复用 `_apply_filters()`，因为 `list_all()` 还支持：
+        - 时间范围过滤
+        - tags / keywords 的“全部命中”语义
+
+        这些规则现在集中在这里，避免列表、分页计数、后台治理三处各自实现一份。
+        """
+        if not filters:
+            return True
+
+        for key, value in filters.items():
+            if key == "date_from":
+                if note.timestamp < value:
+                    return False
+                continue
+            if key == "date_to":
+                if note.timestamp > value:
+                    return False
+                continue
+            if key == "tags":
+                if not all(tag in note.tags for tag in value):
+                    return False
+                continue
+            if key == "keywords":
+                if not all(keyword in note.keywords for keyword in value):
+                    return False
+                continue
+
+            if not self._apply_filters(note, {key: value}):
+                return False
+
+        return True
+
+    def _iter_filtered_notes(
+        self,
+        *,
+        filters: Optional[dict[str, Any]] = None,
+        batch_size: int = 200,
+    ):
+        """按批遍历命中过滤条件的记忆，避免一次性把整表读进内存。
+
+        之前 `list_all()` 直接走 `search(query=\"\", k=10000)`，问题是：
+        - 只要数据量上来，就会一次性构造大量 `MemoryNote`
+        - Web 列表和治理任务只是想分页消费，但也被迫全量加载
+
+        这里改成底层游标式分页扫描：
+        - 每批只读 `batch_size` 行
+        - 命中过滤条件的记录逐条 yield 给调用方
+        - 调用方可以在拿够自己需要的数据后立刻停止
+        """
+        table = self._vector_store.get_raw_connection().open_table(self._collection_name)
+        raw_offset = 0
+
+        while True:
+            query = table.search().select(["id", "text", "metadata"]).limit(batch_size)
+            if hasattr(query, "offset"):
+                query = query.offset(raw_offset)
+            batch_df = query.to_pandas()
+            if batch_df.empty:
+                break
+
+            batch_rows = batch_df.to_dict(orient="records")
+            for row in batch_rows:
+                note = self._dict_to_memory_note(row)
+                if self._matches_list_filters(note, filters):
+                    yield note
+
+            raw_offset += len(batch_rows)
+            if len(batch_rows) < batch_size:
+                break
+
     def add(self, note: MemoryNote) -> MemoryResponse:
-        """Add a memory note to the store."""
+        """新增一条记忆。
+
+        状态影响：
+        - 会在底层表中写入一条记录
+        - 若表结构与当前预期不兼容，会尝试重建表后再写一次
+
+        这里宁可在写入时触发表重建，也不直接把异常抛给上层，
+        因为 memory 对 Web 侧更多是增强能力，优先保证可用性。
+        """
         try:
             # Generate ID if not provided
             if not note.id:
@@ -334,6 +461,10 @@ class LanceDBMemoryStore(MemoryStore):
                 logger.warning(
                     f"Failed to add record due to schema mismatch: {add_error}"
                 )
+                if get_vector_backend() == "pgvector":
+                    raise RuntimeError(
+                        _build_memory_table_missing_message(self._collection_name)
+                    ) from add_error
                 # Recreate table and try again
                 logger.info("Recreating table with fresh schema")
                 try:
@@ -373,7 +504,7 @@ class LanceDBMemoryStore(MemoryStore):
             )
 
     def get(self, note_id: str) -> MemoryResponse:
-        """Retrieve a memory note by its ID."""
+        """按 id 读取单条记忆。"""
         try:
             table = self._vector_store.get_raw_connection().open_table(
                 self._collection_name
@@ -408,7 +539,11 @@ class LanceDBMemoryStore(MemoryStore):
             )
 
     def update(self, note: MemoryNote) -> MemoryResponse:
-        """Update an existing memory note."""
+        """更新一条已存在记忆。
+
+        当前实现采用“先删后写”的简单策略，
+        目的是避免同时兼容 LanceDB / pgvector 时再维护两套 update 语义。
+        """
         try:
             # Check if memory exists
             get_response = self.get(note.id)
@@ -434,7 +569,7 @@ class LanceDBMemoryStore(MemoryStore):
             )
 
     def delete(self, note_id: str) -> MemoryResponse:
-        """Delete a memory note by its ID."""
+        """按 id 删除一条记忆。"""
         try:
             success = self._vector_store.delete_vectors([note_id])
 
@@ -462,7 +597,14 @@ class LanceDBMemoryStore(MemoryStore):
         filters: Optional[dict[str, Any]] = None,
         similarity_threshold: Optional[float] = None,
     ) -> list[MemoryNote]:
-        """Search memory notes by query text with optional filters."""
+        """按查询文本检索记忆，并支持过滤条件。
+
+        检索策略分两层：
+        1. 优先尝试向量检索
+        2. 向量不可用、失败或无结果时，回退到纯文本扫描
+
+        这样可以在 embedding 不稳定或表结构缺少向量列时，仍保留最小可用检索能力。
+        """
         try:
             table = self._vector_store.get_raw_connection().open_table(
                 self._collection_name
@@ -476,7 +618,7 @@ class LanceDBMemoryStore(MemoryStore):
                     # Check if vector column exists and has the right dimension
                     sample_df = table.search().limit(1).to_pandas()
                     if not sample_df.empty and "vector" in sample_df.columns:
-                        # Try vector search
+                        # 只有表里确实存在向量列时才走向量检索，避免旧表结构直接报错。
                         try:
                             vector_df = (
                                 table.search(
@@ -527,7 +669,8 @@ class LanceDBMemoryStore(MemoryStore):
                     f"Embedding generation failed, using text search: {embedding_error}"
                 )
 
-            # Fallback to text search if no vector results or vector search failed
+            # 向量路径拿不到可用结果时，统一回退文本扫描，确保“查不到”和“向量暂不可用”
+            # 是两回事，不会因为后端能力波动直接让 memory 功能失效。
             if not results:
                 # Text search
                 df = table.search().to_pandas()
@@ -570,23 +713,63 @@ class LanceDBMemoryStore(MemoryStore):
             return []
 
     def clear(self) -> None:
-        """Clear all memory notes from the store."""
+        """清空当前 store 中的全部记忆。"""
         try:
             self._vector_store.clear()
         except Exception as e:
             logger.error(f"Failed to clear memory store: {e}")
 
-    def list_all(self, filters: Optional[dict[str, Any]] = None) -> List[MemoryNote]:
-        """List all memory notes with optional filtering."""
+    def list_all(
+        self,
+        filters: Optional[dict[str, Any]] = None,
+        *,
+        limit: Optional[int] = None,
+        offset: int = 0,
+    ) -> List[MemoryNote]:
+        """列出记忆，并在 store 层完成过滤后分页。
+
+        这里不再复用 `search(query=\"\")`，因为那条路径会把大量结果一次性拉回内存。
+        新实现按批扫描底层表，再在 Python 层应用 metadata/date/tags 这些组合过滤。
+        虽然依旧可能扫描较多行，但至少不会把整表对象一次性展开。
+        """
         try:
-            # Use empty query to get all results
-            return self.search(query="", k=10000, filters=filters or {})
+            results: list[MemoryNote] = []
+            matched_count = 0
+
+            for note in self._iter_filtered_notes(filters=filters):
+                if matched_count < offset:
+                    matched_count += 1
+                    continue
+
+                results.append(note)
+                matched_count += 1
+
+                if limit is not None and limit >= 0 and len(results) >= limit:
+                    break
+
+            return results
         except Exception as e:
             logger.error(f"Failed to list all memories: {e}")
             return []
 
+    def count(self, filters: Optional[dict[str, Any]] = None) -> int:
+        """统计命中过滤条件的记忆数量。
+
+        这里也走批量扫描而不是 `len(list_all())`，目的是避免统计接口为了拿一个数字，
+        反而把所有 `MemoryNote` 对象完整构造一遍。
+        """
+        try:
+            return sum(1 for _ in self._iter_filtered_notes(filters=filters))
+        except Exception as e:
+            logger.error(f"Failed to count memories: {e}")
+            return 0
+
     def get_stats(self) -> dict[str, Any]:
-        """Get statistics about the memory store."""
+        """返回当前记忆库的轻量统计信息。
+
+        这里返回的是运行时诊断视图，不是严格报表口径。
+        统计逻辑基于当前可枚举到的记忆集合，因此更适合排查和观测。
+        """
         try:
             # Get all memories to calculate stats
             all_memories = self.list_all()
@@ -609,7 +792,7 @@ class LanceDBMemoryStore(MemoryStore):
                 "total_count": total_count,
                 "category_counts": category_counts,
                 "tag_counts": tag_counts,
-                "memory_store_type": "lancedb",
+                "memory_store_type": get_vector_backend(),
             }
         except Exception as e:
             logger.error(f"Failed to get memory stats: {e}")
@@ -617,6 +800,6 @@ class LanceDBMemoryStore(MemoryStore):
                 "total_count": 0,
                 "category_counts": {},
                 "tag_counts": {},
-                "memory_store_type": "lancedb",
+                "memory_store_type": get_vector_backend(),
                 "error": str(e),
             }

@@ -1,5 +1,17 @@
 """Web 应用主入口。
-这个文件的职责不是承载具体业务逻辑，而是把所有业务模块挂到 FastAPI 上。
+
+这个文件的职责非常克制：它只负责把各业务模块接到 FastAPI 生命周期上，
+而不在这里承载具体领域逻辑。
+
+为什么要强调这一点？
+- 新同学第一次看项目时，最容易把 `app.py` 当成“随手堆逻辑”的总控文件
+- 一旦把业务判断、数据库编排、第三方初始化都塞进来，后续排查启动问题会非常痛苦
+
+因此这里主要做四件事：
+1. 创建 FastAPI app
+2. 注册异常处理、中间件、静态资源
+3. 挂载各业务 router
+4. 在 startup/shutdown 中编排系统级初始化与回收
 """
 
 import asyncio
@@ -20,7 +32,6 @@ from .api.agents import router as agents_router
 from .api.auth import auth_router
 from .api.channel import router as channel_router
 from .api.chat import chat_router
-from .api.cloud_storage import cloud_router
 from .api.files import file_router
 from ..gdp.hrun.api.http_assets import router as gdp_http_assets_router
 from .api.kb import kb_router
@@ -31,6 +42,7 @@ from .api.monitor import monitor_router
 from .api.progress_ws import progress_ws_router
 from .api.skills import router as skills_router
 from .api.system import system_router
+from .api.system_registry import router as system_registry_router
 from .api.templates import router as templates_router
 from ..gdp.vanna.api.text2sql import text2sql_router
 from .api.tools import tools_router
@@ -71,7 +83,11 @@ _migration_task: asyncio.Task[None] | None = None
 
 @app.get("/health")
 async def health_check() -> dict[str, str]:
-    """Health check endpoint for container probes."""
+    """容器探活接口。
+
+    这里只返回最小成功信号，不做数据库、模型、外部依赖的深探测，
+    避免健康检查本身反过来拖垮服务。
+    """
     return {"status": "ok"}
 
 
@@ -80,7 +96,12 @@ async def health_check() -> dict[str, str]:
 async def validation_exception_handler(
     request: Request, exc: RequestValidationError
 ) -> JSONResponse:
-    """Handle request validation errors, especially those containing binary data"""
+    """统一处理请求参数校验异常。
+
+    这里的核心目标不是“美化报错”，而是保证异常内容一定可 JSON 序列化。
+    某些上传/二进制场景下，FastAPI 原始错误对象里可能混入不可序列化值，
+    如果不先做清洗，异常处理器自己反而会再次抛错。
+    """
     import traceback
 
     logger.error(f"Validation error in {request.url}: {str(exc)}")
@@ -124,7 +145,12 @@ async def validation_exception_handler(
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception) -> None:
-    """Global exception handler, ensuring all errors are recorded"""
+    """全局兜底异常处理器。
+
+    这里选择“记录后继续抛出”，而不是直接吞掉异常返回统一文案，
+    原因是上层仍然需要保留 FastAPI / Starlette 的默认错误传播行为，
+    否则很多调试信息会被吃掉。
+    """
     import traceback
 
     logger.error(f"Unhandled exception in {request.url}: {str(exc)}")
@@ -151,13 +177,14 @@ app.mount(
     name="uploads",
 )
 
-# memory management router with dynamic memory store
+# memory 管理路由需要延迟绑定 memory store getter，
+# 这样启动后如果 embedding model 或 vector backend 发生切换，
+# 路由里拿到的仍然是当前有效的 store，而不是启动瞬间的旧实例。
 memory_router = MemoryManagementRouter(get_memory_store).get_router()
 
 # API routers
 app.include_router(auth_router)
 app.include_router(chat_router)
-app.include_router(cloud_router)
 app.include_router(file_router)
 app.include_router(kb_router)
 app.include_router(model_router)
@@ -171,6 +198,7 @@ app.include_router(tools_router)
 app.include_router(admin_users_router)
 app.include_router(skills_router)
 app.include_router(system_router)
+app.include_router(system_registry_router)
 app.include_router(templates_router)
 app.include_router(agents_router)
 app.include_router(gdp_http_assets_router)
@@ -182,6 +210,18 @@ app.include_router(channel_router, prefix="/api/channels", tags=["Channels"])
 # initial database and skill manager
 @app.on_event("startup")
 async def startup_event() -> None:
+    """应用启动编排。
+
+    这里做的都是“系统级一次性初始化”，例如：
+    - 数据库 schema 初始化
+    - skill/template manager 准备
+    - memory store 类型日志输出
+    - 向量库迁移任务、渠道初始化、sandbox 初始化
+
+    约束：
+    - 业务 CRUD 绝不能放进这里
+    - 任何可能失败的外围能力都应尽量降级，而不是直接阻塞整个 Web 服务启动
+    """
     global _migration_task
     logger.info("Initializing database...")
     init_db()
@@ -214,14 +254,18 @@ async def startup_event() -> None:
         f"Template manager initialized with {len(await template_manager.list_templates())} templates"
     )
 
-    # Log memory store type (using dynamic manager)
+    # memory store 会根据 embedding model 和 vector backend 动态切换。
+    # 启动时把当前实际落地的 store 类型打到日志里，方便排查“为什么这次没有向量检索”。
     from .dynamic_memory_store import get_memory_store_manager
 
     manager = get_memory_store_manager()
     store_info = manager.get_store_info()
 
     if store_info["is_lancedb"]:
-        logger.info("Using LanceDB memory store with vector search capabilities")
+        backend_name = store_info.get("vector_backend") or "lancedb"
+        logger.info(
+            "Using %s memory store with vector search capabilities", backend_name
+        )
         logger.info(f"Embedding model ID: {store_info['embedding_model_id']}")
     else:
         logger.info("Using in-memory store (no vector search capabilities)")
@@ -230,8 +274,8 @@ async def startup_event() -> None:
         f"Memory store similarity threshold: {store_info['similarity_threshold']}"
     )
 
-    # Auto-migrate LanceDB tables if needed (for multi-tenancy support)
-    # Controlled by LANCEDB_AUTO_MIGRATE environment variable (default: false)
+    # 向量库结构迁移是潜在耗时动作，因此默认关闭，只在显式环境变量开启时执行。
+    # 这里保留后台异步任务句柄，shutdown 时需要尝试优雅回收。
     auto_migrate = os.getenv("LANCEDB_AUTO_MIGRATE", "false").lower() == "true"
 
     try:
@@ -384,6 +428,13 @@ async def startup_event() -> None:
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
+    """应用关闭编排。
+
+    shutdown 的目标不是“把所有资源都强制关死”，而是尽量优雅回收：
+    - 停掉后台迁移任务
+    - 关闭外部 channel
+    - 释放 sandbox / manager 等长生命周期对象
+    """
     global _migration_task
 
     if _migration_task and not _migration_task.done():

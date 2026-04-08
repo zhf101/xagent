@@ -23,6 +23,8 @@ import logging
 import os
 from pathlib import Path
 
+from dotenv import find_dotenv, load_dotenv
+
 logger = logging.getLogger(__name__)
 
 # Environment variable names
@@ -34,11 +36,61 @@ STORAGE_ROOT = "XAGENT_STORAGE_ROOT"
 SANDBOX_IMAGE = "SANDBOX_IMAGE"
 LANCEDB_PATH = "LANCEDB_PATH"
 DATABASE_URL = "DATABASE_URL"
+VECTOR_BACKEND = "XAGENT_VECTOR_BACKEND"
+VECTOR_PG_URL = "XAGENT_VECTOR_PG_URL"
+VECTOR_PG_SCHEMA = "XAGENT_VECTOR_PG_SCHEMA"
+VECTOR_PG_ENABLE_IVFFLAT = "XAGENT_VECTOR_PG_ENABLE_IVFFLAT"
 SANDBOX_CPUS = "SANDBOX_CPUS"
 SANDBOX_MEMORY = "SANDBOX_MEMORY"
 SANDBOX_ENV = "SANDBOX_ENV"
 SANDBOX_VOLUMES = "SANDBOX_VOLUMES"
 BOXLITE_HOME_DIR = "BOXLITE_HOME_DIR"
+DEFAULT_POSTGRES_URL = "postgresql://xagent:xagent_password@localhost:5432/xagent"
+
+
+def _load_runtime_env_file() -> None:
+    """在导入配置模块时统一加载 `.env`。
+
+    这次修复的核心目标，是消除“不同启动方式读取到不同配置”的问题。
+    之前只有 `python -m xagent.web` 这条入口会显式调用 `load_dotenv()`，
+    但像下面这些常见开发路径都可能绕过它：
+    - 直接 `uvicorn xagent.web.app:app`
+    - 直接 import `xagent.config` / `xagent.web.app`
+    - 各种脚本、REPL、pytest、一次性诊断命令
+
+    因此把 `.env` 加载下沉到 `config.py` 才是更稳妥的收口点：
+    - 只要代码开始读取配置，就先尽力把 `.env` 载入
+    - 仍保持“进程环境变量优先于 `.env`”的原则，不覆盖外部显式传入值
+
+    查找顺序刻意设计成两层：
+    1. 先按当前工作目录向上搜索 `.env`
+       适合本地开发时在仓库根目录执行命令，也兼容从子目录进入项目
+    2. 再回退到当前源码仓库根目录下的 `.env`
+       适合 `src/` 布局下通过 `PYTHONPATH=src` 或 editable install 运行时，
+       即使调用方 cwd 偏移，也还能回到这份源码自己的根目录找配置
+
+    两个候选路径会去重，并且统一使用 `override=False`，
+    避免把已存在的系统环境变量偷偷覆盖掉。
+    """
+    candidate_paths: list[Path] = []
+
+    cwd_env = find_dotenv(filename=".env", usecwd=True)
+    if cwd_env:
+        candidate_paths.append(Path(cwd_env).resolve())
+
+    repo_root_env = Path(__file__).resolve().parents[2] / ".env"
+    if repo_root_env.exists():
+        candidate_paths.append(repo_root_env.resolve())
+
+    loaded_paths: set[Path] = set()
+    for env_path in candidate_paths:
+        if env_path in loaded_paths:
+            continue
+        load_dotenv(env_path, override=False)
+        loaded_paths.add(env_path)
+
+
+_load_runtime_env_file()
 
 
 def get_web_dir() -> Path:
@@ -208,7 +260,14 @@ def get_lancedb_path() -> Path:
 
 
 def get_default_sqlite_db_path() -> str:
-    """Get the default SQLite database file path string.
+    """返回历史 SQLite 默认文件路径。
+
+    这个 helper 暂时保留，原因只有两个：
+    1. 当前测试集中还有少量 sqlite 夹具直接复用它
+    2. 旧脚本或诊断代码可能仍引用这个名字
+
+    但从当前项目主线约束看，业务运行时已经不再把 SQLite 当默认主库。
+    后续如果连测试也一起切到 PostgreSQL，可以再统一移除。
 
     Returns:
         Path string for SQLite database file in storage root
@@ -219,12 +278,22 @@ def get_default_sqlite_db_path() -> str:
     return str(storage_root / "xagent.db")
 
 
+def get_default_postgres_url() -> str:
+    """返回本地开发环境默认 PostgreSQL 连接串。
+
+    这里把默认值显式收口成一处，原因是现在项目已经转向 PostgreSQL-first：
+    - 没显式传 `DATABASE_URL` 时，不应该再偷偷回落到 SQLite
+    - Docker Compose、README、本地开发脚本都应该围绕同一条默认连接串对齐
+    """
+    return DEFAULT_POSTGRES_URL
+
+
 def get_database_url() -> str:
     """Get the database URL.
 
     Priority:
     1. DATABASE_URL environment variable (full connection string)
-    2. Default to SQLite in storage root
+    2. Default to local PostgreSQL development instance
 
     Returns:
         Database connection string
@@ -233,9 +302,66 @@ def get_database_url() -> str:
     if database_url is not None:
         return database_url
 
-    # Default: SQLite in storage root
-    db_path = get_default_sqlite_db_path()
-    return f"sqlite:///{db_path}"
+    # 项目主线已切换为 PostgreSQL-first，未配置时直接回到本地 pgvector/pg17
+    # 对应的默认开发连接，避免再次出现“忘配 DATABASE_URL 就静默落到 SQLite”的隐患。
+    return get_default_postgres_url()
+
+
+def get_vector_backend() -> str:
+    """获取向量后端类型。
+
+    这里单独抽一层配置，而不是复用 `DATABASE_URL` 做隐式推断，
+    原因是主业务库和向量库虽然都可能指向 PostgreSQL，
+    但运维语义、故障排查路径和后续扩展能力并不相同。
+
+    Returns:
+        `lancedb` 或 `pgvector`
+
+    Raises:
+        ValueError: 当环境变量值不在支持列表中时抛出
+    """
+    raw_value = os.getenv(VECTOR_BACKEND, "lancedb")
+    normalized = raw_value.strip().lower()
+    if not normalized:
+        return "lancedb"
+    if normalized not in {"lancedb", "pgvector"}:
+        raise ValueError(
+            f"Invalid {VECTOR_BACKEND} value: {raw_value}. "
+            "Expected one of: lancedb, pgvector"
+        )
+    return normalized
+
+
+def get_vector_pg_url() -> str:
+    """获取 pgvector 后端连接串。
+
+    约定上优先读取 `XAGENT_VECTOR_PG_URL`，
+    未配置时回退到主业务库 `DATABASE_URL`。
+    这样可以支持“业务表和向量表共用一个 PostgreSQL 实例”的部署方式，
+    也允许未来拆成独立向量库而不影响现有主库配置。
+    """
+    vector_url = os.getenv(VECTOR_PG_URL)
+    if vector_url is not None and vector_url.strip():
+        return vector_url.strip()
+    return get_database_url()
+
+
+def get_vector_pg_schema() -> str:
+    """获取 pgvector 逻辑 schema 名称。"""
+    raw_schema = os.getenv(VECTOR_PG_SCHEMA, "xagent_vector").strip()
+    if not raw_schema:
+        return "xagent_vector"
+    return raw_schema
+
+
+def get_vector_pg_enable_ivfflat() -> bool:
+    """获取 pgvector 是否允许优先创建 IVFFLAT 索引。
+
+    当前实现里这个开关只影响 pgvector 后端索引策略，
+    不影响 LanceDB、业务主库或 ORM 模型初始化。
+    """
+    raw_value = os.getenv(VECTOR_PG_ENABLE_IVFFLAT, "true").strip().lower()
+    return raw_value in {"1", "true", "yes", "on"}
 
 
 def get_sandbox_cpus() -> int | None:

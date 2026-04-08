@@ -1,4 +1,10 @@
-"""Tool configuration models for database storage."""
+"""工具配置与使用统计模型。
+
+这里承载三类事实：
+- `ToolConfig`: 平台级工具是否启用、依赖什么、当前状态如何
+- `ToolUsage`: 工具使用统计
+- `UserToolConfig`: 用户自己的工具配置覆盖
+"""
 
 from sqlalchemy import (
     JSON,
@@ -18,7 +24,14 @@ from .database import Base
 
 
 class ToolConfig(Base):  # type: ignore
-    """Tool configuration table for storing tool settings and availability."""
+    """平台级工具配置表。
+
+    关键字段说明：
+    - `tool_name`: 工具稳定标识
+    - `enabled`: 管理员层面的总开关
+    - `requires_configuration / config / dependencies`: 工具运行依赖与配置
+    - `status / status_reason`: 当前可用性以及原因
+    """
 
     __tablename__ = "tool_configs"
 
@@ -41,7 +54,10 @@ class ToolConfig(Base):  # type: ignore
 
 
 class ToolUsage(Base):  # type: ignore
-    """Tool usage statistics table."""
+    """工具使用统计表。
+
+    这是按工具维度汇总的轻量统计，不保存用户级明细。
+    """
 
     __tablename__ = "tool_usage"
 
@@ -56,6 +72,12 @@ class ToolUsage(Base):  # type: ignore
 
 
 class UserToolConfig(Base):  # type: ignore
+    """用户级工具配置覆盖表。
+
+    它只保存某个用户对某个工具的个性化配置，不负责决定工具是否全局可用；
+    工具的全局启停仍由 `ToolConfig` 控制。
+    """
+
     __tablename__ = "user_tool_configs"
     __table_args__ = (
         UniqueConstraint("user_id", "tool_name", name="uq_user_tool_config"),

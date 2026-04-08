@@ -1,4 +1,8 @@
-"""SQL Asset 模板编译器。"""
+"""SQL Asset 模板编译器。
+
+它负责把治理过的 SQL 模板编译成真正可执行的 SQL 文本和绑定参数。
+本阶段刻意只支持有限模板能力，目的是降低模板表达力，换取执行安全与可审查性。
+"""
 
 from __future__ import annotations
 
@@ -23,6 +27,14 @@ class SqlTemplateCompiler:
         render_config_json: dict[str, Any],
         bound_params: dict[str, Any],
     ) -> dict[str, Any]:
+        """编译模板 SQL。
+
+        当前支持两类模板语法：
+        - `{{ param }}` 占位符
+        - `{% if param %} ... {% endif %}` 条件块
+
+        明确不支持任意表达式或循环，避免模板层变成另一门脚本语言。
+        """
         del parameter_schema_json, render_config_json
         normalized_sql = str(template_sql or "").strip()
         if not normalized_sql:
@@ -40,6 +52,8 @@ class SqlTemplateCompiler:
                 raise ValueError(f"Missing bound parameter: {name}")
             value = bound_params[name]
             if isinstance(value, list):
+                # 数组参数会展开成 `:name_0, :name_1 ...` 这种安全绑定形式，
+                # 避免直接把列表拼进 SQL 字符串。
                 if not value:
                     raise ValueError(f"Array parameter {name} cannot be empty")
                 placeholders: list[str] = []
@@ -61,6 +75,8 @@ class SqlTemplateCompiler:
     def _render_conditionals(
         self, *, template_sql: str, bound_params: dict[str, Any]
     ) -> str:
+        """按绑定参数裁剪条件块。"""
+
         def replace_if_block(match: re.Match[str]) -> str:
             name = match.group(1)
             content = match.group(2)

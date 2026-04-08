@@ -22,6 +22,64 @@ class InMemoryMemoryStore(MemoryStore):
     def __init__(self) -> None:
         self._store: dict[str, MemoryNote] = {}
 
+    def _filter_notes(
+        self,
+        filters: Optional[dict[str, Any]] = None,
+    ) -> list[MemoryNote]:
+        """应用和正式存储一致的过滤规则，并统一返回已排序结果。
+
+        这里单独抽一个私有方法，是为了让 `list_all()` 和 `count()` 共用同一套过滤语义，
+        避免分页实现接入后出现“列表看到 10 条，但计数不是 10 条”的分叉问题。
+        """
+        results = list(self._store.values())
+
+        if filters:
+            filtered_results = []
+            for note in results:
+                match = True
+                for key, value in filters.items():
+                    if key == "date_from" and note.timestamp < value:
+                        match = False
+                    elif key == "date_from":
+                        continue
+                    elif key == "date_to" and note.timestamp > value:
+                        match = False
+                    elif key == "date_to":
+                        continue
+                    elif key == "tags":
+                        if not all(tag in note.tags for tag in value):
+                            match = False
+                    elif key == "keywords":
+                        if not all(keyword in note.keywords for keyword in value):
+                            match = False
+                    elif not matches_memory_filter(
+                        note_category=note.category,
+                        note_memory_type=note.memory_type,
+                        note_memory_subtype=note.memory_subtype,
+                        note_scope=note.scope,
+                        note_source_session_id=note.source_session_id,
+                        note_source_agent_id=note.source_agent_id,
+                        note_project_id=note.project_id,
+                        note_workspace_id=note.workspace_id,
+                        note_dedupe_key=note.dedupe_key,
+                        note_status=note.status,
+                        metadata=note.metadata,
+                        key=key,
+                        value=value,
+                    ):
+                        match = False
+                    if not match:
+                        break
+
+                if match:
+                    filtered_results.append(note)
+
+            results = filtered_results
+
+        # 这里继续保持“最新记录在前”的返回顺序。
+        results.sort(key=lambda x: x.timestamp, reverse=True)
+        return results
+
     def add(self, note: MemoryNote) -> MemoryResponse:
         note_id = note.id or str(uuid.uuid4())
         note.id = note_id
@@ -101,57 +159,30 @@ class InMemoryMemoryStore(MemoryStore):
     def clear(self) -> None:
         self._store.clear()
 
-    def list_all(self, filters: Optional[dict[str, Any]] = None) -> List[MemoryNote]:
-        """列出全部记忆，并复用 schema 层的统一过滤规则。"""
-        results = list(self._store.values())
+    def list_all(
+        self,
+        filters: Optional[dict[str, Any]] = None,
+        *,
+        limit: Optional[int] = None,
+        offset: int = 0,
+    ) -> List[MemoryNote]:
+        """列出全部记忆，并支持在过滤后做分页切片。
 
-        if filters:
-            filtered_results = []
-            for note in results:
-                match = True
-                for key, value in filters.items():
-                    if key == "date_from" and note.timestamp < value:
-                        match = False
-                    elif key == "date_from":
-                        continue
-                    elif key == "date_to" and note.timestamp > value:
-                        match = False
-                    elif key == "date_to":
-                        continue
-                    elif key == "tags":
-                        if not all(tag in note.tags for tag in value):
-                            match = False
-                    elif key == "keywords":
-                        if not all(keyword in note.keywords for keyword in value):
-                            match = False
-                    elif not matches_memory_filter(
-                        note_category=note.category,
-                        note_memory_type=note.memory_type,
-                        note_memory_subtype=note.memory_subtype,
-                        note_scope=note.scope,
-                        note_source_session_id=note.source_session_id,
-                        note_source_agent_id=note.source_agent_id,
-                        note_project_id=note.project_id,
-                        note_workspace_id=note.workspace_id,
-                        note_dedupe_key=note.dedupe_key,
-                        note_status=note.status,
-                        metadata=note.metadata,
-                        key=key,
-                        value=value,
-                    ):
-                        match = False
-                    if not match:
-                        break
+        注意 `offset/limit` 的语义是作用在“过滤后的结果集”上，
+        这样 Web API 与后台治理都能稳定复用，不需要各自再手写一套切片逻辑。
+        """
+        results = self._filter_notes(filters)
 
-                if match:
-                    filtered_results.append(note)
-
-            results = filtered_results
-
-        # Sort by timestamp (newest first)
-        results.sort(key=lambda x: x.timestamp, reverse=True)
+        if offset > 0:
+            results = results[offset:]
+        if limit is not None and limit >= 0:
+            results = results[:limit]
 
         return results
+
+    def count(self, filters: Optional[dict[str, Any]] = None) -> int:
+        """返回过滤后的记录数。"""
+        return len(self._filter_notes(filters))
 
     def get_stats(self) -> dict[str, Any]:
         total_count = len(self._store)

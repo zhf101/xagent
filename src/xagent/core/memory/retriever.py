@@ -150,7 +150,10 @@ class MemoryRetriever:
         if results:
             return [self._memory_to_payload(memory) for memory in results]
 
-        fallback_results = self.memory_store.list_all(filters=effective_filters)[:limit]
+        fallback_results = self.memory_store.list_all(
+            filters=effective_filters,
+            limit=limit,
+        )
         return [self._memory_to_payload(memory) for memory in fallback_results]
 
     def _build_effective_filters(self, filters: dict[str, Any]) -> dict[str, Any]:
