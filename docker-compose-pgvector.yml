@@ -1,0 +1,31 @@
+services:
+  # PostgreSQL + pgvector
+  postgres:
+    image: pgvector/pgvector:pg17
+    container_name: xagent_postgres_pgvector
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_DB=xagent
+      - POSTGRES_USER=xagent
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-xagent_password}
+      - PGDATA=/var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_pgvector_data:/var/lib/postgresql/data
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U xagent -d xagent"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - xagent_pgvector_network
+
+volumes:
+  postgres_pgvector_data:
+    driver: local
+
+networks:
+  xagent_pgvector_network:
+    driver: bridge

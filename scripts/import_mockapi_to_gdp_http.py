@@ -440,7 +440,7 @@ def import_all_assets(db: Session, user_id: int) -> list[dict[str, Any]]:
     返回导入结果列表。
     """
     # 延迟导入避免循环导入
-    from xagent.web.models.gdp_http_resource import GdpHttpResource
+    from xagent.gdp.hrun.model.http_resource import GdpHttpResource
     from xagent.web.models.user import User
     
     # 获取 OpenAPI 规范
@@ -523,7 +523,7 @@ def import_all_assets(db: Session, user_id: int) -> list[dict[str, Any]]:
                     "method": normalized_method,
                     "path": path,
                 })
-                print(f"  ✓ 成功: asset_id={asset.id}")
+                print(f"  [OK] 成功: asset_id={asset.id}")
                 
             except Exception as e:
                 import traceback
@@ -536,7 +536,7 @@ def import_all_assets(db: Session, user_id: int) -> list[dict[str, Any]]:
                     "error": str(e),
                     "traceback": traceback.format_exc(),
                 })
-                print(f"  ✗ 失败: {e}")
+                print(f"  [FAIL] 失败: {e}")
                 print(f"  详细错误: {traceback.format_exc()}")
     
     return results
