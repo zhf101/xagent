@@ -113,7 +113,7 @@ class LanceDBConnectionManager:
             Path(__file__).parent.parent.parent.parent.parent / get_lancedb_path()
         )
         if legacy_dir.is_dir() and list(legacy_dir.iterdir()):
-            logger.info(f"Using legacy LanceDB location: {legacy_dir}")
+            logger.info("Using legacy LanceDB directory for LanceDB backend: %s", legacy_dir)
             return str(legacy_dir)
 
         # Use new default location from unified config module
@@ -199,7 +199,7 @@ class LanceDBConnectionManager:
             if env_var == "LANCEDB_DIR":
                 # Use default path only for the standard LANCEDB_DIR environment variable
                 db_dir = self.get_default_lancedb_dir()
-                logger.info(f"Using default LanceDB directory: {db_dir}")
+                logger.info("Using default LanceDB directory for LanceDB backend: %s", db_dir)
             else:
                 # For other environment variables, raise KeyError as before
                 raise KeyError(f"Environment variable {env_var} is not set")

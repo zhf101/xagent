@@ -316,11 +316,11 @@ def _try_lancedb_rrf_fallback(
         # Apply rerank_top_k limit if specified
         reranked_results = _apply_rerank_top_k_limit(reranked_results, cfg.rerank_top_k)
 
-        logger.info("Applied LanceDB RRF rerank fallback")
+        logger.info("Applied local RRF rerank fallback")
         return reranked_results, True, warnings
 
     except (AttributeError, TypeError, ValueError, ZeroDivisionError) as exc:
-        logger.warning("LanceDB RRF rerank failed: %s", exc)
+        logger.warning("Local RRF rerank fallback failed: %s", exc)
         warnings.append(f"LanceDB RRF rerank failed: {exc}")
         return None
 

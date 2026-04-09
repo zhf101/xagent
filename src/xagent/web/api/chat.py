@@ -97,7 +97,7 @@ async def create_default_tools(
             "base_dir": str(get_uploads_dir() / f"user_{user.id}"),
             "task_id": task_id,
         },
-        include_mcp_tools=False,  # Exclude MCP tools for default agent
+        include_mcp_tools=True,  # 造数专用运行时默认保留 MCP 能力
         task_id=task_id,  # Pass task_id for browser session tracking
         browser_tools_enabled=True,  # Enable browser automation tools
         allowed_collections=allowed_collections,  # Agent Builder knowledge bases
@@ -581,7 +581,7 @@ class AgentServiceManager:
                         user_id=int(user.id),
                         is_admin=bool(user.is_admin),
                         workspace_config=None,
-                        include_mcp_tools=False,
+                        include_mcp_tools=True,
                         task_id=None,
                         browser_tools_enabled=True,
                         allowed_collections=agent_config.get("knowledge_bases"),
@@ -677,7 +677,10 @@ class AgentServiceManager:
                     tools_list, tool_config = tools
 
                     # Get system prompt from agent config (if available)
-                    from .agents import enhance_system_prompt_with_kb
+                    from .agents import (
+                        enhance_system_prompt_for_data_production,
+                        enhance_system_prompt_with_kb,
+                    )
 
                     system_prompt = (
                         agent_config.get("instructions") if agent_config else None
@@ -687,6 +690,9 @@ class AgentServiceManager:
                     )
                     system_prompt = enhance_system_prompt_with_kb(
                         system_prompt, kb_list
+                    )
+                    system_prompt = enhance_system_prompt_for_data_production(
+                        system_prompt
                     )
 
                     # Extract memory similarity threshold from agent config

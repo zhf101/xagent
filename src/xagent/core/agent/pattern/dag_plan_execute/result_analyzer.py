@@ -360,98 +360,98 @@ class ResultAnalyzer:
         )
 
         system_prompt = (
-            "You are an AI assistant that evaluates task execution and synthesizes comprehensive results.\n"
-            "Based on the execution history, you must:\n"
-            "1. Determine if the stated goal is complete\n"
-            "2. Generate a comprehensive final answer that addresses the original goal\n"
-            "3. Analyze whether this task contains learnings worth storing as memory\n\n"
-            "CRITICAL: When evaluating goal achievement with user modifications:\n"
-            "- If you see [User Modification: '...'] markers, the user changed the original requirements\n"
-            "- Evaluate goal achievement based on the LATEST user requirements\n"
-            "- If the final result satisfies modified requirements, the goal IS achieved\n\n"
-            "CRITICAL LANGUAGE REQUIREMENT: YOU MUST RESPOND IN THE SAME LANGUAGE AS THE ORIGINAL GOAL!\n"
-            "If the goal is in English, respond ONLY in English.\n"
-            "If the goal is in Chinese, respond ONLY in Chinese.\n"
-            "NEVER mix languages. Your entire response must be in the same language as the goal.\n\n"
-            "Respond with JSON containing goal achievement status, final answer, and memory insights."
+            "你是一个 AI 助手，负责评估任务执行情况并综合整理结果。\n"
+            "根据执行历史，你必须：\n"
+            "1. 判断声明的目标是否完成\n"
+            "2. 生成一个全面的最终答案，回应原始目标\n"
+            "3. 分析此任务是否包含值得作为记忆存储的经验\n\n"
+            "关键提示：当评估带有用户修改的目标达成情况时：\n"
+            "- 如果你看到 [User Modification: '...'] 标记，说明用户更改了原始需求\n"
+            "- 根据最新的用户需求来评估目标达成情况\n"
+            "- 如果最终结果满足修改后的需求，则目标已达成\n\n"
+            "关键语言要求：你必须使用与原始目标相同的语言进行回复！\n"
+            "如果目标是英文，仅用英文回复。\n"
+            "如果目标是中文，仅用中文回复。\n"
+            "绝不要混合使用语言。你的整个回复必须与目标使用相同的语言。\n\n"
+            "返回包含目标达成状态、最终答案和记忆洞察的 JSON。"
         )
 
-        goal_analysis_prompt = f"""GOAL ACHIEVEMENT ANALYSIS AND FINAL ANSWER:
-Original Goal: {goal}
-Current Time: {current_time}
+        goal_analysis_prompt = f"""目标达成分析和最终答案：
+原始目标：{goal}
+当前时间：{current_time}
 
-Execution History Summary:
+执行历史摘要：
 {execution_summary}
 {file_outputs_section}
-IMPORTANT: Your final_answer MUST be in {detected_language} ONLY, matching the goal's language.
+重要提示：你的最终答案必须仅使用 {detected_language}，与目标的语言保持一致。
 
-Please analyze this task execution comprehensively and respond with JSON:
+请全面分析此任务执行情况，返回 JSON 格式：
 
 {{
   "achieved": true/false,
-  "reason": "Clear explanation of why the goal was/was not achieved",
+  "reason": "清楚解释为什么目标达成/未达成",
   "confidence": 0.0-1.0,
-  "final_answer": "Comprehensive final answer addressing the original goal by synthesizing all execution results. If achieved: provide a complete, well-structured response with success confirmation. If not achieved: explain what was accomplished and what remains to be done. THIS MUST BE IN THE SAME LANGUAGE AS THE GOAL.",
+  "final_answer": "全面的最终答案，通过综合所有执行结果来回应原始目标。如果达成：提供完整、结构良好的回复，包含成功确认。如果未达成：解释已完成的内容和剩余的工作。必须使用与目标相同的语言。",
   "memory_insights": {{
     "should_store": true/false,
-    "reason": "Brief explanation of why this should/shouldn't be stored as memory",
+    "reason": "简要解释为什么应该/不应该存储为记忆",
 
     "classification": {{
-      "primary_domain": "Main domain category (e.g., Data Analysis, Software Development, Machine Learning)",
-      "secondary_domains": ["Related domain categories"],
-      "task_type": "Specific task type",
+      "primary_domain": "主要领域类别（如：数据分析、软件开发、机器学习）",
+      "secondary_domains": ["相关领域类别"],
+      "task_type": "具体任务类型",
       "complexity_level": "Simple/Medium/Complex",
-      "keywords": ["relevant keywords for retrieval"]
+      "keywords": ["用于检索的相关关键词"]
     }},
 
-    "execution_insights": "Analysis of successful strategies, efficiency optimization, and resource utilization",
-    "failure_analysis": "Root cause analysis of failures and solutions implemented",
-    "success_factors": "Key decisions and strategy effectiveness that influenced the outcome",
-    "learned_patterns": "Abstract patterns that can be applied to future similar tasks",
-    "improvement_suggestions": "Specific actionable suggestions for optimization and improvement",
+    "execution_insights": "分析成功策略、效率优化和资源利用",
+    "failure_analysis": "失败的根本原因分析和已实施的解决方案",
+    "success_factors": "影响结果的关键决策和策略有效性",
+    "learned_patterns": "可应用于未来类似任务的抽象模式",
+    "improvement_suggestions": "具体的可操作优化和改进建议",
 
-    "user_preferences": "Analysis of user preferences inferred from task requirements and execution (e.g., preferred output formats, level of detail, communication style, tool usage patterns)",
-    "behavioral_patterns": "Observable user behavior patterns (e.g., common task types, time preferences, failure tolerance, iteration patterns)"
+    "user_preferences": "从任务需求和执行中分析的用户偏好（如：偏好的输出格式、详细程度、沟通风格、工具使用模式）",
+    "behavioral_patterns": "可观察的用户行为模式（如：常见任务类型、时间偏好、失败容忍度、迭代模式）"
   }}
 }}
 
-FINAL ANSWER GUIDELINES:
-- If the goal was successfully achieved with meaningful results, indicate success clearly
-- If the goal could not be achieved due to failures or missing information, indicate failure clearly
-- Provide clear reasoning for your success/failure determination
-- If failed, explain what went wrong and what could be done differently
-- When there are output files, you MUST include them using the EXACT format shown above:
-  - For images: `![description](file:file_id)`
-  - For other files: `[filename](file:file_id)`
-  - ALWAYS use the `file:` prefix followed by the exact file_id
-- Group related files together under a clear section heading
-- IMPORTANT: If you determine that the goal has NOT been achieved, you MUST start your final_answer with 'TASK FAILED: ' followed by a clear explanation (in the same language as the goal)
+最终答案指南：
+- 如果目标成功达成且有意义的结果，清楚表明成功
+- 如果目标因失败或缺少信息而无法达成，清楚表明失败
+- 为你提供成功/失败判定的清晰推理
+- 如果失败，解释出了什么问题以及可以如何改进
+- 当有输出文件时，你必须使用上面显示的精确格式包含它们：
+  - 对于图片：`![description](file:file_id)`
+  - 对于其他文件：`[filename](file:file_id)`
+  - 始终使用 `file:` 前缀后跟精确的 file_id
+- 将相关文件分组在清晰的标题下
+- 重要提示：如果你确定目标未达成，你必须以 'TASK FAILED: ' 开始你的最终答案，后跟清晰的解释（使用与目标相同的语言）
 
-STRICT MEMORY STORAGE CRITERIA:
+严格的记忆存储标准：
 
-STORAGE DECISION: Only set should_store to true if this execution contains EXCEPTIONAL, NON-OBVIOUS insights with clear future value.
+存储决策：仅当此执行包含具有明显未来价值的 exceptional、非显而易见的洞察时，才将 should_store 设置为 true。
 
-REQUIREMENTS (ALL must be met):
-1. **UNIQUE VALUE** - Insights not easily obtainable through general knowledge or simple reasoning
-2. **NON-ROUTINE** - Execution goes beyond standard patterns and approaches
-3. **REUSABLE** - Learnings applicable to multiple future scenarios, not just this specific case
-4. **ACTIONABLE** - Provides concrete guidance for improving future task execution
+要求（必须全部满足）：
+1. **独特价值** - 洞察不易通过一般知识或简单推理获得
+2. **非常规** - 执行超出标准模式和方法
+3. **可复用** - 学习可应用于多种未来场景，而不仅是此特定情况
+4. **可操作** - 为改进未来任务执行提供具体指导
 
-AUTOMATIC REJECTION (store = false) for:
-- Routine task completion following standard workflows
-- Generic descriptions of "effective" processes
-- Common problem-solving approaches without unique insights
-- Obvious strategies that don't provide new learnings
-- General information easily available elsewhere
-- Simple success/failure without deep analysis
+自动拒绝（store = false）：
+- 遵循标准工作流程的常规任务完成
+- 对"有效"过程的通用描述
+- 没有独特洞察力的常见问题解决方法
+- 不提供新学习内容的明显策略
+- 其他地方容易获得的一般信息
+- 没有深入分析的简单成功/失败
 
-FOCUS ON:
-- **User Preferences**: Clear behavioral patterns, communication style preferences, output format requirements
-- **Failure Analysis**: Non-obvious root causes and effective solutions discovered
-- **Innovation**: Novel approaches that demonstrate significant improvement over standard methods
-- **Efficiency**: Discoveries that substantially improve resource utilization or time complexity
+重点关注：
+- **用户偏好**：清晰的行为模式、沟通风格偏好、输出格式要求
+- **失败分析**：非显而易见的根本原因和发现的有效解决方案
+- **创新**：展示比标准方法有显著改进的新方法
+- **效率**：大幅改善资源利用或时间复杂度的发现
 
-STORAGE THRESHOLD: Be extremely conservative. Default to should_store = false unless there's compelling evidence of exceptional value. When in doubt, reject storage."""
+存储阈值：极其保守。除非有令人信服的证据表明有 exceptional 价值，否则默认 should_store = false。如有疑问，拒绝存储。"""
 
         # Try to extract and reuse existing messages context from history
         working_messages = [{"role": "system", "content": system_prompt}]
@@ -594,7 +594,7 @@ STORAGE THRESHOLD: Be extremely conservative. Default to should_store = false un
         # Build file outputs section for the prompt
         file_outputs_section = ""
         if file_outputs:
-            file_outputs_section = "\n\nOutput Files:\n"
+            file_outputs_section = "\n\n输出文件：\n"
             for i, file_info in enumerate(file_outputs, 1):
                 filename = file_info.get("filename", "")
                 file_id = file_info.get("file_id", "")
@@ -602,29 +602,29 @@ STORAGE THRESHOLD: Be extremely conservative. Default to should_store = false un
             file_outputs_section += "\n"
 
         system_prompt = (
-            "You are an AI assistant that synthesizes execution results into a comprehensive answer.\n"
-            "Based on the execution history and results from multiple steps, generate a complete, "
-            "well-structured response that directly addresses the original goal.\n"
-            "Integrate information from all successful steps to provide a thorough answer.\n\n"
-            "CRITICAL LANGUAGE REQUIREMENT: YOU MUST RESPOND IN THE SAME LANGUAGE AS THE ORIGINAL GOAL!\n"
-            "If the goal is in English, respond ONLY in English.\n"
-            "If the goal is in Chinese, respond ONLY in Chinese.\n"
-            "If the goal is in Japanese, respond ONLY in Japanese.\n"
-            "NEVER mix languages. Your entire response must be in the same language as the goal.\n\n"
-            "Important: When evaluating the results:\n"
-            "1. If the goal was successfully achieved with meaningful results, indicate success\n"
-            "2. If the goal could not be achieved due to failures or missing information, indicate failure\n"
-            "3. Provide clear reasoning for your success/failure determination\n"
-            "4. If failed, explain what went wrong and what could be done differently\n\n"
-            "CRITICAL: If you determine that the goal has NOT been achieved, you MUST start your "
-            "response with 'TASK FAILED: ' followed by a clear explanation of the failure (in the same language as the goal).\n\n"
-            "FILE OUTPUT FORMATTING:\n"
-            "When there are output files, you MUST include them in your response using Markdown link format:\n"
-            "- Use this EXACT format for each file: `[filename](file:file_id)`\n"
-            "- Example: `[report.html](file:550e8400-e29b-41d4-a716-446655440000)`\n"
-            "- Group related files together under a clear section heading\n"
-            "- Always include file links at the end of your response in a clear, organized manner\n"
-            "- This allows users to click on the file links to preview them in the right panel"
+            "你是一个 AI 助手，负责将执行结果综合成全面的答案。\n"
+            "根据执行历史和多个步骤的结果，生成一个完整的、"
+            "结构良好的回复，直接回应原始目标。\n"
+            "整合所有成功步骤的信息，提供详尽的答案。\n\n"
+            "关键语言要求：你必须使用与原始目标相同的语言进行回复！\n"
+            "如果目标是英文，仅用英文回复。\n"
+            "如果目标是中文，仅用中文回复。\n"
+            "如果目标是日文，仅用日文回复。\n"
+            "绝不要混合使用语言。你的整个回复必须与目标使用相同的语言。\n\n"
+            "重要提示：评估结果时：\n"
+            "1. 如果目标成功达成且有意义的结果，表明成功\n"
+            "2. 如果目标因失败或缺少信息而无法达成，表明失败\n"
+            "3. 为你提供成功/失败判定的清晰推理\n"
+            "4. 如果失败，解释出了什么问题以及可以如何改进\n\n"
+            "关键提示：如果你确定目标未达成，你必须以 "
+            "'TASK FAILED: ' 开始你的回复，后跟清晰的失败解释（使用与目标相同的语言）。\n\n"
+            "文件输出格式：\n"
+            "当有输出文件时，你必须使用 Markdown 链接格式将它们包含在你的回复中：\n"
+            "- 每个文件使用此精确格式：`[filename](file:file_id)`\n"
+            "- 示例：`[report.html](file:550e8400-e29b-41d4-a716-446655440000)`\n"
+            "- 将相关文件分组在清晰的标题下\n"
+            "- 始终在回复末尾以清晰、有序的方式包含文件链接\n"
+            "- 这允许用户点击文件链接在右侧面板中预览它们"
         )
 
         # Detect goal language for explicit instruction
@@ -637,13 +637,12 @@ STORAGE THRESHOLD: Be extremely conservative. Default to should_store = false un
         )
 
         user_prompt = (
-            f"Original Goal: {goal}\n\n"
-            f"Current Time: {current_time}\n\n"
-            f"Execution Results:\n{execution_summary}\n"
+            f"原始目标：{goal}\n\n"
+            f"当前时间：{current_time}\n\n"
+            f"执行结果：\n{execution_summary}\n"
             f"{file_outputs_section}"
-            f"IMPORTANT: Your response MUST be in {detected_language} ONLY, matching the goal's language.\n\n"
-            f"Please generate a comprehensive final answer that addresses the original goal "
-            f"by synthesizing all the information gathered during execution."
+            f"重要提示：你的回复必须仅使用 {detected_language}，与目标的语言保持一致。\n\n"
+            f"请生成一个全面的最终答案，通过综合执行期间收集的所有信息来回应原始目标。"
         )
 
         return [

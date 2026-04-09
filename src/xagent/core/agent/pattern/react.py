@@ -363,25 +363,25 @@ class ReActPattern(AgentPattern):
             compact_prompt = [
                 {
                     "role": "system",
-                    "content": "You are compacting a ReAct (Reasoning and Acting) conversation history. "
-                    "Preserve: 1) Recent tool calls and their results, 2) Current task and goal, "
-                    "3) Important reasoning and decisions from the last few iterations, "
-                    "4) Key observations and findings. Remove: 1) Redundant system messages, "
-                    "2) Old reasoning that's no longer relevant, 3) Failed attempts that aren't needed for context. "
-                    "CRITICAL: You must return the response in the exact same format: \n"
+                    "content": "你正在压缩一段 ReAct（推理与行动）对话历史。"
+                    "保留：1）最近的工具调用及其结果，2）当前任务和目标，"
+                    "3）最后几次迭代中的重要推理和决策，"
+                    "4）关键观察和发现。移除：1）冗余的系统消息，"
+                    "2）不再相关的旧推理，3）不需要作为上下文的失败尝试。"
+                    "关键：你必须以完全相同的格式返回响应：\n"
                     "USER: message content\n"
                     "ASSISTANT: message content\n"
                     "SYSTEM: message content\n\n"
-                    "Each message must start with the role followed by a colon and space.",
+                    "每条消息必须以角色开头，后跟冒号和空格。",
                 },
                 {
                     "role": "user",
-                    "content": f"Current iteration: {iteration}\n"
-                    f"Original tokens: {original_tokens}\n"
-                    f"Target threshold: {self.compact_config.threshold}\n\n"
-                    f"ReAct conversation to compact:\n{conversation_text}\n\n"
-                    f"IMPORTANT: Return the compacted conversation in the exact same format shown above. "
-                    f"Each line must start with USER:, ASSISTANT:, or SYSTEM: followed by the message content.",
+                    "content": f"当前迭代次数：{iteration}\n"
+                    f"原始 token 数：{original_tokens}\n"
+                    f"目标阈值：{self.compact_config.threshold}\n\n"
+                    f"需要压缩的 ReAct 对话：\n{conversation_text}\n\n"
+                    f"重要提示：以上面显示的完全相同的格式返回压缩后的对话。"
+                    f"每行必须以 USER:、ASSISTANT: 或 SYSTEM: 开头，后跟消息内容。",
                 },
             ]
 
@@ -1318,6 +1318,7 @@ class ReActPattern(AgentPattern):
 
         # Build tool descriptions (may be empty)
         tool_descriptions = self._build_tool_descriptions(tool_names)
+        specialized_policy = self._build_data_production_tool_policy(tool_names)
         tools_section = (
             "No tools are available for this task."
             if not tool_names
@@ -1327,54 +1328,55 @@ class ReActPattern(AgentPattern):
         # Unified prompt for both tool and no-tool scenarios
         prompt = (
             custom_prompt
-            + f"""You are an AI assistant that accomplishes tasks using available tools and reasoning.
+            + f"""你是一个使用可用工具和推理来完成任务的 AI 助手。
 
-FILE REFERENCES:
-- You may see file references in the format: [filename](file://fileId)
-- The referenced file may NOT be in the current workspace.
-- The 'fileId' part is the only valid identifier for reading the file.
-- Use this fileId when referring to files in your analysis.
-- Example: If you see [data.csv](file://123), use '123' to read the file.
+文件引用：
+- 你可能会看到格式为 [filename](file://fileId) 的文件引用
+- 被引用的文件可能不在当前工作区中
+- 'fileId' 部分是读取文件的唯一有效标识符
+- 在分析中引用文件时请使用这个 fileId
+- 示例：如果你看到 [data.csv](file://123)，请使用 '123' 来读取文件
 
 {tools_section}
+{specialized_policy}
 
-DECISION:
-You must respond with a structured action in JSON format. Decide your next action:
+决策：
+你必须以 JSON 格式的结构化动作进行响应。决定你的下一步动作：
 
-- If tools are available AND needed to accomplish the task: Use {{"type": "tool_call", "reasoning": "..."}}
-- If no tools available OR you have enough information to answer: Use {{"type": "final_answer", "reasoning": "...", "answer": "..."}}
+- 如果有可用工具且完成任务需要工具：使用 {{"type": "tool_call", "reasoning": "..."}}
+- 如果没有工具或你有足够信息回答：使用 {{"type": "final_answer", "reasoning": "...", "answer": "..."}}
 
-CRITICAL INSTRUCTIONS:
+关键指令：
 
-1. RESPONSE FORMAT (STRICT JSON SCHEMA):
-   Your response must be a valid JSON object matching this exact schema:
+1. 响应格式（严格 JSON 模式）：
+   你的响应必须是匹配此精确 schema 的有效 JSON 对象：
    {{
        "type": "tool_call" | "final_answer",
-       "reasoning": "string (required) - explanation of your decision",
-       "answer": "string (for final_answer) - your final answer",
-       "success": "boolean (for final_answer) - whether the task succeeded",
-       "error": "string | null (for final_answer) - error message if failed"
+       "reasoning": "字符串（必需）- 你决策的解释",
+       "answer": "字符串（仅 final_answer）- 你的最终答案",
+       "success": "布尔值（仅 final_answer）- 任务是否成功",
+       "error": "字符串 | null（仅 final_answer）- 失败时的错误消息"
    }}
 
-   For tool_call: {{"type": "tool_call", "reasoning": "..."}}
-   For final_answer: {{"type": "final_answer", "reasoning": "...", "answer": "...", "success": true, "error": null}}
+   对于 tool_call：{{"type": "tool_call", "reasoning": "..."}}
+   对于 final_answer：{{"type": "final_answer", "reasoning": "...", "answer": "...", "success": true, "error": null}}
 
-   ⚠️ CRITICAL:
-   - Only include answer/success/error fields when type is "final_answer"
-   - Do NOT add any other fields beyond type, reasoning, answer, success, error
-   - Do NOT include tool names or arguments in JSON
-   - Return exactly ONE JSON object, nothing else
-   - No markdown, no backticks, no additional text
+   ⚠️ 关键：
+   - 仅在 type 为 "final_answer" 时包含 answer/success/error 字段
+   - 不要添加 type、reasoning、answer、success、error 之外的任何其他字段
+   - 不要在 JSON 中包含工具名称或参数
+   - 仅返回一个 JSON 对象，不要其他任何内容
+   - 不要 markdown、不要反引号、不要额外文本
 
-2. WHEN TO USE TOOLS:
-   - Check if tools are available for this task
-   - Use tools when they help accomplish the task more effectively
-   - If no tools are available, provide a final answer directly
-   - Most tools are ATOMIC: one call completes the entire action
+2. 何时使用工具：
+   - 检查是否有可用于此任务的工具
+   - 当工具能更有效地完成任务时使用它们
+   - 如果没有可用工具，直接提供最终答案
+   - 大多数工具是原子性的：一次调用完成整个动作
 
-3. LANGUAGE: Respond in the SAME LANGUAGE as the goal
+3. 语言：使用与目标相同的语言回复
 
-Remember: Return ONLY ONE JSON object. No additional text, no multiple objects."""
+记住：仅返回一个 JSON 对象。不要额外文本，不要多个对象。"""
         )
 
         return prompt
@@ -1385,6 +1387,7 @@ Remember: Return ONLY ONE JSON object. No additional text, no multiple objects."
 
         # Build tool descriptions (may be empty)
         tool_descriptions = self._build_tool_descriptions(tool_names)
+        specialized_policy = self._build_data_production_tool_policy(tool_names)
         tools_section = (
             "You currently have NO access to any tools."
             if not tool_names
@@ -1396,6 +1399,7 @@ Remember: Return ONLY ONE JSON object. No additional text, no multiple objects."
 
 === ACTION FORMAT REQUIREMENTS ===
 {tools_section}
+{specialized_policy}
 
 DECISION:
 You must respond with a structured action in JSON format. Decide your next action:
@@ -1470,6 +1474,80 @@ Remember: Return ONLY ONE JSON object. No additional text, no multiple objects.
 === END ACTION FORMAT REQUIREMENTS ==="""
 
         return existing_prompt + action_requirements
+
+    def _build_data_production_tool_policy(self, tool_names: List[str]) -> str:
+        """构造造数专用系统下的工具优先约束。
+
+        这里专门解决当前分支的核心误判：
+        模型在明明有 HTTP/SQL/KB/skills/MCP 工具时，仍然可能直接给出
+        `final_answer`，并用“信息不足”或“无法访问系统”作为理由跳过执行链。
+
+        对造数系统来说，正确顺序应该是：
+        1. 先查资产 / 查知识 / 查技能文档
+        2. 再根据检索结果决定是否还缺精确参数
+        3. 最后才允许给 final_answer
+        """
+        tool_name_set = set(tool_names)
+        guidance_lines: List[str] = []
+
+        if "query_http_resource" in tool_name_set:
+            guidance_lines.append(
+                "- First use `query_http_resource` to discover candidate HTTP assets before refusing or saying you cannot access an API/system."
+            )
+        if "execute_http_resource" in tool_name_set:
+            guidance_lines.append(
+                "- Use `execute_http_resource` only after the target HTTP asset has been identified."
+            )
+        if "query_vanna_sql_asset" in tool_name_set:
+            guidance_lines.append(
+                "- First use `query_vanna_sql_asset` to discover candidate SQL assets before saying the requested data cannot be queried."
+            )
+        if "execute_vanna_sql_asset" in tool_name_set:
+            guidance_lines.append(
+                "- Use `execute_vanna_sql_asset` only after the target SQL asset has been identified."
+            )
+        if "knowledge_search" in tool_name_set or "list_knowledge_bases" in tool_name_set:
+            guidance_lines.append(
+                "- Use knowledge tools before answering internal business questions from built-in knowledge alone."
+            )
+        if "read_skill_doc" in tool_name_set or "list_skill_docs" in tool_name_set:
+            guidance_lines.append(
+                "- Use skill documentation tools before claiming process or capability limitations."
+            )
+        if "fetch_skill_file" in tool_name_set:
+            guidance_lines.append(
+                "- If a skill file is needed to continue, fetch it through the skill tool flow before claiming the task cannot proceed."
+            )
+
+        builtin_specialized_names = {
+            "query_http_resource",
+            "execute_http_resource",
+            "query_vanna_sql_asset",
+            "execute_vanna_sql_asset",
+            "knowledge_search",
+            "list_knowledge_bases",
+            "read_skill_doc",
+            "list_skill_docs",
+            "fetch_skill_file",
+        }
+        has_mcp_tools = any(name not in builtin_specialized_names for name in tool_name_set)
+        if has_mcp_tools:
+            guidance_lines.append(
+                "- If a connected MCP tool may help, prefer `tool_call` over early refusal so the runtime can inspect and use that system capability."
+            )
+
+        if not guidance_lines:
+            return ""
+
+        return (
+            "\nSPECIALIZED DATA-PRODUCTION POLICY:\n"
+            "- You are a specialized internal data-production agent, not a generic assistant.\n"
+            "- When a request may depend on internal business data, account opening, environment operations, HTTP/API resources, SQL assets, knowledge bases, skills, or MCP-connected systems, prefer `tool_call` over `final_answer`.\n"
+            "- Do NOT use `final_answer` to refuse, to say you lack access, or to ask for broad missing context before first attempting the relevant discovery/search tool.\n"
+            "- `final_answer` is only appropriate when the request is clearly pure conversation, or after the relevant discovery path has already been attempted and you can now summarize the result or ask for the exact missing parameter.\n"
+            + "\n".join(guidance_lines)
+            + "\n"
+        )
 
     def _build_tool_descriptions(self, tool_names: List[str]) -> List[str]:
         """
@@ -1896,9 +1974,8 @@ Remember: Return ONLY ONE JSON object. No additional text, no multiple objects.
                         {
                             "role": "user",
                             "content": (
-                                "SYSTEM REMINDER: Tool calls must be executed via the native "
-                                "function calling interface. Respond again, trigger the tool "
-                                'directly, and only set "type" to "tool_call" in your JSON.'
+                                "系统提醒：工具调用必须通过原生函数调用接口执行。"
+                                '请再次响应，直接触发工具，并在 JSON 中仅将 "type" 设置为 "tool_call"。'
                             ),
                         }
                     )
@@ -1916,8 +1993,8 @@ Remember: Return ONLY ONE JSON object. No additional text, no multiple objects.
                         {
                             "role": "user",
                             "content": (
-                                "SYSTEM REMINDER: No tools are available for this task. "
-                                "Provide a final answer JSON instead of requesting a tool."
+                                "系统提醒：此任务没有可用的工具。"
+                                "请提供最终答案 JSON，而不是请求工具。"
                             ),
                         }
                     )
@@ -1976,13 +2053,13 @@ Remember: Return ONLY ONE JSON object. No additional text, no multiple objects.
             {
                 "role": "user",
                 "content": (
-                    "IMPORTANT INSTRUCTION FOR THIS STEP:\n"
-                    "You indicated you want to call a tool. Now use the NATIVE FUNCTION CALLING interface "
-                    "to invoke the appropriate tool.\n\n"
-                    "Respond in the SAME LANGUAGE as the task.\n\n"
-                    "DO NOT respond with JSON format. DO NOT return a structured action JSON.\n"
-                    "Instead, use the native function calling API to directly invoke the tool.\n\n"
-                    "The system will handle the tool execution and return the result to you."
+                    "此步骤的重要提示：\n"
+                    "你表示想要调用工具。现在使用原生函数调用接口"
+                    "来调用相应的工具。\n\n"
+                    "使用与任务相同的语言进行回复。\n\n"
+                    "不要返回 JSON 格式。不要返回结构化的动作 JSON。\n"
+                    "而是使用原生函数调用 API 直接调用工具。\n\n"
+                    "系统将处理工具执行并将结果返回给你。"
                 ),
             }
         ]

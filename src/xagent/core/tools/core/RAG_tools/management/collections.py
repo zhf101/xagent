@@ -433,7 +433,7 @@ def list_collections(
         knowledge base, including total documents, parses, chunks, and embeddings.
     """
 
-    logger.info("Listing LanceDB collections")
+    logger.info("Listing vector-store collections")
 
     warnings: List[str] = []
 
@@ -634,7 +634,11 @@ def get_document_stats(
         ensure_parses_table(conn)
         ensure_chunks_table(conn)
     except Exception as exc:  # noqa: BLE001 - convert to structured failure
-        logger.error("Failed to initialise LanceDB tables: %s", exc, exc_info=True)
+        logger.error(
+            "Failed to initialise vector-store compatibility tables: %s",
+            exc,
+            exc_info=True,
+        )
         return DocumentStatsResult(
             status="error",
             data=None,
@@ -770,7 +774,11 @@ def list_documents(
         ensure_chunks_table(conn)
         ensure_ingestion_runs_table(conn)
     except Exception as exc:  # noqa: BLE001
-        logger.error("Failed to initialise LanceDB tables: %s", exc, exc_info=True)
+        logger.error(
+            "Failed to initialise vector-store compatibility tables: %s",
+            exc,
+            exc_info=True,
+        )
         return DocumentListResult(
             status="error",
             documents=[],

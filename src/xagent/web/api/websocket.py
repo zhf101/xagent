@@ -2633,7 +2633,7 @@ async def handle_build_preview_execution(
                 user_id=int(user.id),
                 is_admin=bool(user.is_admin),
                 workspace_config=None,
-                include_mcp_tools=False,
+                include_mcp_tools=True,
                 task_id=None,
                 browser_tools_enabled=True,
             )
@@ -2873,7 +2873,10 @@ async def handle_build_preview_execution(
                 return
 
         # Execute task
-        from .agents import enhance_system_prompt_with_kb
+        from .agents import (
+            enhance_system_prompt_for_data_production,
+            enhance_system_prompt_with_kb,
+        )
 
         execution_context = {}
         if instructions:
@@ -2887,6 +2890,9 @@ async def handle_build_preview_execution(
         # Emphasize KB priority when knowledge bases are configured
         execution_context["system_prompt"] = enhance_system_prompt_with_kb(
             execution_context.get("system_prompt"), knowledge_bases
+        )
+        execution_context["system_prompt"] = enhance_system_prompt_for_data_production(
+            execution_context.get("system_prompt")
         )
         if uploaded_files:
             execution_context["uploaded_files"] = uploaded_files

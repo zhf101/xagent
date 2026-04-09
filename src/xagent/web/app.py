@@ -264,9 +264,10 @@ async def startup_event() -> None:
     if store_info["is_lancedb"]:
         backend_name = store_info.get("vector_backend") or "lancedb"
         logger.info(
-            "Using %s memory store with vector search capabilities", backend_name
+            "Using persistent vector memory store (backend=%s, vector_search=enabled)",
+            backend_name,
         )
-        logger.info(f"Embedding model ID: {store_info['embedding_model_id']}")
+        logger.info("Memory store embedding model ID: %s", store_info["embedding_model_id"])
     else:
         logger.info("Using in-memory store (no vector search capabilities)")
 
@@ -300,7 +301,7 @@ async def startup_event() -> None:
         for table_name in tables_to_check:
             if check_table_needs_migration(conn, table_name):
                 logger.warning(
-                    "Table '%s' needs migration (missing user_id field)",
+                    "Vector-store table '%s' needs compatibility migration (missing user_id field)",
                     table_name,
                 )
                 tables_need_migration_list.append(table_name)
@@ -316,7 +317,7 @@ async def startup_event() -> None:
                 for table_name in list_embeddings_table_names(conn):
                     if check_table_needs_migration(conn, table_name):
                         logger.warning(
-                            "Table '%s' needs migration (missing user_id field)",
+                            "Vector-store table '%s' needs compatibility migration (missing user_id field)",
                             table_name,
                         )
                         tables_need_migration_list.append(table_name)
@@ -327,17 +328,17 @@ async def startup_event() -> None:
         if needs_migration:
             if tables_need_migration_list:
                 logger.warning(
-                    "Tables requiring migration: %s",
+                    "Vector-store tables requiring compatibility migration: %s",
                     ", ".join(tables_need_migration_list),
                 )
 
             if auto_migrate:
                 # Run migration in background to avoid blocking startup
                 logger.info("=" * 60)
-                logger.info("STARTING BACKGROUND LANCEDB MIGRATION")
+                logger.info("STARTING BACKGROUND VECTOR-STORE USER_ID BACKFILL MIGRATION")
                 logger.info("=" * 60)
                 logger.info(
-                    "Tables requiring migration: %s",
+                    "Vector-store tables requiring compatibility migration: %s",
                     ", ".join(tables_need_migration_list),
                 )
 
@@ -347,7 +348,7 @@ async def startup_event() -> None:
                     try:
                         result = await asyncio.to_thread(backfill_all, dry_run=False)
                         logger.info("=" * 60)
-                        logger.info("BACKGROUND LANCEDB MIGRATION COMPLETED")
+                        logger.info("BACKGROUND VECTOR-STORE USER_ID BACKFILL MIGRATION COMPLETED")
                         logger.info("=" * 60)
                         logger.info(
                             "Migration results: chunks=%s backfilled, embeddings=%s backfilled",
@@ -368,7 +369,7 @@ async def startup_event() -> None:
                             )
                     except Exception as e:
                         logger.error("=" * 60)
-                        logger.error("BACKGROUND LANCEDB MIGRATION FAILED")
+                        logger.error("BACKGROUND VECTOR-STORE USER_ID BACKFILL MIGRATION FAILED")
                         logger.error("=" * 60)
                         logger.error("Error: %s", e, exc_info=True)
                         logger.warning(
@@ -382,15 +383,17 @@ async def startup_event() -> None:
             else:
                 logger.warning(
                     "LANCEDB_AUTO_MIGRATE is disabled. "
-                    "Migration will NOT run automatically. "
+                    "Vector-store compatibility migration will NOT run automatically. "
                     "To enable automatic migration, set LANCEDB_AUTO_MIGRATE=true. "
                     "To run migration manually: python -m xagent.migrations.lancedb.backfill_user_id"
                 )
         else:
-            logger.info("LanceDB tables are up to date, no migration needed")
+            logger.info(
+                "Vector-store compatibility tables are up to date; no user_id backfill migration needed"
+            )
     except Exception as e:
         logger.warning(
-            "Could not check LanceDB migration status: %s. "
+            "Could not check vector-store compatibility migration status: %s. "
             "Application will continue, but some features may not work correctly.",
             e,
         )
@@ -438,7 +441,7 @@ async def shutdown_event() -> None:
     global _migration_task
 
     if _migration_task and not _migration_task.done():
-        logger.info("Cancelling background LanceDB migration task...")
+        logger.info("Cancelling background vector-store compatibility migration task...")
         _migration_task.cancel()
         with suppress(asyncio.CancelledError):
             await _migration_task

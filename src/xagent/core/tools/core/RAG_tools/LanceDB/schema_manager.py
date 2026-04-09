@@ -56,7 +56,7 @@ def _runtime_schema_patch_message(table_name: str) -> str:
     """
     return (
         f"Vector schema for table '{table_name}' is not ready in pgvector backend. "
-        "Please update db/postgresql/init.sql or add a patch under "
+        "Please update db/postgresql/schema_backup.sql or add a patch under "
         "db/postgresql/patches instead of relying on runtime auto-DDL."
     )
 

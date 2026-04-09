@@ -124,7 +124,9 @@ def _infer_embedding_config_from_collection(
 
     try:
         # Get LanceDB connection
-        logger.debug(f"Connecting to LanceDB for collection '{collection_name}'")
+        logger.debug(
+            "Connecting to vector store for collection '%s'", collection_name
+        )
         conn = get_connection_from_env()
 
         # Get all table names that contain embeddings

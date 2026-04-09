@@ -48,19 +48,14 @@ class DynamicMemoryStoreManager:
     """
 
     def __init__(self, similarity_threshold: Optional[float] = None):
-        """初始化管理器。
-
-        启动时先落到 in-memory，不直接假设向量能力一定可用；
-        真正需要时再根据数据库中的 embedding model 配置决定是否升级。
-        """
+        """初始化管理器。"""
         self._similarity_threshold = similarity_threshold
         self._memory_store: Optional[MemoryStoreType] = None
         self._lock = threading.RLock()
         self._last_embedding_model_id: Optional[int] = None
         self._is_lancedb: bool = False
 
-        # Initialize with in-memory store (will be replaced with LanceDB when embedding model is configured)
-        self._initialize_in_memory_store()
+        self._check_and_update_store()
 
     def _initialize_in_memory_store(self) -> None:
         """初始化为内存型 store。
@@ -146,7 +141,7 @@ class DynamicMemoryStoreManager:
             return None
 
     def _create_lancedb_store(
-        self, embedding_model: DBModel
+        self, embedding_model: Optional[DBModel]
     ) -> UserIsolatedMemoryStore:
         """基于 embedding model 创建向量型 memory store。
 
@@ -162,7 +157,11 @@ class DynamicMemoryStoreManager:
                 "memory_store",
             )
             if os.path.exists(legacy_dir) and os.listdir(legacy_dir):
-                logger.info(f"Using legacy memory store location: {legacy_dir}")
+                logger.info(
+                    "Detected legacy memory_store directory for compatibility: %s "
+                    "(when backend=pgvector, vectors still persist in PostgreSQL)",
+                    legacy_dir,
+                )
                 db_dir = legacy_dir
             else:
                 # Use new default location
@@ -170,7 +169,18 @@ class DynamicMemoryStoreManager:
                 os.makedirs(new_dir, exist_ok=True)
                 db_dir = str(new_dir)
 
-            if embedding_model.model_provider == "openai":
+            if embedding_model is None:
+                lancedb_store = LanceDBMemoryStore(
+                    db_dir=db_dir,
+                    embedding_model=None,
+                    similarity_threshold=self._similarity_threshold or 1.5,
+                )
+                logger.info(
+                    "Created %s-backed memory store without embedding model (text search fallback)",
+                    get_vector_backend(),
+                )
+                return UserIsolatedMemoryStore(lancedb_store)
+            elif embedding_model.model_provider == "openai":
                 lancedb_store = LanceDBMemoryStore(
                     db_dir=db_dir,
                     embedding_model=OpenAIEmbedding(
@@ -190,63 +200,70 @@ class DynamicMemoryStoreManager:
                 return UserIsolatedMemoryStore(lancedb_store)
             else:
                 # 当前只对 OpenAI-compatible embedding 走通向量 store。
-                # 其他 provider 若未适配，宁可回退到 in-memory，也不要构造一个半可用后端。
                 logger.warning(
                     f"Unsupported embedding model type: {embedding_model.model_provider}"
                 )
+                if get_vector_backend() == "pgvector":
+                    lancedb_store = LanceDBMemoryStore(
+                        db_dir=db_dir,
+                        embedding_model=None,
+                        similarity_threshold=self._similarity_threshold or 1.5,
+                    )
+                    return UserIsolatedMemoryStore(lancedb_store)
                 self._initialize_in_memory_store()
                 return self._memory_store  # type: ignore[return-value]
         except Exception as e:
-            logger.error(f"Error creating LanceDB store: {e}")
+            logger.error("Error creating persistent vector memory store: %s", e)
             # 任意向量 store 构造失败都统一回退到 in-memory，确保 Web 侧记忆能力不至于整体不可用。
             self._initialize_in_memory_store()
             return self._memory_store  # type: ignore[return-value]
 
     def _check_and_update_store(self) -> None:
-        """检查 embedding model 是否变化，并在必要时切换底层 store。
+        """检查配置并更新 store 实例。
 
-        这里是动态切换的真正核心：
-        - 从无 embedding 到有 embedding：升级到向量型 store
-        - embedding model 变更：重建向量型 store
-        - embedding model 消失：降级回 in-memory
+        如果是首次初始化且后端指定了 pgvector，则直接挂载持久化存储。
         """
         embedding_model = self._get_embedding_model_from_db()
         current_model_id = embedding_model.id if embedding_model else None
+        is_pgvector = get_vector_backend() == "pgvector"
 
         with self._lock:
-            # Check if we need to update the store
-            should_update = False
+            if not self._memory_store:
+                if embedding_model or is_pgvector:
+                    self._memory_store = self._create_lancedb_store(embedding_model)
+                    self._is_lancedb = True
+                    self._last_embedding_model_id = current_model_id
+                    logger.info(
+                        "Initialized persistent vector memory store directly (backend=%s)",
+                        "pgvector" if is_pgvector else "lancedb",
+                    )
+                else:
+                    self._initialize_in_memory_store()
+                return
 
-            if embedding_model and not self._is_lancedb:
-                # We have an embedding model but using in-memory store
-                should_update = True
-                logger.info("Embedding model detected, upgrading to LanceDB store")
+            if (embedding_model or is_pgvector) and not self._is_lancedb:
+                self._memory_store = self._create_lancedb_store(embedding_model)
+                self._is_lancedb = True
+                self._last_embedding_model_id = current_model_id
+                logger.info(
+                    "Switched to persistent vector memory store (backend=%s)",
+                    "pgvector" if is_pgvector else "lancedb",
+                )
             elif (
-                embedding_model
+                (embedding_model or is_pgvector)
                 and self._is_lancedb
                 and current_model_id != self._last_embedding_model_id
             ):
-                # Embedding model has changed
-                should_update = True
+                self._memory_store = self._create_lancedb_store(embedding_model)
+                self._last_embedding_model_id = current_model_id
                 logger.info(
-                    "Embedding model configuration changed, updating LanceDB store"
+                    "Embedding model changed; rebuilding persistent vector memory store "
+                    "(backend=%s)",
+                    "pgvector" if is_pgvector else "lancedb",
                 )
-            elif not embedding_model and self._is_lancedb:
-                # No embedding model available but using LanceDB (shouldn't happen normally)
-                should_update = True
-                logger.info(
-                    "No embedding model available, falling back to in-memory store"
-                )
-
-            if should_update:
-                if embedding_model:
-                    self._memory_store = self._create_lancedb_store(embedding_model)
-                    self._is_lancedb = True
-                    self._last_embedding_model_id = current_model_id  # type: ignore[assignment]
-                    logger.info("Switched to LanceDB memory store")
-                else:
-                    self._initialize_in_memory_store()
-                    logger.info("Switched to in-memory memory store")
+            elif not embedding_model and not is_pgvector and self._is_lancedb:
+                self._initialize_in_memory_store()
+                logger.info("No embedding model and not pgvector, falling back to in-memory")
 
     def get_memory_store(self) -> MemoryStoreType:
         """返回当前应生效的 memory store。
@@ -284,6 +301,7 @@ class DynamicMemoryStoreManager:
         这个接口主要给启动日志、健康排查和管理页使用，
         目的是快速回答“现在到底跑的是哪种 memory backend”。
         """
+        self._check_and_update_store()
         with self._lock:
             base_store = (
                 self._memory_store._base_store

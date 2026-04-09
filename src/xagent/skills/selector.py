@@ -12,47 +12,47 @@ logger = logging.getLogger(__name__)
 class SkillSelector:
     """Use LLM to select appropriate skill (JSON mode)"""
 
-    SELECTOR_SYSTEM = """You are a skill selection system. Analyze the user's TRUE INTENT before selecting a skill.
+    SELECTOR_SYSTEM = """你是一个技能选择系统。在选择技能之前，分析用户的真实意图。
 
-## Critical Rules
+## 关键规则
 
-1. **Understand the task type FIRST**
-   - Is this a presentation/slide? → Do NOT select poster-design
-   - Is this a document/report? → Do NOT select poster-design
-   - Is this a web page? → Do NOT select poster-design
-   - Is this a knowledge base QA/evidence retrieval? → Consider evidence-based-rag
+1. **首先理解任务类型**
+   - 这是一个演示文稿/幻灯片？→ 不要选择 poster-design
+   - 这是一个文档/报告？→ 不要选择 poster-design
+   - 这是一个网页？→ 不要选择 poster-design
+   - 这是一个知识库问答/证据检索？→ 考虑 evidence-based-rag
 
-2. **Check for NEGATIVE signals**
-   - If user wants "slide", "presentation", "deck" → Reject poster-design
-   - If user wants "document", "report" → Reject poster-design
-   - If user wants "web page", "landing page" → Reject poster-design
-   - If user wants "code", "script" → Reject all non-coding skills
+2. **检查负面信号**
+   - 如果用户想要"幻灯片"、"演示文稿"、"deck"→ 拒绝 poster-design
+   - 如果用户想要"文档"、"报告"→ 拒绝 poster-design
+   - 如果用户想要"网页"、"落地页"→ 拒绝 poster-design
+   - 如果用户想要"代码"、"脚本"→ 拒绝所有非编码技能
 
-3. **Select ONLY when:**
-   - The skill's PRIMARY purpose matches the task type
-   - The skill is SPECIFICALLY designed for this use case
-   - Using the skill would SIGNIFICANTLY improve the result
+3. **仅在以下情况选择：**
+   - 技能的主要目的与任务类型匹配
+   - 技能专门为此用例设计
+   - 使用该技能将显著提升结果质量
 
-4. **When in doubt, return selected: false**
-   - It's better to use general agent capabilities than to force a wrong skill
+4. **如有疑问，返回 selected: false**
+   - 使用通用代理能力比强制使用错误的技能更好
 
-## Examples of WRONG Selections
+## 错误选择示例
 
-| User Task | Wrong Skill | Why |
+| 用户任务 | 错误技能 | 原因 |
 |-----------|-------------|-----|
-| "Create a presentation slide" | poster-design | User wants slides, not poster |
-| "Write a marketing report" | poster-design | User wants document, not visual |
-| "Generate HTML landing page" | poster-design | User wants web page, not poster |
-| "Fix this Python bug" | any non-coding skill | Task requires coding, not other skills |
+| "创建一个演示幻灯片" | poster-design | 用户想要幻灯片，不是海报 |
+| "写一份营销报告" | poster-design | 用户想要文档，不是视觉设计 |
+| "生成 HTML 落地页" | poster-design | 用户想要网页，不是海报 |
+| "修复这个 Python bug" | 任何非编码技能 | 任务需要编码，不是其他技能 |
 
-## Decision Process
+## 决策流程
 
-1. Identify the CORE OUTPUT TYPE (slide/poster/document/code/etc)
-2. Check if any skill is DESIGNED for that output type
-3. Verify there are NO conflicting signals
-4. Only then select the skill
+1. 识别核心输出类型（幻灯片/海报/文档/代码等）
+2. 检查是否有技能为此输出类型设计
+3. 验证没有冲突信号
+4. 然后才选择技能
 
-If no skill is directly relevant, return selected: false."""
+如果没有技能直接相关，返回 selected: false。"""
 
     def __init__(self, llm: Any) -> None:
         """
@@ -202,19 +202,19 @@ If no skill is directly relevant, return selected: false."""
 
         detected_types = [k for k, v in signal_words.items() if v]
 
-        return f"""## User Task
+        return f"""## 用户任务
 {task}
 
-## Detected Task Types
-{", ".join(detected_types) if detected_types else "General task (no specific type detected)"}
+## 检测到的任务类型
+{", ".join(detected_types) if detected_types else "通用任务（未检测到特定类型）"}
 
-## Available Skills
+## 可用技能
 {chr(10).join(skills_desc)}
 
-## Important
-- Analyze the TRUE INTENT, not just keyword matches
-- Consider the OUTPUT TYPE the user wants
-- Check for NEGATIVE signals before selecting
+## 重要提示
+- 分析真实意图，而不仅仅是关键词匹配
+- 考虑用户想要的输出类型
+- 选择前检查负面信号
 
-Respond with JSON:
-{{"selected": true/false, "skill_name": "name of selected skill (or null)", "reasoning": "brief explanation of why this skill is (not) suitable for the task type"}}"""
+返回 JSON 格式：
+{{"selected": true/false, "skill_name": "选择的技能名称（或 null）", "reasoning": "简要解释为什么此技能适合（或不适合）任务类型"}}"""

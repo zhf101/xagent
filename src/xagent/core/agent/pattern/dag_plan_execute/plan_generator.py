@@ -682,6 +682,67 @@ class PlanGenerator:
 
         return "".join(context_parts)
 
+    def _build_data_production_execution_policy(self, tools: List[Tool]) -> str:
+        """构造“造数专用系统”分类提示词。
+
+        这个方法专门约束 `should_chat_directly()` 的第一阶段分类行为。
+        当前系统里最容易出现的误判是：
+        - 模型明明拿到了 HTTP/SQL/KB/skills/MCP 这类专业工具
+        - 却在分类阶段直接返回 `type="chat"`
+        - 然后用“信息不足”“无法访问系统”“请先补充背景”来跳过执行链
+
+        对造数系统来说，这种行为是错误的，因为正确顺序应该是：
+        1. 先进入执行链
+        2. 先查询可用资产/知识
+        3. 再根据检索结果判断是否还缺精确参数
+        """
+        tool_names: set[str] = set()
+        has_mcp_tools = False
+
+        for tool in tools:
+            metadata = getattr(tool, "metadata", None)
+            if metadata is not None:
+                tool_names.add(str(metadata.name))
+                has_mcp_tools = has_mcp_tools or str(metadata.category.value) == "mcp"
+            else:
+                tool_names.add(str(getattr(tool, "name", "unknown_tool")))
+
+        discovery_rules: list[str] = []
+        if "query_http_resource" in tool_names:
+            discovery_rules.append(
+                "- Use execution mode to query HTTP assets before deciding that no API/resource can handle the request."
+            )
+        if "query_vanna_sql_asset" in tool_names:
+            discovery_rules.append(
+                "- Use execution mode to query SQL assets before saying the requested data/report cannot be produced."
+            )
+        if "knowledge_search" in tool_names or "list_knowledge_bases" in tool_names:
+            discovery_rules.append(
+                "- Use execution mode to inspect/search the knowledge base before answering internal business questions from built-in knowledge."
+            )
+        if "read_skill_doc" in tool_names or "list_skill_docs" in tool_names:
+            discovery_rules.append(
+                "- Use execution mode to inspect skill documentation before claiming process or capability limitations."
+            )
+        if has_mcp_tools:
+            discovery_rules.append(
+                "- If connected MCP tools may help, prefer execution mode over direct chat so the runtime can inspect and use them."
+            )
+
+        if not discovery_rules:
+            return ""
+
+        return (
+            "\n## Specialized Data-Production Policy\n"
+            "- You are running inside a specialized internal data-production system, not a generic chat bot.\n"
+            "- If the request may depend on internal business data, account opening workflows, environment operations, HTTP/API resources, SQL assets, knowledge bases, skills, or MCP-connected systems, you MUST return `{\\\"type\\\": \\\"plan\\\"}`.\n"
+            "- Do NOT return `type=\\\"chat\\\"` merely because parameters are incomplete, because you are unsure which asset to use, or because you think you cannot access internal systems.\n"
+            "- The execution phase exists specifically to inspect assets first and ask for precise missing parameters later.\n"
+            "- Use `type=\\\"chat\\\"` only for pure general conversation or questions that can be fully answered without any internal tool, asset, or knowledge lookup.\n"
+            + "\n".join(discovery_rules)
+            + "\n"
+        )
+
     def _build_classification_prompt(
         self,
         goal: str,
@@ -712,30 +773,31 @@ class PlanGenerator:
         tools_context = ""
         if tools:
             tools_context = self._build_tools_context(tools)
+        specialized_policy = self._build_data_production_execution_policy(tools)
 
         # Build system prompt
         system_prompt = (
             custom_prompt
-            + """You are an intelligent task assistant. Analyze the user's input and decide:
+            + """你是一个智能任务助手。分析用户的输入并决定：
 
-1. **Direct Answer (type: "chat")** - If the user asks a simple question that you can answer directly without executing any tasks
-2. **Need Clarification (type: "chat")** - If you need more information to help the user effectively
-3. **Need Execution (type: "plan")** - If the user's request requires multi-step execution with tools
+1. **直接回答（type: "chat"）** - 如果用户问一个简单问题，你可以直接回答而无需执行任何任务
+2. **需要澄清（type: "chat"）** - 如果你需要更多信息来有效帮助用户
+3. **需要执行（type: "plan"）** - 如果用户的请求需要多步骤工具执行
 
-## Response Format
+## 响应格式
 
-### For Chat (direct answer or clarification):
+### 对于聊天（直接回答或澄清）：
 ```json
 {
   "type": "chat",
   "chat": {
-    "message": "Your response to the user",
+    "message": "你对用户的回复",
     "interactions": [
       {
         "type": "select_one|select_multiple|text_input|file_upload|confirm|number_input",
         "field": "field_name",
-        "label": "Display label",
-        "options": [{"value": "A", "label": "Option A"}],
+        "label": "显示标签",
+        "options": [{"value": "A", "label": "选项 A"}],
         "placeholder": "...",
         "multiline": false,
         "min": 1,
@@ -749,55 +811,57 @@ class PlanGenerator:
 }
 ```
 
-### For Plan (execution required - just indicate this, don't generate the plan):
+### 对于计划（需要执行 - 只需表明这一点，不要生成计划）：
 ```json
 {
   "type": "plan"
 }
 ```
 
-## Interaction Types
-- **select_one**: Single choice from options
-- **select_multiple**: Multiple choices from options
-- **text_input**: Single-line text input
-- **file_upload**: File upload with type restrictions
-- **confirm**: Yes/No confirmation
-- **number_input**: Numeric input with min/max
+## 交互类型
+- **select_one**: 单选
+- **select_multiple**: 多选
+- **text_input**: 单行文本输入
+- **file_upload**: 带类型限制的文件上传
+- **confirm**: 是/否确认
+- **number_input**: 带最小/最大值的数字输入
 
-FILE REFERENCES:
-- You may see file references in the format: [filename](file://fileId)
-- The referenced file may NOT be in the current workspace.
-- The 'fileId' part is the only valid identifier for reading the file.
-- If the user provides a file reference, they likely want you to process it (which usually implies type="plan").
+文件引用：
+- 你可能会看到格式为 [filename](file://fileId) 的文件引用
+- 被引用的文件可能不在当前工作区中
+- 'fileId' 部分是读取文件的唯一有效标识符
+- 如果用户提供了文件引用，他们可能希望你处理它（这通常意味着 type="plan"）
 
-## Important Guidelines
-- Use the SAME LANGUAGE as the user's goal for all text
-- Only use "plan" type when multi-step tool execution is clearly needed
-- For simple questions, clarifications, or information gathering, use "chat" type
-- When returning type="plan", do NOT include plan details - just the type indicator
-- interactions is optional - omit if no user input is needed
+## 重要指南
+- 对所有文本使用与用户目标相同的语言
+- 仅在明显需要多步骤工具执行时使用 "plan" 类型
+- 对于简单问题、澄清或信息收集，使用 "chat" 类型
+- 当返回 type="plan" 时，不要包含计划详情 - 只需类型指示器
+- interactions 是可选的 - 如果不需要用户输入则省略
 
-## CRITICAL: Direct Chat Mode Guidelines
-When you return type="chat" (direct answer mode), you are providing a TEXT RESPONSE ONLY. NO tools will be executed.
-- **DO NOT** describe what you "will do", "are going to do", or "start to do"
-- **DO NOT** use phrases like "Now starting to...", "Next I will...", "Let me begin..."
-- **DO NOT** promise future actions or describe execution steps
-- **DO** provide a direct, immediate answer to the user's question
-- **DO** give helpful information, explanations, or ask clarifying questions directly
-- Remember: type="chat" means CONVERSATION, not EXECUTION. Users see your message as your final response, not a plan of action.
+## 关键：直接聊天模式指南
+当你返回 type="chat"（直接回答模式）时，你只提供文本响应。不会执行任何工具。
+- **不要**描述你"将要做"、"打算做"或"开始做"什么
+- **不要**使用"Now starting to..."、"Next I will..."、"Let me begin..."等短语
+- **不要**承诺未来动作或描述执行步骤
+- **要**提供直接、即时的答案回应用户的问题
+- **要**提供有用信息、解释或直接问澄清问题
+- 记住：type="chat" 意味着对话，不是执行。用户看到你的消息作为最终响应，不是行动计划。
 
-## CRITICAL: File and Media Handling Rules
-- **If the user uploaded IMAGES, videos, audio, or other media files**: You MUST use type="plan" to execute tools. You CANNOT analyze media in chat mode.
-- **If the user uploaded PDFs, documents, or other files**: You MUST use type="plan" to read and process them with tools.
-- **DO NOT** guess, hallucinate, or make assumptions about file contents in chat mode
-- **DO NOT** describe what you "think" might be in an image or file without actually using tools to examine it
-- **If you see file names mentioned but cannot access their content**: Always use type="plan"
-- **Remember**: You can only read files and analyze images by using tools in plan mode
+## 关键：文件和媒体处理规则
+- **如果用户上传了图片、视频、音频或其他媒体文件**：你必须使用 type="plan" 来执行工具。你不能在聊天模式下分析媒体。
+- **如果用户上传了 PDF、文档或其他文件**：你必须使用 type="plan" 用工具读取和处理它们。
+- **不要**在聊天模式下猜测、幻觉或假设文件内容
+- **不要**描述你"认为"可能在图片或文件中的内容，而不要实际使用工具检查
+- **如果你看到文件名但无法访问其内容**：始终使用 type="plan"
+- **记住**：你只能通过计划模式下的工具读取文件和分析图片
 """
         )
 
         if tools_context:
             system_prompt += f"\n{tools_context}\n"
+        if specialized_policy:
+            system_prompt += f"\n{specialized_policy}\n"
 
         # Build messages list with history
         messages = [{"role": "system", "content": system_prompt}]
@@ -1091,62 +1155,62 @@ When you return type="chat" (direct answer mode), you are providing a TEXT RESPO
                 custom_prompt
                 + "\n\n"
                 + (
-                    "Use planning capabilities to break down tasks into steps.\n"
-                    "Create plans as DAGs (Directed Acyclic Graphs) where steps can have dependencies.\n"
-                    "Each step should specify which previous steps it depends on.\n"
-                    "Steps with no dependencies can run in parallel.\n"
-                    f"You have access to the following tools that you can use in your plan steps:\n{tools_context}\n"
+                    "使用规划能力将任务分解为多个步骤。\n"
+                    "将计划创建为 DAG（有向无环图），其中步骤之间可以存在依赖关系。\n"
+                    "每个步骤需要指定它依赖于哪些前序步骤。\n"
+                    "没有依赖关系的步骤可以并行执行。\n"
+                    f"你可以在计划步骤中使用以下工具：\n{tools_context}\n"
                 )
             )
         else:
             # Use default role
             system_prompt = custom_prompt + (
-                "You are an AI planning assistant that creates detailed execution plans.\n"
-                "Create plans as DAGs (Directed Acyclic Graphs) where steps can have dependencies.\n"
-                "Each step should specify which previous steps it depends on.\n"
-                "Steps with no dependencies can run in parallel.\n"
-                f"You have access to the following tools that you can use in your plan steps:\n{tools_context}\n"
+                "你是一个 AI 规划助手，负责创建详细的执行计划。\n"
+                "将计划创建为 DAG（有向无环图），其中步骤之间可以存在依赖关系。\n"
+                "每个步骤需要指定它依赖于哪些前序步骤。\n"
+                "没有依赖关系的步骤可以并行执行。\n"
+                f"你可以在计划步骤中使用以下工具：\n{tools_context}\n"
             )
 
         # Add skill context if available
         if skill_context:
             system_prompt += (
                 "\n" + skill_context + "\n\n"
-                "IMPORTANT: A skill is available above that provides domain knowledge and templates. "
-                "Use this skill's knowledge and templates to improve the quality and relevance of your plan.\n"
+                "重要提示：上方提供了一个技能，包含领域知识和模板。"
+                "利用该技能的知识和模板来提升计划的质量和相关性。\n"
             )
 
         system_prompt += (
-            "IMPORTANT: Not every step needs to use a tool. Some steps can be pure analysis or organization tasks.\n"
-            "- Use tools for: web searches, calculations, code execution, data processing\n"
-            "- For pure analysis tasks (summarizing, organizing, explaining, formatting results): set tool_name to null or empty string\n\n"
-            "FILE REFERENCES:\n"
-            "- You may see file references in the format: [filename](file://fileId)\n"
-            "- The referenced file may NOT be in the current workspace.\n"
-            "- The 'fileId' part is the only valid identifier for reading the file.\n"
-            "- When using tools to read files, pass the fileId directly.\n"
-            "- Example: If you see [data.csv](file://123), use '123' to read the file.\n\n"
-            "CONDITIONAL BRANCHING:\n"
-            "- Some steps can be CONDITIONAL NODES that branch execution based on runtime conditions\n"
-            "- Use 'conditional_branches' field to define a step as a conditional node\n"
-            '- Format: {"branch_key": "next_step_id"}\n'
-            "- Example: A step that checks if human assistance is needed might have:\n"
+            "重要提示：并非每个步骤都需要使用工具。有些步骤可以是纯分析或组织任务。\n"
+            "- 以下场景使用工具：网络搜索、计算、代码执行、数据处理\n"
+            "- 对于纯分析任务（总结、组织、解释、格式化结果）：将 tool_name 设置为 null 或空字符串\n\n"
+            "文件引用：\n"
+            "- 你可能会看到格式为 [filename](file://fileId) 的文件引用\n"
+            "- 被引用的文件可能不在当前工作区中。\n"
+            "- 'fileId' 部分是读取文件的唯一有效标识符。\n"
+            "- 使用工具读取文件时，直接传递 fileId。\n"
+            "- 示例：如果你看到 [data.csv](file://123)，使用 '123' 来读取文件。\n\n"
+            "条件分支：\n"
+            "- 某些步骤可以是条件节点，根据运行时条件分支执行路径\n"
+            "- 使用 'conditional_branches' 字段将步骤定义为条件节点\n"
+            '- 格式：{"branch_key": "next_step_id"}\n'
+            "- 示例：一个检查是否需要人工协助的步骤可能包含：\n"
             '  conditional_branches: {"human": "human_response_step", "kb": "knowledge_base_step"}\n'
-            "- Conditional nodes MUST return a branch key (like 'human' or 'kb') as their final answer\n"
-            "- Steps that depend on a conditional node should use 'required_branch' to specify which branch they belong to\n"
-            '- Example: {"id": "human_response", "dependencies": ["check_human"], "required_branch": "human"}\n'
-            "- Only steps on the selected branch will execute; others will be automatically skipped\n\n"
+            "- 条件节点必须返回一个分支键（如 'human' 或 'kb'）作为其最终答案\n"
+            "- 依赖于条件节点的步骤应使用 'required_branch' 来指定它们属于哪个分支\n"
+            '- 示例：{"id": "human_response", "dependencies": ["check_human"], "required_branch": "human"}\n'
+            "- 只有被选中分支上的步骤才会执行；其他步骤将自动跳过\n\n"
             f"{self._PLANNING_GUIDELINES}"
-            "DIFFICULTY ASSESSMENT: For each step, you must assess its difficulty level:\n"
-            "- 'easy': Simple tasks that can be done quickly (basic search, simple calculations, straightforward analysis)\n"
-            "- 'hard': Complex tasks requiring deep thinking, creative problem-solving, or extensive processing\n\n"
-            "LANGUAGE REQUIREMENT:\n"
-            "- You MUST use the SAME LANGUAGE as the user's goal for: task_name, step names, and step descriptions\n"
-            "- Examples:\n"
-            "  * Chinese goal → Chinese task_name and steps (e.g., Data Analysis Report)\n"
-            "  * English goal → English task_name and steps (e.g., Data Analysis Report)\n"
-            "  * Japanese goal → Japanese task_name and steps (e.g., データ分析レポート)\n\n"
-            "Always return valid JSON format."
+            "难度评估：对于每个步骤，你必须评估其难度等级：\n"
+            "- 'easy'：可以快速完成的简单任务（基本搜索、简单计算、直接分析）\n"
+            "- 'hard'：需要深入思考、创造性问题解决或大量处理的复杂任务\n\n"
+            "语言要求：\n"
+            "- 你必须使用与用户目标相同的语言来编写：task_name、步骤名称和步骤描述\n"
+            "- 示例：\n"
+            "  * 中文目标 → 中文 task_name 和步骤\n"
+            "  * 英文目标 → 英文 task_name 和步骤\n"
+            "  * 日文目标 → 日文 task_name 和步骤\n\n"
+            "始终返回有效的 JSON 格式。"
         )
 
         logger.debug(f"PLAN GENERATION SYSTEM PROMPT:\n{system_prompt}")
@@ -1172,7 +1236,7 @@ When you return type="chat" (direct answer mode), you are providing a TEXT RESPO
         messages.append(
             {
                 "role": "user",
-                "content": f"Goal: {goal}\nIteration: {iteration}\nCurrent Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\nCreate a step-by-step execution plan as a JSON object.",
+                "content": f"目标：{goal}\n迭代次数：{iteration}\n当前时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n请创建一个分步执行计划，以 JSON 对象格式返回。",
             }
         )
 
@@ -1180,60 +1244,60 @@ When you return type="chat" (direct answer mode), you are providing a TEXT RESPO
         if skill_context:
             messages[-1]["content"] += (
                 "\n"
-                "A skill is available that can help with this task. "
-                "Consider its knowledge and templates when creating the plan.\n\n"
+                "有一个可用的技能可以帮助完成此任务。"
+                "创建计划时请考虑其知识和模板。\n\n"
             )
 
         # Add plan generation instructions
         messages[-1]["content"] += (
-            f"**IMPORTANT**: The plan MUST include a 'task_name' field with a concise, descriptive title (3-10 words).\n\n"
-            f"Required fields:\n"
-            f"- task_name: A concise title for this task (REQUIRED, 3-10 words, meaningful for display in task lists, **MUST USE THE SAME LANGUAGE AS THE GOAL**)\n"
-            f"- steps: array of execution steps\n\n"
-            f"Each step must have:\n"
-            f"- id: unique identifier (string)\n"
-            f"- name: step name (string)\n"
-            f"- description: what this step does (string)\n"
-            f"- tool_names: list of tools available for this step (array of strings, can be empty)\n"
-            f"- dependencies: list of step IDs this step depends on (array of strings)\n"
-            f"- difficulty: 'easy' or 'hard' (string)\n"
-            f"- requires_vision: true if step requires visual capabilities, false otherwise (boolean)\n"
-            f"- conditional_branches: OPTIONAL dictionary mapping branch keys to next step IDs (object)\n"
-            f"- required_branch: OPTIONAL branch key that this step requires (string)\n\n"
-            f"Example with conditional branching:\n"
+            f"**重要提示**：计划必须包含 'task_name' 字段，提供一个简洁的描述性标题（3-10 个词）。\n\n"
+            f"必需字段：\n"
+            f"- task_name：任务的简洁标题（必需，3-10 个词，用于任务列表显示，**必须使用与目标相同的语言**）\n"
+            f"- steps：执行步骤数组\n\n"
+            f"每个步骤必须包含：\n"
+            f"- id：唯一标识符（字符串）\n"
+            f"- name：步骤名称（字符串）\n"
+            f"- description：步骤功能描述（字符串）\n"
+            f"- tool_names：此步骤可用的工具列表（字符串数组，可以为空）\n"
+            f"- dependencies：此步骤依赖的步骤 ID 列表（字符串数组）\n"
+            f"- difficulty：'easy' 或 'hard'（字符串）\n"
+            f"- requires_vision：如果步骤需要视觉能力则为 true，否则为 false（布尔值）\n"
+            f"- conditional_branches：可选，将分支键映射到下一步骤 ID 的字典（对象）\n"
+            f"- required_branch：可选，此步骤需要的分支键（字符串）\n\n"
+            f"带条件分支的示例：\n"
             f"{{\n"
             f'  "plan": {{\n'
-            f'    "task_name": "Customer Support Query Resolution",\n'
-            f'    "goal": "Customer support query handling",\n'
+            f'    "task_name": "客户支持查询处理",\n'
+            f'    "goal": "客户支持查询处理",\n'
             f'    "steps": [\n'
-            f'      {{"id": "check_intent", "name": "Check Intent", "description": "Determine if human assistance is explicitly requested", "tool_names": [], "dependencies": [], "difficulty": "easy", "conditional_branches": {{"human": "human_step", "kb": "kb_step"}}}},\n'
-            f'      {{"id": "human_step", "name": "Human Response", "description": "Connect to human agent", "tool_names": [], "dependencies": ["check_intent"], "difficulty": "easy", "required_branch": "human"}},\n'
-            f'      {{"id": "kb_step", "name": "KB Search", "description": "Search knowledge base", "tool_names": ["knowledge_search"], "dependencies": ["check_intent"], "difficulty": "hard", "required_branch": "kb"}}\n'
+            f'      {{"id": "check_intent", "name": "检查意图", "description": "确定是否明确请求人工协助", "tool_names": [], "dependencies": [], "difficulty": "easy", "conditional_branches": {{"human": "human_step", "kb": "kb_step"}}}},\n'
+            f'      {{"id": "human_step", "name": "人工响应", "description": "连接到人工客服", "tool_names": [], "dependencies": ["check_intent"], "difficulty": "easy", "required_branch": "human"}},\n'
+            f'      {{"id": "kb_step", "name": "知识库搜索", "description": "搜索知识库", "tool_names": ["knowledge_search"], "dependencies": ["check_intent"], "difficulty": "hard", "required_branch": "kb"}}\n'
             f"    ]\n"
             f"  }}\n"
             f"}}\n\n"
-            f"Example without conditional branching:\n"
+            f"不带条件分支的示例：\n"
             f"{{\n"
             f'  "plan": {{\n'
-            f'    "task_name": "Data Analysis and Report",\n'
+            f'    "task_name": "数据分析与报告",\n'
             f'    "goal": "{goal}",\n'
             f'    "steps": [\n'
-            f'      {{"id": "step1", "name": "Research", "description": "Gather information", "tool_names": ["web_search", "zhipu_web_search"], "dependencies": [], "difficulty": "hard"}},\n'
-            f'      {{"id": "step2", "name": "Analyze Data", "description": "Analyze collected information", "tool_names": ["execute_python_code"], "dependencies": ["step1"], "difficulty": "hard"}},\n'
-            f'      {{"id": "step3", "name": "Organize Results", "description": "Summarize and format findings", "tool_names": [], "dependencies": ["step1", "step2"], "difficulty": "easy"}}\n'
+            f'      {{"id": "step1", "name": "调研", "description": "收集信息", "tool_names": ["web_search", "zhipu_web_search"], "dependencies": [], "difficulty": "hard"}},\n'
+            f'      {{"id": "step2", "name": "数据分析", "description": "分析收集到的信息", "tool_names": ["execute_python_code"], "dependencies": ["step1"], "difficulty": "hard"}},\n'
+            f'      {{"id": "step3", "name": "整理结果", "description": "总结并格式化研究结果", "tool_names": [], "dependencies": ["step1", "step2"], "difficulty": "easy"}}\n'
             f"    ]\n"
             f"  }}\n"
             f"}}\n\n"
-            f"Return only the JSON object, no additional text.\n"
-            f"**IMPORTANT LANGUAGE REQUIREMENT**: Use the SAME LANGUAGE as the goal for:\n"
-            f"- task_name (title)\n"
-            f"- step names\n"
-            f"- step descriptions\n\n"
-            f"For example:\n"
-            f"- If goal is in Chinese (中文), task_name must be in Chinese\n"
-            f"- If goal is in English, task_name must be in English\n"
-            f"- If goal is in Japanese (日本語), task_name must be in Japanese\n"
-            f"- etc.\n"
+            f"仅返回 JSON 对象，不要包含其他文本。\n"
+            f"**重要语言要求**：以下内容必须使用与目标相同的语言：\n"
+            f"- task_name（标题）\n"
+            f"- step names（步骤名称）\n"
+            f"- step descriptions（步骤描述）\n\n"
+            f"例如：\n"
+            f"- 如果目标是中文（中文），task_name 必须是中文\n"
+            f"- 如果目标是英文，task_name 必须是英文\n"
+            f"- 如果目标是日文（日本語），task_name 必须是日文\n"
+            f"- 以此类推\n"
         )
 
         return messages

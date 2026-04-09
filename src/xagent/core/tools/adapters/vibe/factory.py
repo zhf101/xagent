@@ -29,6 +29,28 @@ logger = logging.getLogger(__name__)
 
 __all__ = ["ToolFactory", "ToolRegistry", "register_tool"]
 
+# 当前分支的产品定位已经不是“通用智能体”，而是“造数/资产调用专用系统”。
+# 因此这里维护一份后端运行时硬白名单，确保无论入口来自：
+# - 普通聊天
+# - WebSocket 预览
+# - Agent Builder
+# - 历史任务重建
+# 最终都只能拿到这批专业能力。
+#
+# 其中 MCP 工具不放在这个静态名单里，因为它们的名字由运行时动态加载决定，
+# 后面会按 `ToolCategory.MCP` 统一放行。
+PROFESSIONAL_RUNTIME_FIXED_TOOL_NAMES = {
+    "query_http_resource",
+    "execute_http_resource",
+    "query_vanna_sql_asset",
+    "execute_vanna_sql_asset",
+    "knowledge_search",
+    "list_knowledge_bases",
+    "read_skill_doc",
+    "list_skill_docs",
+    "fetch_skill_file",
+}
+
 
 class ToolRegistry:
     """工具构造器注册表。
@@ -167,6 +189,24 @@ class ToolRegistry:
 register_tool = ToolRegistry.register
 
 
+def _get_runtime_tool_name(tool: Tool) -> str:
+    """稳定提取运行时工具名。
+
+    对外排障、白名单治理、日志打印都依赖“最终暴露给模型的工具名”，
+    所以这里优先读取 `metadata.name`；只有极少数对象没有 metadata 时，
+    才回退到实例属性 `name`。
+    """
+    metadata = getattr(tool, "metadata", None)
+    if metadata is not None and getattr(metadata, "name", None):
+        return str(metadata.name)
+
+    raw_name = getattr(tool, "name", None)
+    if raw_name:
+        return str(raw_name)
+
+    return type(tool).__name__
+
+
 class ToolFactory:
     """统一工具工厂。
 
@@ -182,8 +222,9 @@ class ToolFactory:
         过滤顺序有意固定为：
         1. 先发现全部可注册工具
         2. 再做产品级硬裁剪（例如当前分支不开放 image/audio）
-        3. 再做调用上下文白名单过滤（`allowed_tools`）
-        4. 最后做管理员治理策略过滤（全局禁用）
+        3. 再做造数专用运行时硬白名单（只保留 HTTP/SQL/KB/skills/MCP）
+        4. 再做调用上下文白名单过滤（`allowed_tools`）
+        5. 最后做管理员治理策略过滤（全局禁用）
 
         这样能保证：
         - 治理策略永远作用在“最终候选集”上
@@ -202,16 +243,45 @@ class ToolFactory:
             if tool.metadata.category not in disabled_categories
         ]
 
+        # 造数专用运行时硬白名单：
+        # - 固定保留项目内显式声明的核心工具名
+        # - MCP 工具按类别整体放行，因为这批工具名是运行时动态加载的
+        tools = [
+            tool
+            for tool in tools
+            if _get_runtime_tool_name(tool) in PROFESSIONAL_RUNTIME_FIXED_TOOL_NAMES
+            or tool.metadata.category == ToolCategory.MCP
+        ]
+        logger.info(
+            "Applied professional runtime whitelist, remaining tools: %s",
+            [_get_runtime_tool_name(tool) for tool in tools],
+        )
+
         # Filter tools by allowed_tools if specified
         allowed_tools = config.get_allowed_tools()
         if allowed_tools is not None and len(allowed_tools) > 0:
-            tools = [tool for tool in tools if tool.name in allowed_tools]
+            # Agent Builder 等入口可能带着一份历史的 allowed_tools 进来，
+            # 但在当前定制分支里，核心资产工具不能再被这些旧配置误裁掉，
+            # 否则模型会重新退回“没有工具可用”的错误行为。
+            protected_tool_names = {
+                _get_runtime_tool_name(tool)
+                for tool in tools
+                if _get_runtime_tool_name(tool) in PROFESSIONAL_RUNTIME_FIXED_TOOL_NAMES
+                or tool.metadata.category == ToolCategory.MCP
+            }
+            effective_allowed_names = set(allowed_tools) | protected_tool_names
+            tools = [
+                tool
+                for tool in tools
+                if _get_runtime_tool_name(tool) in effective_allowed_names
+            ]
             logger.info(
-                f"Filtered tools to {len(tools)} allowed tools: {[t.name for t in tools]}"
+                "Applied caller allowed_tools on top of professional whitelist: %s",
+                [_get_runtime_tool_name(tool) for tool in tools],
             )
         elif allowed_tools is not None and len(allowed_tools) == 0:
-            logger.warning(
-                "⚠️ allowed_tools is empty list - this will filter out all tools! If you want to allow all tools, set allowed_tools to None"
+            logger.info(
+                "allowed_tools is empty list; keeping professional runtime whitelist only"
             )
 
         # 运行时最后再执行一层“管理员禁用策略”过滤，确保：
@@ -221,7 +291,11 @@ class ToolFactory:
         disabled_tool_names = set(config.get_disabled_tool_names())
         if config.should_enforce_tool_policy() and disabled_tool_names:
             original_count = len(tools)
-            tools = [tool for tool in tools if tool.name not in disabled_tool_names]
+            tools = [
+                tool
+                for tool in tools
+                if _get_runtime_tool_name(tool) not in disabled_tool_names
+            ]
             logger.info(
                 "Filtered tools by disabled tool policy: %s -> %s",
                 original_count,

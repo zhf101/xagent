@@ -39,7 +39,7 @@ def _build_memory_table_missing_message(collection_name: str) -> str:
     """
     return (
         f"Memory table '{collection_name}' does not exist in pgvector backend. "
-        "Please initialize PostgreSQL with db/postgresql/init.sql "
+        "Please initialize PostgreSQL with db/postgresql/schema_backup.sql "
         "or add an explicit patch before using memory storage."
     )
 
@@ -92,7 +92,7 @@ class LanceDBMemoryStore(MemoryStore):
             else:
                 self._embedding_model = None
                 logger.info(
-                    "No embedding model provided, will use fallback text search"
+                    "No embedding model provided; memory store will use text-search fallback"
                 )
         elif isinstance(embedding_model, BaseEmbedding):
             self._embedding_model = embedding_model
@@ -120,7 +120,10 @@ class LanceDBMemoryStore(MemoryStore):
             if not all(col in df.columns for col in ["id", "text", "metadata"]):
                 # Schema is incompatible, drop and recreate
                 logger.warning(
-                    f"Table {self._collection_name} has incompatible schema, recreating"
+                    "Memory table '%s' schema is incompatible with current vector backend '%s'; "
+                    "recreating compatibility table",
+                    self._collection_name,
+                    get_vector_backend(),
                 )
                 try:
                     # Try to drop the table if the method exists
@@ -137,7 +140,12 @@ class LanceDBMemoryStore(MemoryStore):
 
         except Exception:
             # Table doesn't exist, create it with basic schema
-            logger.info(f"Creating table {self._collection_name} with basic schema")
+            logger.info(
+                "Memory table '%s' is missing or unreadable under vector backend '%s'; "
+                "creating compatibility table",
+                self._collection_name,
+                get_vector_backend(),
+            )
             self._create_empty_table()
 
     def _create_empty_table(self) -> None:
@@ -147,9 +155,6 @@ class LanceDBMemoryStore(MemoryStore):
         - LanceDB 模式下仍允许历史上的“按 sample row 自动建表”
         - pgvector 模式下已明确禁用运行时 DDL，这里应直接失败
         """
-        if get_vector_backend() == "pgvector":
-            raise RuntimeError(_build_memory_table_missing_message(self._collection_name))
-
         conn = self._vector_store.get_raw_connection()
 
         # Check if we have an embedding model

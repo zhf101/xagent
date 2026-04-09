@@ -134,53 +134,20 @@ class PGVectorConnection:
         """
         schema_name = self._schema
         with self._engine.begin() as conn:
-            has_vector_extension = bool(
-                conn.execute(
-                    text("SELECT 1 FROM pg_extension WHERE extname = 'vector'")
-                ).scalar()
-            )
-            if not has_vector_extension:
-                raise RuntimeError(
-                    "pgvector extension is not installed. "
-                    "Please initialize PostgreSQL with db/postgresql/init.sql first."
+            conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+            conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {_quote_ident(schema_name)}"))
+            conn.execute(
+                text(
+                    f"""
+                    CREATE TABLE IF NOT EXISTS {self._qualified_table(_METADATA_TABLE)} (
+                        table_name text NOT NULL,
+                        schema_json jsonb NOT NULL,
+                        updated_at timestamp with time zone DEFAULT now() NOT NULL,
+                        PRIMARY KEY (table_name)
+                    )
+                    """
                 )
-
-            has_schema = bool(
-                conn.execute(
-                    text(
-                        "SELECT 1 FROM information_schema.schemata "
-                        "WHERE schema_name = :schema_name"
-                    ),
-                    {"schema_name": schema_name},
-                ).scalar()
             )
-            if not has_schema:
-                raise RuntimeError(
-                    f"Vector schema '{schema_name}' does not exist. "
-                    "Please initialize PostgreSQL with db/postgresql/init.sql first."
-                )
-
-            has_metadata_table = bool(
-                conn.execute(
-                    text(
-                        """
-                        SELECT 1
-                        FROM information_schema.tables
-                        WHERE table_schema = :schema_name
-                          AND table_name = :table_name
-                        """
-                    ),
-                    {
-                        "schema_name": schema_name,
-                        "table_name": _METADATA_TABLE,
-                    },
-                ).scalar()
-            )
-            if not has_metadata_table:
-                raise RuntimeError(
-                    f"Vector metadata table '{schema_name}.{_METADATA_TABLE}' is missing. "
-                    "Please initialize PostgreSQL with db/postgresql/init.sql first."
-                )
 
     def open_table(self, name: str) -> "PGVectorTable":
         """打开已有逻辑表。"""
@@ -195,19 +162,50 @@ class PGVectorConnection:
         data: Optional[Iterable[dict[str, Any]]] = None,
         schema: Any = None,
     ) -> "PGVectorTable":
-        """禁止运行时自动建表。
-
-        历史 LanceDB 调用方习惯了“缺表就现建”，但在当前 SQL-first 方案下，
-        这会把数据库结构再次分散到代码路径里，后续补丁管理会重新失控。
-
-        因此 pgvector 模式下，只要走到这里就直接失败并给出明确指引。
-        """
-        del data, schema
-        raise RuntimeError(_build_runtime_ddl_disabled_message(self._schema, name))
+        """运行时自动建表。"""
+        if data is None:
+            raise ValueError("Data is required to infer schema for auto DDL")
+        
+        # Determine schema from first row
+        first_row = None
+        for row in data:
+            first_row = row
+            break
+        
+        if not first_row:
+            raise ValueError("Data iterator is empty, cannot infer schema")
+            
+        columns = []
+        for col_name, col_value in first_row.items():
+            if isinstance(col_value, list) and col_value and isinstance(col_value[0], (int, float)):
+                columns.append(PGVectorColumn(name=col_name, storage="vector", vector_dim=len(col_value)))
+            elif isinstance(col_value, int):
+                columns.append(PGVectorColumn(name=col_name, storage="integer"))
+            elif isinstance(col_value, float):
+                columns.append(PGVectorColumn(name=col_name, storage="float"))
+            elif isinstance(col_value, bool):
+                columns.append(PGVectorColumn(name=col_name, storage="boolean"))
+            else:
+                columns.append(PGVectorColumn(name=col_name, storage="text"))
+                
+        self._create_physical_table(name, columns)
+        self._save_table_metadata(name, columns)
+        
+        table = PGVectorTable(connection=self, name=name, columns=columns)
+        table.add(data)
+        return table
 
     def drop_table(self, name: str) -> None:
-        """禁止运行时自动删表。"""
-        raise RuntimeError(_build_runtime_ddl_disabled_message(self._schema, name))
+        """运行时自动删表。"""
+        with self._engine.begin() as conn:
+            conn.execute(text(f"DROP TABLE IF EXISTS {self._qualified_table(name)}"))
+            conn.execute(
+                text(
+                    f"DELETE FROM {self._qualified_table(_METADATA_TABLE)} "
+                    "WHERE table_name = :table_name"
+                ),
+                {"table_name": name},
+            )
 
     def table_names(self) -> list[str]:
         """列出当前向量 schema 内部的逻辑表。"""
@@ -221,9 +219,23 @@ class PGVectorConnection:
         return [str(row[0]) for row in rows]
 
     def _create_physical_table(self, name: str, columns: list[PGVectorColumn]) -> None:
-        """保留方法签名仅为兼容旧调用方，实际不允许运行时建表。"""
-        del columns
-        raise RuntimeError(_build_runtime_ddl_disabled_message(self._schema, name))
+        """创建物理表。"""
+        col_defs = []
+        for col in columns:
+            if col.storage == "vector":
+                col_defs.append(f"{_quote_ident(col.name)} vector({col.vector_dim})")
+            elif col.storage == "integer":
+                col_defs.append(f"{_quote_ident(col.name)} integer")
+            elif col.storage == "float":
+                col_defs.append(f"{_quote_ident(col.name)} double precision")
+            elif col.storage == "boolean":
+                col_defs.append(f"{_quote_ident(col.name)} boolean")
+            else:
+                col_defs.append(f"{_quote_ident(col.name)} text")
+                
+        sql = f"CREATE TABLE IF NOT EXISTS {self._qualified_table(name)} ({', '.join(col_defs)})"
+        with self._engine.begin() as conn:
+            conn.execute(text(sql))
 
     def _save_table_metadata(self, name: str, columns: list[PGVectorColumn]) -> None:
         payload = [
@@ -766,7 +778,7 @@ def _build_runtime_ddl_disabled_message(schema_name: str, table_name: str) -> st
     """
     return (
         f"Runtime vector DDL is disabled for '{schema_name}.{table_name}'. "
-        "Please manage PostgreSQL vector schema via db/postgresql/init.sql "
+        "Please manage PostgreSQL vector schema via db/postgresql/schema_backup.sql "
         "and db/postgresql/patches/*.sql instead of runtime auto-creation."
     )
 

@@ -128,14 +128,29 @@ class OptimizeInstructionsRequest(BaseModel):
 KNOWLEDGE_TOOL_CATEGORY = "knowledge"
 
 KB_PRIORITY_PROMPT = (
-    "\n\n[Knowledge Base Instructions]\n"
-    "You have access to the following knowledge base(s). "
-    "When answering user questions, you MUST first search the knowledge base(s) "
-    "using the available knowledge tools before relying on your own knowledge. "
-    "Always prioritize information retrieved from the knowledge base(s) over "
-    "your built-in knowledge. If the knowledge base does not contain relevant "
-    "information, you may then use your own knowledge to answer, but clearly "
-    "indicate that the answer is not from the knowledge base."
+    "\n\n[知识库使用说明]\n"
+    "你可以访问以下知识库。"
+    "在回答用户问题时，你必须先使用可用的知识工具搜索知识库，"
+    "然后再依赖你自己的知识。"
+    "始终优先使用从知识库中检索的信息，而不是"
+    "你内置的知识。如果知识库不包含相关"
+    "信息，你可以使用自己的知识来回答，但要清楚地"
+    "表明该答案不是来自知识库。"
+)
+
+DATA_PRODUCTION_PRIORITY_PROMPT = (
+    "\n\n[Data Production Runtime Instructions]\n"
+    "You are operating inside a specialized internal data-production system, not a "
+    "general-purpose chat assistant. For requests related to internal business data, "
+    "HTTP/API resources, SQL assets, account opening, environment operations, "
+    "knowledge lookup, skills lookup, or connected MCP systems, you MUST prioritize "
+    "the available tools over your built-in knowledge. Do not refuse, guess, or ask "
+    "broad clarification questions before first checking the relevant internal assets "
+    "or knowledge with the available tools. When parameters are incomplete, first "
+    "identify the best candidate asset or knowledge source, then ask only for the "
+    "precise missing parameter if still needed. Use final answers only after the "
+    "relevant internal search/execution path has been attempted or when the request "
+    "is clearly pure general conversation."
 )
 
 
@@ -148,6 +163,22 @@ def enhance_system_prompt_with_kb(
     if system_prompt:
         return system_prompt + KB_PRIORITY_PROMPT
     return KB_PRIORITY_PROMPT.lstrip("\n")
+
+
+def enhance_system_prompt_for_data_production(
+    system_prompt: Optional[str],
+) -> Optional[str]:
+    """追加“造数专用系统”运行时提示。
+
+    这层提示和知识库提示是两个不同的治理目标：
+    - KB 提示只强调“有知识库时先查知识库”
+    - 这里强调“整个系统都要先查 HTTP/SQL/KB/skills/MCP 资产，再决定怎么答”
+
+    单独拆成函数后，聊天入口、WebSocket、预览入口都能复用同一条专业约束。
+    """
+    if system_prompt:
+        return system_prompt + DATA_PRODUCTION_PRIORITY_PROMPT
+    return DATA_PRODUCTION_PRIORITY_PROMPT.lstrip("\n")
 
 
 # ===== Helper Functions =====
@@ -279,13 +310,13 @@ async def optimize_instructions(
 
         # Construct prompt
         system_prompt = (
-            "You are an expert agent builder and prompt engineer. "
-            "Your task is to refine and optimize the user's draft instructions for an AI agent. "
-            "The output should be clear, structured, and effective for an LLM to follow. "
-            "Do not include any conversational filler. Just output the optimized instructions."
+            "你是一位专业的代理构建器和提示工程师。"
+            "你的任务是提炼和优化用户为 AI 代理起草的使用说明。"
+            "输出应该清晰、结构化，并且有效，便于 LLM 遵循。"
+            "不要包含任何对话性填充内容。仅输出优化后的使用说明。"
         )
 
-        user_prompt = f"Draft instructions:\n{request.instructions}\n\nPlease optimize these instructions."
+        user_prompt = f"草稿使用说明：\n{request.instructions}\n\n请优化这些使用说明。"
 
         # Call LLM
         response = await llm.chat(
@@ -835,6 +866,9 @@ async def preview_agent(
         execution_context["system_prompt"] = enhance_system_prompt_with_kb(  # type: ignore[assignment]
             execution_context.get("system_prompt"),
             request.knowledge_bases if request.knowledge_bases is not None else None,
+        )
+        execution_context["system_prompt"] = enhance_system_prompt_for_data_production(  # type: ignore[assignment]
+            execution_context.get("system_prompt")
         )
 
         with UserContext(int(current_user.id)):

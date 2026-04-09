@@ -97,7 +97,7 @@ def create_memory_store(
                 )
                 # Wrap with user isolation for web application
                 # Web 侧必须套一层用户隔离，避免不同用户共享记忆空间。
-                logger.info("Wrapping LanceDB store with user isolation")
+                logger.info("Wrapping persistent vector memory store with user isolation")
                 return UserIsolatedMemoryStore(lancedb_store)
         finally:
             db.close()

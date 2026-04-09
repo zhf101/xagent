@@ -566,32 +566,32 @@ class ContextBuilder:
             )
             skill_section += "Use this knowledge to improve the quality and relevance of your work.\n\n"
 
-        return f"""You are executing a specific step in a larger plan: {step_name}
+        return f"""你正在执行一个更大计划中的具体步骤：{step_name}
 
-{goal_context}{skill_section}Your task: {step_description}
+{goal_context}{skill_section}你的任务：{step_description}
 
-You have access to the results and context from previous dependency steps.
-Use this information to complete your specific task effectively.
+你可以访问之前依赖步骤的结果和上下文信息。
+利用这些信息有效地完成你的具体任务。
 
-CRITICAL REQUIREMENTS:
-1. If your task involves file operations (save, write, create, read, delete files), you MUST call the appropriate file tool (write_file, read_file, etc.)
-2. If your task involves data processing or analysis that requires tools, you MUST call the required tools
-3. Describing what you will do is NOT sufficient - you MUST actually execute the tool calls
-4. Only analysis steps without tool requirements can be completed without tool calls
-5. After completing tool calls, provide a clear final answer confirming the actual results
+关键要求：
+1. 如果你的任务涉及文件操作（保存、写入、创建、读取、删除文件），你必须调用相应的文件工具（write_file、read_file 等）
+2. 如果你的任务涉及需要工具的数据处理或分析，你必须调用所需的工具
+3. 描述你将要做什么是不够的——你必须实际执行工具调用
+4. 只有没有工具要求的分析步骤才可以不使用工具调用完成
+5. 完成工具调用后，提供一个清晰的最终答案，确认实际结果
 
-FILE REFERENCES:
-- You may see file references in the format: [filename](file://fileId)
-- The referenced file may NOT be in the current workspace.
-- The 'fileId' part is the only valid identifier for reading the file.
-- When using tools to read files, pass the fileId directly.
-- Example: If you see [data.csv](file://123), use '123' to read the file.
+文件引用：
+- 你可能会看到格式为 [filename](file://fileId) 的文件引用
+- 被引用的文件可能不在当前工作区中。
+- 'fileId' 部分是读取文件的唯一有效标识符。
+- 使用工具读取文件时，直接传递 fileId。
+- 示例：如果你看到 [data.csv](file://123)，使用 '123' 来读取文件。
 
-Remember: Describing what you will do is NOT equivalent to actual execution. You must call the appropriate tools to complete the task.
+记住：描述你将要做什么不等同于实际执行。你必须调用相应的工具来完成任务。
 
-When you have sufficient information or have completed your task, provide a clear final answer.
+当你有足够的信息或完成你的任务时，提供一个清晰的最终答案。
 
-Current time: {current_time}"""
+当前时间：{current_time}"""
 
 
 class MessageUtils:
