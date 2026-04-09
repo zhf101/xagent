@@ -36,6 +36,9 @@ __all__ = [
     "TaskChatMessage",
     "UploadedFile",
     "SandboxInfo",
+    "SystemRegistry",
+    "UserSystemRole",
+    "SystemEnvironmentEndpoint",
 ]
 
 _MODULE_BY_NAME = {
@@ -62,6 +65,9 @@ _MODULE_BY_NAME = {
     "TaskChatMessage": ".chat_message",
     "UploadedFile": ".uploaded_file",
     "SandboxInfo": ".sandbox",
+    "SystemRegistry": ".system_registry",
+    "UserSystemRole": ".system_registry",
+    "SystemEnvironmentEndpoint": ".system_registry",
 }
 
 
@@ -86,6 +92,7 @@ from .memory_job import MemoryJob  # noqa: F401,E402
 from .model import Model  # noqa: F401,E402
 from .sandbox import SandboxInfo  # noqa: F401,E402
 from .system_setting import SystemSetting  # noqa: F401,E402
+from .system_registry import SystemRegistry, UserSystemRole, SystemEnvironmentEndpoint  # noqa: F401,E402
 from .task import DAGExecution, Task  # noqa: F401,E402
 from .template_stats import TemplateStats  # noqa: F401,E402
 from .tool_config import ToolConfig, ToolUsage  # noqa: F401,E402

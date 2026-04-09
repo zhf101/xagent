@@ -1,3 +1,4 @@
+"""Memory utilities for web application."""
 """Memory utilities for web application.
 Web 层使用的记忆辅助函数。
 1. 为 Web 应用创建合适的 memory store（LanceDB 或内存版）。
@@ -6,6 +7,7 @@ Web 层使用的记忆辅助函数。
 
 import logging
 import os
+from typing import Optional, Union
 from datetime import datetime
 from typing import Any, Optional, Union
 
@@ -43,6 +45,7 @@ def create_memory_store(
     logger.info(f"Using similarity threshold: {similarity_threshold}")
 
     try:
+        # Check if there's a default embedding model in database
         # Web 层这里不会硬编码 embedding 配置，
         # 而是读取数据库里当前可用的 embedding model 配置来决定是否启用向量检索。
         from sqlalchemy import create_engine
@@ -68,8 +71,7 @@ def create_memory_store(
         Base = declarative_base()
         Model = create_model_table(Base)
         db = SessionLocal()
-        # 注意：不再自动建表，依赖主库已初始化的表结构
-        # 如果表不存在，查询会报错，这是预期行为
+        Base.metadata.create_all(engine)
 
         hub = SQLAlchemyModelHub(db, Model)
         try:
@@ -79,6 +81,7 @@ def create_memory_store(
             )
 
             if embedding_model:
+                # Create LanceDB store with embedding model
                 # 有 embedding 模型时，优先启用 LanceDB，支持向量搜索。
                 from xagent.core.model.embedding import create_embedding_adapter
 
@@ -92,6 +95,7 @@ def create_memory_store(
                     embedding_model=create_embedding_adapter(embedding_model),
                     similarity_threshold=similarity_threshold,
                 )
+                # Wrap with user isolation for web application
                 # Web 侧必须套一层用户隔离，避免不同用户共享记忆空间。
                 logger.info("Wrapping LanceDB store with user isolation")
                 return UserIsolatedMemoryStore(lancedb_store)
@@ -100,6 +104,7 @@ def create_memory_store(
     except Exception as e:
         logger.error(f"Error checking for embedding model: {e}")
 
+    # Default to in-memory store
     # 如果没有配置 embedding，就退化到纯内存实现。
     # 这样系统仍然能跑，只是没有向量检索能力。
     logger.info("Using in-memory store")

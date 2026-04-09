@@ -20,6 +20,22 @@ from xagent.core.storage import get_default_db_url
 from xagent.web import models as web_models  # noqa: F401
 from xagent.web.models.database import Base
 
+# 导入 dev0407 分支新增的模型，确保 Alembic 能识别这些表
+from xagent.gdp.vanna.model.vanna import (  # noqa: F401
+    VannaKnowledgeBase,
+    VannaSchemaHarvestJob,
+    VannaSchemaTable,
+    VannaSchemaColumn,
+    VannaSchemaColumnAnnotation,
+    VannaTrainingEntry,
+    VannaEmbeddingChunk,
+    VannaAskRun,
+    VannaSqlAsset,
+    VannaSqlAssetVersion,
+    VannaSqlAssetRun,
+)
+from xagent.gdp.hrun.model.http_resource import GdpHttpResource  # noqa: F401
+
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
 config = context.config
