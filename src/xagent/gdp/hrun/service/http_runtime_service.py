@@ -33,6 +33,10 @@ from xagent.gdp.hrun.model.http_resource import GdpHttpResource
 from xagent.core.tools.core.api_tool import APIClientCore
 from xagent.gdp.hrun.adapter.http_asset_protocol import GdpHttpAssetStatus
 from xagent.gdp.hrun.adapter.http_asset_protocol import GdpHttpAssetUpsertRequest
+from xagent.gdp.hrun.service.http_resource_vector_repository import (
+    HttpResourceVectorRepository,
+    resolve_http_resource_embedding_runtime,
+)
 from xagent.gdp.hrun.model.http_runtime import (
     HttpArgumentOutlineItem,
     HttpExecuteResult,
@@ -1448,11 +1452,12 @@ class HttpResponseInterpreter:
 class HttpResourceQueryService:
     """HTTP 资产检索服务。
 
-    这层不是向量检索，而是规则驱动的轻量召回与排序。
-    目标不是“语义最强”，而是：
-    - 打分逻辑透明，方便调优
-    - 对小规模 HTTP 资产足够稳定
-    - 模型在收到候选结果时，能看见为什么它会被排到前面
+    当前实现已经升级为 provider-first + 规则重排：
+    - 先用统一向量 provider 做语义召回
+    - 再用本地规则分做可解释排序
+    - provider 不可用时回退到纯规则检索
+
+    这样既能提升召回鲁棒性，也保留模型侧可解释的命中原因。
     """
 
     _QUERY_HINT_WORDS = {
@@ -1486,8 +1491,23 @@ class HttpResourceQueryService:
         "invoke",
     }
 
-    def __init__(self, db: Session):
+    def __init__(
+        self,
+        db: Session,
+        *,
+        vector_repository: HttpResourceVectorRepository | None = None,
+    ):
         self.db = db
+        if vector_repository is not None:
+            self.vector_repository = vector_repository
+        else:
+            embedding_model, embedding_model_name = (
+                resolve_http_resource_embedding_runtime()
+            )
+            self.vector_repository = HttpResourceVectorRepository(
+                embedding_model=embedding_model,
+                embedding_model_name=embedding_model_name,
+            )
 
     def query_resources(
         self,
@@ -1520,6 +1540,19 @@ class HttpResourceQueryService:
             )
             .all()
         )
+        vector_rank_map: dict[int, float] = {}
+        if normalized_query:
+            try:
+                vector_rank_map = {
+                    int(item["resource_id"]): float(item["rank_score"])
+                    for item in self.vector_repository.search_resources(
+                        query=normalized_query,
+                        top_k=max(limit * 6, limit),
+                        system_short=normalized_system_short,
+                    )
+                }
+            except Exception:
+                vector_rank_map = {}
 
         scored_items: list[tuple[float, HttpResourceQueryItem]] = []
         for resource in resources:
@@ -1528,6 +1561,7 @@ class HttpResourceQueryService:
                 resource=resource,
                 query=normalized_query,
                 system_short=normalized_system_short,
+                vector_rank_score=float(vector_rank_map.get(int(resource.id), 0.0)),
             )
             if normalized_query and score <= 0:
                 continue
@@ -1573,6 +1607,7 @@ class HttpResourceQueryService:
         resource: GdpHttpResource,
         query: str,
         system_short: str | None,
+        vector_rank_score: float = 0.0,
     ) -> tuple[float, list[str], str]:
         """基于规则做一个透明可调的轻量打分。"""
 
@@ -1584,6 +1619,13 @@ class HttpResourceQueryService:
         if system_short and resource.system_short == system_short:
             score += 5.0
             matched_fields.append("system_short")
+
+        if vector_rank_score > 0:
+            # 这里同样不直接信任 provider 原始分值，只信任“召回顺序”。
+            # 采用固定权重把 rank_score 映射成基础分，确保 provider-first，
+            # 同时仍允许规则分在相近候选之间继续做可解释重排。
+            score += 8.0 * float(vector_rank_score)
+            matched_fields.append("vector_store")
 
         searchable_fields = {
             "tool_name": resource.tool_name,

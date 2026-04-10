@@ -158,6 +158,35 @@ class ModelTestResponse(BaseModel):
     error: Optional[str]
 
 
+class EncryptApiKeyRequest(BaseModel):
+    """公开加密接口的请求体。"""
+
+    api_key: str
+
+    @field_validator("api_key", mode="before")
+    @classmethod
+    def strip_and_validate_api_key(cls, v: Any) -> Any:
+        """统一清理输入，避免把纯空白字符串误当成有效 key。
+
+        这个接口的职责非常单一：把“真实可用的明文 key”转换成后端落库密文。
+        如果这里允许空字符串或纯空格进入后端加密流程，调用方拿到的密文虽然能生成，
+        但业务上没有任何意义，后续还会把排障复杂度转嫁到数据库数据层。
+        """
+
+        if isinstance(v, str):
+            stripped = v.strip()
+            if not stripped:
+                raise ValueError("api_key cannot be empty")
+            return stripped
+        return v
+
+
+class EncryptApiKeyResponse(BaseModel):
+    """公开加密接口的响应体。"""
+
+    encrypted_api_key: str
+
+
 class UserDefaultModelCreate(BaseModel):
     """User default model configuration creation schema"""
 

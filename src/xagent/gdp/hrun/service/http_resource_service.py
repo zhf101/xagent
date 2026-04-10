@@ -44,12 +44,26 @@ from xagent.gdp.hrun.adapter.http_asset_protocol import (
     GdpHttpAssetUpsertRequest,
 )
 from xagent.gdp.hrun.util.http_asset_validator import GdpHttpAssetValidationError, GdpHttpAssetValidator
+from .http_resource_vector_repository import (
+    HttpResourceVectorRepository,
+    resolve_http_resource_embedding_runtime,
+)
 
 
 class GdpHttpResourceService:
-    """HTTP 资产 CRUD 与注册期辅助服务。"""
+    """HTTP 资产 CRUD 与注册期辅助服务。
 
-    def __init__(self, db: Session):
+    这里除了数据库落库，还要同步维护统一 provider 索引：
+    - create/update 成功后立即 upsert 向量记录
+    - delete 时同步删掉向量记录
+    """
+
+    def __init__(
+        self,
+        db: Session,
+        *,
+        vector_repository: HttpResourceVectorRepository | None = None,
+    ):
         self.db = db
         self.validator = GdpHttpAssetValidator()
         # 这里让后台预览拼装复用运行时组件，确保 assemble 和 execute 看到的是同一套规则。
@@ -59,6 +73,16 @@ class GdpHttpResourceService:
             base_url_resolver=HttpBaseUrlResolver(db)
         )
         self.invoker = HttpInvoker()
+        if vector_repository is not None:
+            self.vector_repository = vector_repository
+        else:
+            embedding_model, embedding_model_name = (
+                resolve_http_resource_embedding_runtime()
+            )
+            self.vector_repository = HttpResourceVectorRepository(
+                embedding_model=embedding_model,
+                embedding_model_name=embedding_model_name,
+            )
 
     def list_assets(self, user_id: int) -> list[GdpHttpResource]:
         """列出当前用户可见且未删除的资产。"""
@@ -131,7 +155,13 @@ class GdpHttpResourceService:
             timeout_seconds=payload.execution_profile.timeout_seconds,
         )
         self.db.add(resource)
-        self._commit_with_unique_guard()
+        self._flush_with_unique_guard()
+        try:
+            self.vector_repository.upsert_resource(resource)
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
         self.db.refresh(resource)
         return resource
 
@@ -172,15 +202,26 @@ class GdpHttpResourceService:
         resource.headers_json = payload.execution_profile.headers_json
         resource.timeout_seconds = payload.execution_profile.timeout_seconds
 
-        self._commit_with_unique_guard()
+        self._flush_with_unique_guard()
+        try:
+            self.vector_repository.upsert_resource(resource)
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
         self.db.refresh(resource)
         return resource
 
     def delete_asset(self, *, asset_id: int, user_id: int) -> GdpHttpResource:
         """软删除资产，把状态改成 deleted。"""
         resource = self._get_mutable_asset(asset_id=asset_id, user_id=user_id)
-        resource.status = int(GdpHttpAssetStatus.DELETED)
-        self.db.commit()
+        try:
+            self.vector_repository.delete_resource(int(resource.id))
+            resource.status = int(GdpHttpAssetStatus.DELETED)
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
         self.db.refresh(resource)
         return resource
 
@@ -275,14 +316,15 @@ class GdpHttpResourceService:
             raise ValueError("已删除资产不允许修改")
         return resource
 
-    def _commit_with_unique_guard(self) -> None:
+    def _flush_with_unique_guard(self) -> None:
         """统一处理唯一键冲突，避免把数据库异常直接透给 API 层。
 
-        新人经常会在 API 层直接 try/except 数据库异常，但这种处理容易分散。
-        这里集中做掉后，API 层就只需要关注 HTTP 语义。
+        create/update 需要先 flush 再同步 provider：
+        - 先让数据库唯一键、外键等约束尽早生效
+        - 再写 provider，避免 commit 失败却留下脏向量记录
         """
         try:
-            self.db.commit()
+            self.db.flush()
         except IntegrityError as exc:
             self.db.rollback()
             raise GdpHttpAssetValidationError("resource_key 已存在") from exc

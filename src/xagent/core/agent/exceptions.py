@@ -83,7 +83,7 @@ class ToolNotFoundError(ToolError):
     ) -> None:
         message = f"Tool '{tool_name}' not found"
         if available_tools:
-            message += f". Available tools: {', '.join(available_tools)}"
+            message += f"。可用工具：{', '.join(available_tools)}"
         super().__init__(message, **kwargs)
         self.tool_name = tool_name
         self.available_tools = available_tools or []

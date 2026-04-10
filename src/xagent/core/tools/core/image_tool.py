@@ -29,102 +29,102 @@ class ImageGenerationToolCore:
 
     # Enhanced description for generate_image tool
     GENERATE_IMAGE_DESCRIPTION = """
-Generate high-quality images from text prompts.
+根据文本 prompt 生成高质量图片。
 
-When given a user request, rewrite and enrich the prompt into a **professional image generation prompt**:
-- Expand with **visual details** (style, composition, lighting, colors, textures, atmosphere)
-- Transform abstract concepts into **concrete visual scenes**
-- Text handling priority:
-  1. **Direct text display**: User-specified text content, names, dates, numbers, and quotes must appear directly as readable text in the image
-  2. **Visual description**: Brand names, abstract concepts, and style descriptions should be represented visually
-  3. **Mixed approach**: When users provide both specific text and style requirements, include both the exact text and visual elements
+当收到用户请求时，请先把原始需求重写并补充为**专业的 image generation prompt**：
+- 增加**视觉细节**，例如风格、构图、光线、色彩、材质、氛围
+- 把抽象概念转成**具体可视化场景**
+- 文本处理优先级：
+  1. **Direct text display**：用户明确指定的文本、姓名、日期、数字、引语，必须直接以可读文字形式出现在图中
+  2. **Visual description**：品牌名、抽象概念、风格词，优先转成视觉元素表达
+  3. **Mixed approach**：如果用户同时给了明确文本和风格要求，就同时保留精确文本与视觉表达
 
-- For greeting cards, posters, banners, and similar text-focused designs: Always preserve user-specified text content as readable text elements
-- Use vivid keywords (comma-separated) for better results
-- Always generate **positive prompt** (desired content) and **negative prompt** (avoid: low quality, blur, text artifacts, distorted text, misspelled words, fake logos, brand logos, trademark symbols)
-- For brands/logos: use visual descriptions like "tech company logo" rather than specific names
-- For general concepts: describe the visual representation (e.g., "2M downloads text", "million counter")
+- 对于贺卡、海报、banner 等以文字为主的设计，必须保留用户指定文字，并让其可读
+- 尽量使用生动、具体的关键词（逗号分隔）提升效果
+- 始终生成 **positive prompt**（想要的内容）和 **negative prompt**（要避免的内容，如低质量、模糊、文字伪影、文字变形、拼写错误、假 logo、品牌 logo、商标符号）
+- 涉及品牌/logo 时，优先写成视觉描述，例如 “tech company logo”，不要直接写具体品牌名
+- 对一般概念，也要写成可视化表达，例如 “2M downloads text” 或 “million counter”
 
-Available models (⭐[DEFAULT] marks the configured default model):
+可用模型（⭐[DEFAULT] 表示当前配置的默认模型）：
 {}
 
-**IMPORTANT: Prefer the default model marked with ⭐[DEFAULT]. Only specify model_id if the user explicitly requests a different model.**
+**重要：优先使用标记为 ⭐[DEFAULT] 的默认模型。只有当用户明确要求其他模型时，才填写 model_id。**
 
-Parameters:
-- prompt (required): optimized image description with visual details
-- size (optional): image resolution in "width*height" format (e.g. "1024*1024", "1280*720", "1920*1080")
-- width (optional): image width in pixels (use with height for desired dimensions)
-- height (optional): image height in pixels (use with width for desired dimensions)
-- resolution (optional): image resolution in "WIDTHxHEIGHT" format (e.g. "1920x1080")
-- aspect_ratio (optional): aspect ratio (e.g. "1:1", "3:2", "16:9", "21:9") - overrides calculated aspect ratio from size
-- negative_prompt (optional): undesired elements, auto-generated if empty
-- model_id (optional): model name from the list above. Omit to use the default model marked with ⭐[DEFAULT].
+参数：
+- prompt（必填）：带有视觉细节的优化后图片描述
+- size（可选）：图片分辨率，格式为 "width*height"，例如 "1024*1024"、"1280*720"、"1920*1080"
+- width（可选）：目标宽度（像素），通常与 height 配合使用
+- height（可选）：目标高度（像素），通常与 width 配合使用
+- resolution（可选）：分辨率，格式为 "WIDTHxHEIGHT"，例如 "1920x1080"
+- aspect_ratio（可选）：宽高比，例如 "1:1"、"3:2"、"16:9"、"21:9"；会覆盖由 size 推导出的比例
+- negative_prompt（可选）：不希望出现的元素；为空时可自动生成
+- model_id（可选）：指定模型名；留空则使用 ⭐[DEFAULT]
 
-**IMPORTANT NOTES ON IMAGE SIZES:**
-- Different models have different size capabilities and constraints
-- **Gemini models**: Use aspect ratio + size bucket system (1K/2K/4K). Exact pixel dimensions are converted to the closest supported ratio and bucket. Output dimensions may vary from requested dimensions.
-- **OpenAI models**: Support only specific preset sizes (256x256, 512x512, 1024x1024, etc.)
-- **DashScope models**: Support limited size options
-- **Xinference models**: Based on Stable Diffusion, may support more flexible dimensions
+**图片尺寸说明：**
+- 不同模型支持的尺寸能力和约束不同
+- **Gemini models**：使用 aspect ratio + 尺寸桶（1K/2K/4K）体系。精确像素会被映射到最接近的受支持比例和尺寸桶，最终输出尺寸可能与请求值略有差异
+- **OpenAI models**：只支持若干预设尺寸，例如 256x256、512x512、1024x1024
+- **DashScope models**：支持的尺寸选项较少
+- **Xinference models**：基于 Stable Diffusion，通常支持更灵活的尺寸
 
-Size parameter priority (highest to lowest):
-1. aspect_ratio + size (aspect_ratio determines ratio, size determines resolution bucket)
-2. width + height (desired dimensions, will be approximated to closest supported values)
-3. resolution (alternative dimension format)
-4. size (simple format)
+尺寸参数优先级（从高到低）：
+1. aspect_ratio + size（aspect_ratio 决定比例，size 决定分辨率桶）
+2. width + height（目标尺寸，会近似到模型支持的最接近值）
+3. resolution（另一种尺寸写法）
+4. size（简写格式）
 
-Images are automatically saved to workspace.
+生成后的图片会自动保存到 workspace。
     """.strip()
 
     # Description for edit_image tool
     EDIT_IMAGE_DESCRIPTION = """
-Edit existing images using text prompts.
+使用文本 prompt 编辑现有图片。
 
-This tool allows you to modify existing images by describing the changes you want to make. The AI will understand your instructions and apply the requested modifications to the image.
+这个工具允许你通过描述想要的改动来修改已有图片。模型会理解这些要求，并把改动应用到图片上。
 
-Common use cases:
-- Change objects, people, or scenes in the image
-- Modify colors, lighting, or style
-- Add or remove elements
-- Fix imperfections or enhance quality
-- Convert image style (e.g., make it look like a painting, cartoon, etc.)
-- Resize or change image dimensions
+常见用法：
+- 修改图片中的物体、人物或场景
+- 调整颜色、光线或整体风格
+- 添加或移除元素
+- 修复瑕疵或增强清晰度
+- 转换图片风格（例如改成油画、卡通等）
+- 调整尺寸或画幅
 
-Text handling in edited images:
-- **Text modifications**: If you want to change existing text in the image, clearly describe what text should be changed and what it should become
-- **New text addition**: Specify exactly what text should appear and where (e.g., "add 'Happy Birthday' text at the top")
-- **Text removal**: Request to remove specific text elements
+涉及图片中文字时：
+- **Text modifications**：如果要修改图片里已有文字，请明确说明要改哪段文字、改成什么
+- **New text addition**：如果要新增文字，请明确写出具体文本和位置，例如 “在顶部加入 Happy Birthday 文本”
+- **Text removal**：如果要删除文字，请明确指出要删除哪些文字元素
 
-Available models (⭐[DEFAULT] marks the configured default model):
+可用模型（⭐[DEFAULT] 表示当前配置的默认模型）：
 {}
 
-**IMPORTANT: Prefer the default model marked with ⭐[DEFAULT]. Only specify model_id if the user explicitly requests a different model.**
+**重要：优先使用标记为 ⭐[DEFAULT] 的默认模型。只有当用户明确要求其他模型时，才填写 model_id。**
 
-Parameters:
-- image_url (required): single image path/URL/file_id (supports both `file_id` and `file:file_id`) or a list of image paths/URLs/file_ids for multi-image editing
-- prompt (required): description of the desired edits and changes
-- negative_prompt (optional): undesired elements in the result
-- size (optional): image resolution in "width*height" format (e.g. "1024*1024", "1280*720", "1920*1080")
-- width (optional): image width in pixels (use with height for desired dimensions)
-- height (optional): image height in pixels (use with width for desired dimensions)
-- resolution (optional): image resolution in "WIDTHxHEIGHT" format (e.g. "1920x1080")
-- aspect_ratio (optional): aspect ratio (e.g. "1:1", "3:2", "16:9", "21:9") - overrides calculated aspect ratio from size
-- model_id (optional): model name from the list above. Omit to use the default model marked with ⭐[DEFAULT].
+参数：
+- image_url（必填）：单张图片路径/URL/file_id（同时支持 `file_id` 和 `file:file_id`），或用于多图编辑的路径/URL/file_id 列表
+- prompt（必填）：描述希望进行的编辑和改动
+- negative_prompt（可选）：结果中不希望出现的元素
+- size（可选）：图片分辨率，格式为 "width*height"，例如 "1024*1024"、"1280*720"、"1920*1080"
+- width（可选）：目标宽度（像素），通常与 height 配合使用
+- height（可选）：目标高度（像素），通常与 width 配合使用
+- resolution（可选）：分辨率，格式为 "WIDTHxHEIGHT"，例如 "1920x1080"
+- aspect_ratio（可选）：宽高比，例如 "1:1"、"3:2"、"16:9"、"21:9"；会覆盖由 size 推导出的比例
+- model_id（可选）：指定模型名；留空则使用 ⭐[DEFAULT]
 
-**IMPORTANT NOTES ON IMAGE SIZES:**
-- Different models have different size capabilities and constraints
-- **Gemini models**: Use aspect ratio + size bucket system (1K/2K/4K). Exact pixel dimensions are converted to the closest supported ratio and bucket. Output dimensions may vary from requested dimensions.
-- **OpenAI models**: Support only specific preset sizes (256x256, 512x512, 1024x1024, etc.)
-- **DashScope models**: Support limited size options
-- **Xinference models**: Based on Stable Diffusion, may support more flexible dimensions
+**图片尺寸说明：**
+- 不同模型支持的尺寸能力和约束不同
+- **Gemini models**：使用 aspect ratio + 尺寸桶（1K/2K/4K）体系。精确像素会被映射到最接近的受支持比例和尺寸桶，最终输出尺寸可能与请求值略有差异
+- **OpenAI models**：只支持若干预设尺寸，例如 256x256、512x512、1024x1024
+- **DashScope models**：支持的尺寸选项较少
+- **Xinference models**：基于 Stable Diffusion，通常支持更灵活的尺寸
 
-Size parameter priority (highest to lowest):
-1. aspect_ratio + size (aspect_ratio determines ratio, size determines resolution bucket)
-2. width + height (desired dimensions, will be approximated to closest supported values)
-3. resolution (alternative dimension format)
-4. size (simple format)
+尺寸参数优先级（从高到低）：
+1. aspect_ratio + size（aspect_ratio 决定比例，size 决定分辨率桶）
+2. width + height（目标尺寸，会近似到模型支持的最接近值）
+3. resolution（另一种尺寸写法）
+4. size（简写格式）
 
-Images are automatically saved to workspace.
+编辑后的图片会自动保存到 workspace。
     """.strip()
 
     def __init__(

@@ -21,6 +21,7 @@ from xagent.gdp.vanna.model.vanna import (
     VannaTrainingEntry,
 )
 from .errors import VannaTrainingEntryNotFoundError
+from .vector_repository import VannaVectorRepository
 
 
 class IndexService:
@@ -32,10 +33,12 @@ class IndexService:
         *,
         embedding_model: BaseEmbedding | None = None,
         embedding_model_name: str | None = None,
+        vector_repository: VannaVectorRepository | None = None,
     ) -> None:
         self.db = db
         self.embedding_model = embedding_model
         self.embedding_model_name = embedding_model_name
+        self.vector_repository = vector_repository or VannaVectorRepository()
 
     def reindex_entry(self, *, entry_id: int) -> list[VannaEmbeddingChunk]:
         """重建单条训练知识的切片。
@@ -51,6 +54,14 @@ class IndexService:
                 f"Training entry {entry_id} was not found"
             )
 
+        existing_chunks = (
+            self.db.query(VannaEmbeddingChunk)
+            .filter(VannaEmbeddingChunk.entry_id == int(entry_id))
+            .all()
+        )
+        if existing_chunks:
+            self.vector_repository.delete_chunks(existing_chunks)
+
         (
             self.db.query(VannaEmbeddingChunk)
             .filter(VannaEmbeddingChunk.entry_id == int(entry_id))
@@ -58,6 +69,7 @@ class IndexService:
         )
 
         created_rows: list[VannaEmbeddingChunk] = []
+        created_vectors: list[tuple[VannaEmbeddingChunk, list[float]]] = []
         for order, spec in enumerate(self._build_chunk_specs(entry)):
             chunk_text = str(spec["chunk_text"]).strip()
             if not chunk_text:
@@ -79,7 +91,7 @@ class IndexService:
                 embedding_text=embedding_text,
                 embedding_model=self.embedding_model_name,
                 embedding_dim=len(vector) if vector else None,
-                embedding_vector=self._format_vector_literal(vector),
+                embedding_vector=None,
                 distance_metric="cosine" if vector else None,
                 token_count_estimate=self._estimate_token_count(embedding_text),
                 lifecycle_status=entry.lifecycle_status,
@@ -95,6 +107,15 @@ class IndexService:
             )
             self.db.add(row)
             created_rows.append(row)
+            if vector:
+                created_vectors.append((row, vector))
+
+        # 这里必须先 flush 再写 provider。
+        # 因为 provider 里的稳定主键来自 `VannaEmbeddingChunk.id`，
+        # 不 flush 就拿不到真正的 chunk_id，后续删除与回表都无法对齐。
+        self.db.flush()
+        if created_vectors:
+            self.vector_repository.index_chunks(chunk_vectors=created_vectors)
 
         kb = self.db.get(VannaKnowledgeBase, int(entry.kb_id))
         if kb is not None:
@@ -212,13 +233,6 @@ class IndexService:
             raw = raw[0]
         vector = [float(item) for item in raw]
         return vector or None
-
-    def _format_vector_literal(self, vector: list[float] | None) -> str | None:
-        """把向量转成数据库可存储的 JSON 字面量。"""
-
-        if not vector:
-            return None
-        return json.dumps([round(float(item), 8) for item in vector], ensure_ascii=False)
 
     def _estimate_token_count(self, text: str) -> int:
         """粗略估算 token 数，供诊断和调参使用。"""

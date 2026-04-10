@@ -144,13 +144,13 @@ class TranslateJSONToolCore:
         assert self._llm is not None, "LLM must be available for translation"
 
         # Build translation prompt for this batch
-        source_info = f" from {source_lang}" if source_lang else ""
-        prompt = f"""Translate the following texts to {target_lang}{source_info}. Return only the translations, one per line, in the same order.{instructions_section}
+        source_info = f"，源语言为 {source_lang}" if source_lang else ""
+        prompt = f"""请把下面的文本翻译成 {target_lang}{source_info}。只返回翻译结果，保持原顺序，每行一条。{instructions_section}
 
-Texts to translate:
+待翻译文本：
 {chr(10).join(f"{i + 1}. {text}" for i, text in enumerate(batch_texts))}
 
-Translations:"""
+翻译结果："""
 
         messages = [
             {"role": "user", "content": prompt},
@@ -220,7 +220,7 @@ Translations:"""
         # Build instructions section for prompt
         instructions_section = ""
         if instructions:
-            instructions_section = f"\n\nAdditional Instructions:\n{instructions}\n"
+            instructions_section = f"\n\n补充要求：\n{instructions}\n"
 
         try:
             # Split texts into batches

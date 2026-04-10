@@ -37,6 +37,7 @@ from .knowledge_base_service import KnowledgeBaseService
 from .prompt_builder import PromptBuilder
 from .retrieval_service import RetrievalService
 from .train_service import TrainService
+from .vector_repository import resolve_vanna_embedding_runtime
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +68,7 @@ class AskService:
     ) -> None:
         self.db = db
         self.kb_service = KnowledgeBaseService(db)
-        self.retrieval_service = retrieval_service or RetrievalService(db)
+        self.retrieval_service = retrieval_service
         self.prompt_builder = prompt_builder or PromptBuilder()
         self.llm_callable = llm_callable
         self.llm_resolver = llm_resolver or get_default_model
@@ -109,8 +110,20 @@ class AskService:
             create_user_name=create_user_name,
             kb_id=kb_id,
         )
+        retrieval_service = self.retrieval_service
+        if retrieval_service is None:
+            embedding_model, embedding_model_name = resolve_vanna_embedding_runtime(
+                self.db,
+                kb=kb,
+                owner_user_id=owner_user_id,
+            )
+            retrieval_service = RetrievalService(
+                self.db,
+                embedding_model=embedding_model,
+                embedding_model_name=embedding_model_name,
+            )
         normalized_question = str(question or "").strip()
-        retrieval = self.retrieval_service.retrieve(
+        retrieval = retrieval_service.retrieve(
             kb_id=int(kb.id),
             question=normalized_question,
             system_short=kb.system_short,

@@ -22,6 +22,8 @@ from ..models.database import get_db
 from ..models.model import Model as DBModel
 from ..models.user import User, UserDefaultModel, UserModel
 from ..schemas.model import (
+    EncryptApiKeyRequest,
+    EncryptApiKeyResponse,
     ModelCreate,
     ModelTestRequest,
     ModelTestResponse,
@@ -1362,6 +1364,33 @@ async def delete_user_default_model(
 
 
 # Public endpoints (no authentication required)
+
+
+@model_router.post(
+    "/public/encrypt-api-key", response_model=EncryptApiKeyResponse
+)
+async def encrypt_public_api_key(
+    payload: EncryptApiKeyRequest,
+) -> EncryptApiKeyResponse:
+    """把明文 API Key 转成后端 `models._api_key_encrypted` 所需的密文。
+
+    这里刻意不落库，也不依赖用户登录态。
+    这个接口唯一做的事，就是复用模型 ORM 上已经存在的 `api_key` setter，
+    让外部调用方拿到“与后端真实入库完全一致”的加密结果，避免在别处复制一套
+    Fernet 细节后逐渐与主代码漂移。
+    """
+
+    preview_model = DBModel(
+        model_id="public-encrypt-preview",
+        category="llm",
+        model_provider="openai",
+        model_name="public-encrypt-preview",
+    )
+    preview_model.api_key = payload.api_key
+
+    return EncryptApiKeyResponse(
+        encrypted_api_key=str(preview_model._api_key_encrypted)
+    )
 
 
 @model_router.get("/public/list")

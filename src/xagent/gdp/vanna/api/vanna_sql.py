@@ -45,6 +45,10 @@ from xagent.gdp.vanna.service.schema_annotation_service import (
 from xagent.gdp.vanna.service.schema_harvest_service import SchemaHarvestService
 from xagent.gdp.vanna.service.sql_assets import SqlAssetService
 from xagent.gdp.vanna.service.train_service import TrainService
+from xagent.gdp.vanna.service.vector_repository import (
+    VannaVectorRepository,
+    resolve_vanna_embedding_runtime,
+)
 from xagent.web.auth_dependencies import get_current_user
 from xagent.web.models.database import get_db
 from xagent.web.models.user import User
@@ -480,18 +484,52 @@ def _sync_entry_chunks(
     检索索引里的 chunk 也要跟着同步，否则检索结果会和条目状态不一致。
     """
 
-    chunk_rows = (
-        db.query(VannaEmbeddingChunk)
-        .filter(VannaEmbeddingChunk.entry_id == int(entry.id))
-        .all()
-    )
-    if chunk_rows:
-        for chunk_row in chunk_rows:
-            chunk_row.lifecycle_status = entry.lifecycle_status
-        db.commit()
-        return
+    kb = db.get(VannaKnowledgeBase, int(entry.kb_id))
+    owner_user_id = int(kb.owner_user_id) if kb is not None else None
+    embedding_model = None
+    embedding_model_name = None
+    if kb is not None:
+        embedding_model, embedding_model_name = resolve_vanna_embedding_runtime(
+            db,
+            kb=kb,
+            owner_user_id=owner_user_id,
+        )
 
-    IndexService(db).reindex_entry(entry_id=int(entry.id))
+    # 这里不再只同步数据库里的 lifecycle_status。
+    # 原因是 provider metadata 里同样持有 lifecycle_status，
+    # 只改业务表不重建 provider，检索过滤就会出现“数据库已发布，但向量索引还是 candidate”的错位。
+    IndexService(
+        db,
+        embedding_model=embedding_model,
+        embedding_model_name=embedding_model_name,
+    ).reindex_entry(entry_id=int(entry.id))
+
+
+def _build_index_service_for_kb(
+    *,
+    db: Session,
+    kb_id: int,
+    owner_user_id: int | None,
+) -> IndexService:
+    """按知识库当前配置构造 IndexService。
+
+    训练入口、编辑入口、状态切换入口都应该共用这条解析逻辑，
+    否则同一个 KB 会因为入口不同而写出不同 embedding model 的索引。
+    """
+    kb = db.get(VannaKnowledgeBase, int(kb_id))
+    if kb is None:
+        return IndexService(db)
+
+    embedding_model, embedding_model_name = resolve_vanna_embedding_runtime(
+        db,
+        kb=kb,
+        owner_user_id=owner_user_id,
+    )
+    return IndexService(
+        db,
+        embedding_model=embedding_model,
+        embedding_model_name=embedding_model_name,
+    )
 
 
 @vanna_router.post("/kbs")
@@ -775,7 +813,6 @@ async def train_vanna_entry(
     - `bootstrap_schema`: 把已采集 schema 自动整理成候选条目
     """
     service = TrainService(db)
-    index_service = IndexService(db)
 
     if payload.bootstrap_schema:
         entries = service.bootstrap_schema(
@@ -783,8 +820,16 @@ async def train_vanna_entry(
             owner_user_id=int(user.id),
             create_user_name=getattr(user, "username", None),
         )
+        index_service = None
+        if entries:
+            index_service = _build_index_service_for_kb(
+                db=db,
+                kb_id=int(entries[0].kb_id),
+                owner_user_id=int(user.id),
+            )
         for entry in entries:
-            index_service.reindex_entry(entry_id=int(entry.id))
+            if index_service is not None:
+                index_service.reindex_entry(entry_id=int(entry.id))
         return {"data": [_serialize_entry(entry) for entry in entries]}
 
     if payload.question and payload.sql:
@@ -796,7 +841,11 @@ async def train_vanna_entry(
             sql=payload.sql,
             publish=bool(payload.publish),
         )
-        index_service.reindex_entry(entry_id=int(entry.id))
+        _build_index_service_for_kb(
+            db=db,
+            kb_id=int(entry.kb_id),
+            owner_user_id=int(user.id),
+        ).reindex_entry(entry_id=int(entry.id))
         return {"data": _serialize_entry(entry)}
 
     if payload.documentation:
@@ -813,7 +862,11 @@ async def train_vanna_entry(
             documentation=payload.documentation,
             publish=bool(payload.publish),
         )
-        index_service.reindex_entry(entry_id=int(entry.id))
+        _build_index_service_for_kb(
+            db=db,
+            kb_id=int(entry.kb_id),
+            owner_user_id=int(user.id),
+        ).reindex_entry(entry_id=int(entry.id))
         return {"data": _serialize_entry(entry)}
 
     raise HTTPException(
@@ -967,7 +1020,11 @@ async def update_training_entry(
 
     db.commit()
     db.refresh(entry)
-    IndexService(db).reindex_entry(entry_id=int(entry.id))
+    _build_index_service_for_kb(
+        db=db,
+        kb_id=int(entry.kb_id),
+        owner_user_id=int(user.id),
+    ).reindex_entry(entry_id=int(entry.id))
     db.refresh(entry)
     return {"data": _serialize_entry(entry)}
 
@@ -1017,11 +1074,18 @@ async def delete_training_entry(
             detail="This training entry is linked to ask runs and cannot be deleted",
         )
 
-    (
+    chunk_rows = (
         db.query(VannaEmbeddingChunk)
         .filter(VannaEmbeddingChunk.entry_id == int(entry.id))
-        .delete(synchronize_session=False)
+        .all()
     )
+    if chunk_rows:
+        VannaVectorRepository().delete_chunks(chunk_rows)
+        (
+            db.query(VannaEmbeddingChunk)
+            .filter(VannaEmbeddingChunk.entry_id == int(entry.id))
+            .delete(synchronize_session=False)
+        )
     db.delete(entry)
     db.commit()
     return {"data": {"id": int(entry_id), "deleted": True}}

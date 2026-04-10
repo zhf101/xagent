@@ -40,6 +40,9 @@ VECTOR_BACKEND = "XAGENT_VECTOR_BACKEND"
 VECTOR_PG_URL = "XAGENT_VECTOR_PG_URL"
 VECTOR_PG_SCHEMA = "XAGENT_VECTOR_PG_SCHEMA"
 VECTOR_PG_ENABLE_IVFFLAT = "XAGENT_VECTOR_PG_ENABLE_IVFFLAT"
+VECTOR_MILVUS_URI = "XAGENT_VECTOR_MILVUS_URI"
+VECTOR_MILVUS_TOKEN = "XAGENT_VECTOR_MILVUS_TOKEN"
+VECTOR_MILVUS_DB_NAME = "XAGENT_VECTOR_MILVUS_DB_NAME"
 SANDBOX_CPUS = "SANDBOX_CPUS"
 SANDBOX_MEMORY = "SANDBOX_MEMORY"
 SANDBOX_ENV = "SANDBOX_ENV"
@@ -315,7 +318,7 @@ def get_vector_backend() -> str:
     但运维语义、故障排查路径和后续扩展能力并不相同。
 
     Returns:
-        `lancedb` 或 `pgvector`
+        `lancedb`、`pgvector` 或 `milvus`
 
     Raises:
         ValueError: 当环境变量值不在支持列表中时抛出
@@ -324,10 +327,10 @@ def get_vector_backend() -> str:
     normalized = raw_value.strip().lower()
     if not normalized:
         return "lancedb"
-    if normalized not in {"lancedb", "pgvector"}:
+    if normalized not in {"lancedb", "pgvector", "milvus"}:
         raise ValueError(
             f"Invalid {VECTOR_BACKEND} value: {raw_value}. "
-            "Expected one of: lancedb, pgvector"
+            "Expected one of: lancedb, pgvector, milvus"
         )
     return normalized
 
@@ -362,6 +365,35 @@ def get_vector_pg_enable_ivfflat() -> bool:
     """
     raw_value = os.getenv(VECTOR_PG_ENABLE_IVFFLAT, "true").strip().lower()
     return raw_value in {"1", "true", "yes", "on"}
+
+
+def get_vector_milvus_uri() -> str:
+    """获取 Milvus 连接地址。"""
+    uri = os.getenv(VECTOR_MILVUS_URI) or os.getenv("MILVUS_URI")
+    normalized = str(uri or "").strip()
+    if not normalized:
+        raise ValueError(
+            "Milvus backend requires XAGENT_VECTOR_MILVUS_URI or MILVUS_URI"
+        )
+    return normalized
+
+
+def get_vector_milvus_token() -> str | None:
+    """获取 Milvus token。"""
+    token = os.getenv(VECTOR_MILVUS_TOKEN)
+    if token is None:
+        token = os.getenv("MILVUS_TOKEN")
+    normalized = str(token or "").strip()
+    return normalized or None
+
+
+def get_vector_milvus_db_name() -> str | None:
+    """获取 Milvus 逻辑数据库名。"""
+    db_name = os.getenv(VECTOR_MILVUS_DB_NAME)
+    if db_name is None:
+        db_name = os.getenv("MILVUS_DB_NAME")
+    normalized = str(db_name or "").strip()
+    return normalized or None
 
 
 def get_sandbox_cpus() -> int | None:

@@ -228,9 +228,9 @@ def store_execution_result_memory(
         failed_steps = len([r for r in results if r.get("status") == "failed"])
 
         content_parts = []
-        content_parts.append(f"Goal: {goal}")
+        content_parts.append(f"目标：{goal}")
         content_parts.append(
-            f"Execution result: {successful_steps} successful steps out of {len(results)} total steps"
+            f"执行结果：总共 {len(results)} 个步骤，其中 {successful_steps} 个成功、{failed_steps} 个失败"
         )
 
         if classification and classification.get("user_preferences"):
@@ -346,8 +346,8 @@ def store_react_task_memory(
 
         # 这里刻意只保留高价值字段，避免把每次普通执行都写成冗长噪音。
         content_parts = []
-        content_parts.append(f"Task: {task}")
-        content_parts.append(f"Outcome: {'Success' if success else 'Failed'}")
+        content_parts.append(f"任务：{task}")
+        content_parts.append(f"结果：{'成功' if success else '失败'}")
 
         if classification:
             if classification.get("user_preferences"):

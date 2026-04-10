@@ -39,6 +39,12 @@ import {
   previewHttpAssetRequest,
   saveHttpAsset,
 } from "./http-config-runtime"
+import {
+  applyHttpTemplateStrategyState,
+  deriveHttpTemplateStrategyState,
+  type RequestBodyStrategy,
+  type SuccessResponseStrategy,
+} from "./http-template-strategies"
 import { Badge } from "@/components/ui/badge"
 import { cn } from "@/lib/utils"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -101,6 +107,14 @@ export function HttpConfigDrawer({ open, onOpenChange, onSaved, assetId }: HttpC
   const [outputTree, setOutputTree] = useState<SchemaNode[]>([])
   const [rawInputJson, setRawInputJson] = useState("")
   const [rawOutputJson, setRawOutputJson] = useState("")
+  const [requestBodyStrategy, setRequestBodyStrategy] =
+    useState<RequestBodyStrategy>("json")
+  const [requestBodyTemplate, setRequestBodyTemplate] = useState("")
+  const [successResponseStrategy, setSuccessResponseStrategy] =
+    useState<SuccessResponseStrategy>("default")
+  const [successResponseTemplate, setSuccessResponseTemplate] = useState("")
+  const [successResponsePrepend, setSuccessResponsePrepend] = useState("")
+  const [successResponseAppend, setSuccessResponseAppend] = useState("")
   const selectedSystemOption = useMemo(
     () => systemOptions.find(option => option.system_short === payload.resource.system_short),
     [systemOptions, payload.resource.system_short]
@@ -132,6 +146,37 @@ export function HttpConfigDrawer({ open, onOpenChange, onSaved, assetId }: HttpC
             : `当前环境状态：${option.status}${option.description ? ` · ${option.description}` : ""}`,
       })),
     [envOptions]
+  )
+
+  const syncTemplateStrategyState = (nextPayload: GdpHttpAssetPayload) => {
+    const nextState = deriveHttpTemplateStrategyState(nextPayload)
+    setRequestBodyStrategy(nextState.requestBodyStrategy)
+    setRequestBodyTemplate(nextState.requestBodyTemplate)
+    setSuccessResponseStrategy(nextState.successResponseStrategy)
+    setSuccessResponseTemplate(nextState.successResponseTemplate)
+    setSuccessResponsePrepend(nextState.successResponsePrepend)
+    setSuccessResponseAppend(nextState.successResponseAppend)
+  }
+
+  const effectivePayload = useMemo(
+    () =>
+      applyHttpTemplateStrategyState(payload, {
+        requestBodyStrategy,
+        requestBodyTemplate,
+        successResponseStrategy,
+        successResponseTemplate,
+        successResponsePrepend,
+        successResponseAppend,
+      }),
+    [
+      payload,
+      requestBodyStrategy,
+      requestBodyTemplate,
+      successResponseStrategy,
+      successResponseTemplate,
+      successResponsePrepend,
+      successResponseAppend,
+    ]
   )
 
   const loadSystemOptions = async (includeSystemShort?: string) => {
@@ -204,6 +249,7 @@ export function HttpConfigDrawer({ open, onOpenChange, onSaved, assetId }: HttpC
       } else {
         const nextPayload = createDefaultGdpHttpPayload()
         setPayload(nextPayload)
+        syncTemplateStrategyState(nextPayload)
         setInputTree([])
         setOutputTree([])
         setRawInputJson(JSON.stringify(nextPayload.tool_contract.input_schema_json, null, 2))
@@ -222,6 +268,7 @@ export function HttpConfigDrawer({ open, onOpenChange, onSaved, assetId }: HttpC
         const data = await res.json()
         const asset = coerceHttpAssetPayloadFromApi(data.data)
         setPayload(asset)
+        syncTemplateStrategyState(asset)
         await loadSystemOptions(asset.resource.system_short)
         await loadEnvOptions(asset.resource.system_short, asset.execution_profile.sys_label)
         
@@ -279,7 +326,7 @@ export function HttpConfigDrawer({ open, onOpenChange, onSaved, assetId }: HttpC
     try {
       const res = await saveHttpAsset({
         assetId,
-        payload,
+        payload: effectivePayload,
         inputEditMode,
         outputEditMode,
         inputTree,
@@ -315,23 +362,12 @@ export function HttpConfigDrawer({ open, onOpenChange, onSaved, assetId }: HttpC
     { key: "idempotentHint", label: "幂等性接口", desc: "支持重试" },
     { key: "openWorldHint", label: "外部强时效性", desc: "不建议缓存" },
   ]
-  const updateResponseTemplate = (key: string, value: unknown) =>
-    setPayload(p => ({
-      ...p,
-      execution_profile: {
-        ...p.execution_profile,
-        response_template_json: {
-          ...(p.execution_profile.response_template_json || {}),
-          [key]: value,
-        },
-      },
-    }))
 
   const handlePreviewRequest = async () => {
     setIsAssembling(true)
     try {
       const preview = await previewHttpAssetRequest({
-        payload,
+        payload: effectivePayload,
         inputEditMode,
         outputEditMode,
         inputTree,
@@ -350,7 +386,7 @@ export function HttpConfigDrawer({ open, onOpenChange, onSaved, assetId }: HttpC
 
   const syncVisualInputToJson = async () => {
     const normalized = await normalizeVisualHttpAssetDraft({
-      payload,
+      payload: effectivePayload,
       inputTree,
     })
     setPayload(prev => ({
@@ -371,7 +407,7 @@ export function HttpConfigDrawer({ open, onOpenChange, onSaved, assetId }: HttpC
 
   const syncVisualOutputToJson = async () => {
     const normalized = await normalizeVisualHttpAssetDraft({
-      payload,
+      payload: effectivePayload,
       outputTree,
     })
     setPayload(prev => ({
@@ -595,7 +631,7 @@ export function HttpConfigDrawer({ open, onOpenChange, onSaved, assetId }: HttpC
                 <div className="space-y-10 animate-in fade-in slide-in-from-bottom-4 duration-500">
                   <div className="space-y-2"><h2 className="text-2xl font-black tracking-tight">执行与响应配置</h2><p className="text-muted-foreground text-sm">物理请求与摘要模板</p></div>
                   <div className="space-y-8">
-                    <div className="grid grid-cols-12 gap-6 p-8 border rounded-[2rem] bg-zinc-50/50">
+                      <div className="grid grid-cols-12 gap-6 p-8 border rounded-[2rem] bg-zinc-50/50">
                       <div className="col-span-4 space-y-2"><Label className="text-xs font-black uppercase tracking-wider">方法</Label><SelectRadix value={payload.execution_profile.method} onValueChange={v => updateProfile("method", v)}><SelectTrigger className="h-11 rounded-xl bg-background"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="GET">GET</SelectItem><SelectItem value="POST">POST</SelectItem></SelectContent></SelectRadix></div>
                       <div className="col-span-8 space-y-2"><Label className="text-xs font-black uppercase tracking-wider">模式</Label><Tabs value={payload.execution_profile.url_mode} onValueChange={v => updateProfile("url_mode", v)} className="w-full"><TabsList className="grid grid-cols-2 h-11 p-1 rounded-xl"><TabsTrigger value="direct">物理直连</TabsTrigger><TabsTrigger value="tag">环境标签</TabsTrigger></TabsList></Tabs></div>
                     <div className="col-span-12">
@@ -652,6 +688,58 @@ export function HttpConfigDrawer({ open, onOpenChange, onSaved, assetId }: HttpC
                       </div>
                     </div>
                     <div className="p-8 border rounded-[2rem] bg-zinc-50/50 flex flex-col gap-6">
+                      <div className="space-y-2">
+                        <Label className="text-xs font-black uppercase tracking-wider">请求体生成策略</Label>
+                        <p className="text-xs text-muted-foreground">
+                          用这一层决定“未显式路由”的参数最后进 URL、进 JSON body，还是按模板重新组装。
+                        </p>
+                      </div>
+                      <SelectRadix
+                        value={payload.execution_profile.method === "GET" ? "none" : requestBodyStrategy}
+                        onValueChange={value => setRequestBodyStrategy(value as RequestBodyStrategy)}
+                      >
+                        <SelectTrigger className="h-11 rounded-xl bg-background">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="none">无 body / 仅 URL 参数</SelectItem>
+                          <SelectItem value="json" disabled={payload.execution_profile.method === "GET"}>
+                            自动生成 JSON body
+                          </SelectItem>
+                          <SelectItem value="custom" disabled={payload.execution_profile.method === "GET"}>
+                            自定义 body 模板
+                          </SelectItem>
+                        </SelectContent>
+                      </SelectRadix>
+                      {payload.execution_profile.method === "GET" ? (
+                        <p className="text-xs text-amber-600">
+                          GET 请求按运行时硬规则只能走 URL 参数，不允许生成 body。
+                        </p>
+                      ) : requestBodyStrategy === "none" ? (
+                        <p className="text-xs text-muted-foreground">
+                          未显式映射到 path/header/body 的参数会自动追加到 query string。
+                        </p>
+                      ) : requestBodyStrategy === "json" ? (
+                        <p className="text-xs text-muted-foreground">
+                          未显式映射的参数会自动折叠成 JSON body，适合标准业务 POST。
+                        </p>
+                      ) : (
+                        <div className="space-y-3">
+                          <Textarea
+                            value={requestBodyTemplate}
+                            onChange={e => setRequestBodyTemplate(e.target.value)}
+                            className="min-h-[140px] font-mono text-xs rounded-2xl p-6 bg-white"
+                            placeholder={'{"func":"updatedishui.lgx","data":{{ args | tojson }}}'}
+                          />
+                          <p className="text-[10px] text-muted-foreground italic">
+                            可用变量：<code>args</code>、<code>endpoint</code>、<code>context</code>。
+                            如果你希望把完整入参整体塞进某个字段，优先用{" "}
+                            <code>{"{{ args | tojson }}"}</code>。
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                    <div className="p-8 border rounded-[2rem] bg-zinc-50/50 flex flex-col gap-6">
                       <Label className="text-xs font-black uppercase tracking-wider">安全鉴权</Label>
                       <SelectRadix value={payload.execution_profile.auth_json.type} onValueChange={v => updateAuth("type", v)}><SelectTrigger className="h-11 rounded-xl bg-background"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="none">无鉴权</SelectItem><SelectItem value="bearer">Bearer Token</SelectItem><SelectItem value="api_key">API Key</SelectItem><SelectItem value="basic">Basic Auth</SelectItem></SelectContent></SelectRadix>
                       {payload.execution_profile.auth_json.type !== "none" && <Input type="password" value={payload.execution_profile.auth_json.token || ""} onChange={e => updateAuth("token", e.target.value)} placeholder="Token / Secret" className="h-11 rounded-xl" />}
@@ -663,19 +751,65 @@ export function HttpConfigDrawer({ open, onOpenChange, onSaved, assetId }: HttpC
                       </div>
                       
                       <div className="grid grid-cols-1 gap-6">
-                        {/* Success Template */}
                         <div className="p-8 border rounded-[2rem] bg-emerald-500/5 border-emerald-500/10 space-y-4">
                           <div className="flex items-center justify-between">
-                            <Label className="text-xs font-black uppercase tracking-wider text-emerald-600">成功响应模板 (Success Template)</Label>
+                            <Label className="text-xs font-black uppercase tracking-wider text-emerald-600">成功响应提取策略</Label>
                             <Badge className="bg-emerald-500/10 text-emerald-600 border-none text-[10px]">HTTP 2xx</Badge>
                           </div>
-                          <Textarea 
-                            value={payload.execution_profile.response_template_json.body || ""} 
-                            onChange={e => updateResponseTemplate("body", e.target.value)} 
-                            className="min-h-[100px] font-mono text-xs rounded-2xl p-6 bg-white border-emerald-500/20" 
-                            placeholder="例如: 查询成功。客户 {{ extracted.name }} 的余额为 {{ extracted.balance }}。" 
-                          />
-                          <p className="text-[10px] text-muted-foreground italic">当接口返回成功时，渲染此模板作为大模型的最终输入</p>
+                          <SelectRadix
+                            value={successResponseStrategy}
+                            onValueChange={value => setSuccessResponseStrategy(value as SuccessResponseStrategy)}
+                          >
+                            <SelectTrigger className="h-11 rounded-xl bg-white border-emerald-500/20">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="default">默认原样透传</SelectItem>
+                              <SelectItem value="custom">模板覆盖内容</SelectItem>
+                              <SelectItem value="append">仅增加前后缀</SelectItem>
+                            </SelectContent>
+                          </SelectRadix>
+                          {successResponseStrategy === "default" ? (
+                            <p className="text-xs text-muted-foreground">
+                              成功时直接输出运行时折叠后的默认结果，不额外包装文案。
+                            </p>
+                          ) : successResponseStrategy === "custom" ? (
+                            <div className="space-y-3">
+                              <Textarea
+                                value={successResponseTemplate}
+                                onChange={e => setSuccessResponseTemplate(e.target.value)}
+                                className="min-h-[120px] font-mono text-xs rounded-2xl p-6 bg-white border-emerald-500/20"
+                                placeholder="例如: 查询成功。客户 {{ extracted.name }} 的余额为 {{ extracted.balance }}。"
+                              />
+                              <p className="text-[10px] text-muted-foreground italic">
+                                可用变量：<code>extracted</code>、<code>resp_json</code>、
+                                <code>resp_text</code>、<code>headers</code>、
+                                <code>status_code</code>。
+                                这是完全覆盖模式，成功时最终只返回这里渲染出的文本。
+                              </p>
+                            </div>
+                          ) : (
+                            <div className="grid grid-cols-2 gap-4">
+                              <div className="space-y-2">
+                                <Label className="text-xs text-muted-foreground">前缀</Label>
+                                <Textarea
+                                  value={successResponsePrepend}
+                                  onChange={e => setSuccessResponsePrepend(e.target.value)}
+                                  className="min-h-[100px] font-mono text-xs rounded-2xl p-4 bg-white border-emerald-500/20"
+                                  placeholder="例如：这是订单查询结果："
+                                />
+                              </div>
+                              <div className="space-y-2">
+                                <Label className="text-xs text-muted-foreground">后缀</Label>
+                                <Textarea
+                                  value={successResponseAppend}
+                                  onChange={e => setSuccessResponseAppend(e.target.value)}
+                                  className="min-h-[100px] font-mono text-xs rounded-2xl p-4 bg-white border-emerald-500/20"
+                                  placeholder="例如：请优先向用户解释关键字段。"
+                                />
+                              </div>
+                            </div>
+                          )}
                         </div>
 
                         {/* Error Template */}
@@ -717,7 +851,7 @@ export function HttpConfigDrawer({ open, onOpenChange, onSaved, assetId }: HttpC
               <Button variant="ghost" onClick={() => setIsPreviewOpen(false)} className="rounded-full">关闭</Button>
             </div>
             <div className="flex-1 overflow-y-auto p-8 font-mono text-xs bg-muted/5">
-              <JSONSyntaxHighlighter data={payload} />
+              <JSONSyntaxHighlighter data={effectivePayload} />
             </div>
           </DialogContent>
         </Dialog>

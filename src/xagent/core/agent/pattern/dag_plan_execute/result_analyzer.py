@@ -658,13 +658,13 @@ class ResultAnalyzer:
         summary_parts = []
 
         for i, iteration_data in enumerate(history, 1):
-            iteration_summary = f"Iteration {i}:\n"
+            iteration_summary = f"第 {i} 轮迭代：\n"
 
             # Check if this iteration was triggered by continuation
             if iteration_data.get("continuation"):
                 continuation = iteration_data["continuation"]
                 user_input = continuation.get("user_input", "")
-                iteration_summary += f"[User Modified Goal: '{user_input}']\n"
+                iteration_summary += f"[用户修改后的目标：'{user_input}']\n"
 
             if "results" in iteration_data:
                 results = iteration_data["results"]

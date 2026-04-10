@@ -321,7 +321,7 @@ class DAGPlanExecutePattern(AgentPattern):
                         task += f"Example {i}:\n"
                         task += f"  Input: {ex.get('input', '')}\n"
                         task += f"  Output: {ex.get('output', '')}\n"
-                    task += "\nIMPORTANT: When designing workflow steps that require specific input (e.g., search queries, API calls), use the INPUT from the example above as the concrete query string. Design the process to handle this specific case.\n"
+                    task += "\n重要：当设计需要明确输入的 workflow 步骤时（例如 search query、API call），请直接使用上面示例里的 INPUT 作为具体查询串，并围绕这个具体案例设计流程。\n"
 
         logger.info(f"Starting DAG Plan-Execute for task: {task[:100]}...")
 

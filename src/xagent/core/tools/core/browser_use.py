@@ -399,7 +399,7 @@ async def browser_navigate(**kwargs: Any) -> Dict[str, Any]:
             "session_id": session_id,
             "url": url,
             "title": title,
-            "message": f"Navigated to {url}. IMPORTANT: Session ID is '{session_id}'. You MUST use this exact session_id='{session_id}' in all subsequent browser calls (browser_click, browser_extract_text, etc.) to continue using this browser.",
+            "message": f"已导航到 {url}。重要：当前 Session ID 为 '{session_id}'。后续所有 browser 调用（如 browser_click、browser_extract_text 等）都必须使用这个完全一致的 session_id='{session_id}'，这样才能继续复用当前浏览器会话。",
         }
     except Exception as e:
         import logging

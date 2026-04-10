@@ -1320,9 +1320,9 @@ class ReActPattern(AgentPattern):
         tool_descriptions = self._build_tool_descriptions(tool_names)
         specialized_policy = self._build_data_production_tool_policy(tool_names)
         tools_section = (
-            "No tools are available for this task."
+            "当前任务没有可用工具。"
             if not tool_names
-            else f"Available tools:\n{chr(10).join(tool_descriptions)}"
+            else f"可用工具：\n{chr(10).join(tool_descriptions)}"
         )
 
         # Unified prompt for both tool and no-tool scenarios
@@ -1389,15 +1389,15 @@ class ReActPattern(AgentPattern):
         tool_descriptions = self._build_tool_descriptions(tool_names)
         specialized_policy = self._build_data_production_tool_policy(tool_names)
         tools_section = (
-            "You currently have NO access to any tools."
+            "你当前没有任何可用工具。"
             if not tool_names
-            else f"Available tools:\n{chr(10).join(tool_descriptions)}\n\nUse these tools when needed to complete the task."
+            else f"可用工具：\n{chr(10).join(tool_descriptions)}\n\n在需要完成任务时，请使用这些工具。"
         )
 
         # Unified action requirements for both tool and no-tool scenarios
         action_requirements = f"""
 
-=== ACTION FORMAT REQUIREMENTS ===
+=== 动作格式要求 ===
 {tools_section}
 {specialized_policy}
 
@@ -1490,36 +1490,59 @@ Remember: Return ONLY ONE JSON object. No additional text, no multiple objects.
         tool_name_set = set(tool_names)
         guidance_lines: List[str] = []
 
+        # HTTP 路由是当前分支最容易被模型走错的一条线。
+        #
+        # 以前这里只有“先 query_http_resource”的单向提示，会导致模型即使已经拿到了：
+        # - 明确 URL
+        # - curl 命令
+        # - OpenAPI path
+        # - 指定 method / headers / body
+        #
+        # 也被错误引导去走“资产发现 -> 资产执行”链路。
+        #
+        # 现在必须把边界讲清楚：
+        # - 明确接口直调：`api_call`
+        # - 未知能力发现：`query_http_resource`
+        # - 已确认资产执行：`execute_http_resource`
+        if "api_call" in tool_name_set:
+            guidance_lines.append(
+                "- If the user already provides a concrete URL, endpoint, curl snippet, OpenAPI path, or explicitly asks to call a designated HTTP API directly, use `api_call`."
+            )
         if "query_http_resource" in tool_name_set:
             guidance_lines.append(
-                "- First use `query_http_resource` to discover candidate HTTP assets before refusing or saying you cannot access an API/system."
+                "- Use `query_http_resource` only when the user describes an HTTP capability but has not specified a concrete endpoint, and you need to discover a managed HTTP asset first."
             )
         if "execute_http_resource" in tool_name_set:
             guidance_lines.append(
-                "- Use `execute_http_resource` only after the target HTTP asset has been identified."
+                "- Use `execute_http_resource` only after the target managed HTTP asset has been identified by `query_http_resource` or explicitly provided via resource_key/resource_id."
+            )
+        if "api_call" in tool_name_set and "query_http_resource" in tool_name_set:
+            guidance_lines.append(
+                "- 当 endpoint 已经明确时，不要用 `query_http_resource` 或 `execute_http_resource` 代替直接调用。优先遵循明确给出的 endpoint/直连调用指令。"
             )
         if "query_vanna_sql_asset" in tool_name_set:
             guidance_lines.append(
-                "- First use `query_vanna_sql_asset` to discover candidate SQL assets before saying the requested data cannot be queried."
+                "- 在断言请求数据无法查询之前，先使用 `query_vanna_sql_asset` 发现候选 SQL asset。"
             )
         if "execute_vanna_sql_asset" in tool_name_set:
             guidance_lines.append(
-                "- Use `execute_vanna_sql_asset` only after the target SQL asset has been identified."
+                "- 只有在目标 SQL asset 已经识别出来后，才能使用 `execute_vanna_sql_asset`。"
             )
         if "knowledge_search" in tool_name_set or "list_knowledge_bases" in tool_name_set:
             guidance_lines.append(
-                "- Use knowledge tools before answering internal business questions from built-in knowledge alone."
+                "- 回答内部业务问题前，先使用知识工具，不要只依赖内置知识直接作答。"
             )
         if "read_skill_doc" in tool_name_set or "list_skill_docs" in tool_name_set:
             guidance_lines.append(
-                "- Use skill documentation tools before claiming process or capability limitations."
+                "- 在声称流程或能力受限之前，先使用 skill 文档相关工具确认。"
             )
         if "fetch_skill_file" in tool_name_set:
             guidance_lines.append(
-                "- If a skill file is needed to continue, fetch it through the skill tool flow before claiming the task cannot proceed."
+                "- 如果继续执行需要 skill 文件，先通过 skill 工具链拉取，不要先声称任务无法继续。"
             )
 
         builtin_specialized_names = {
+            "api_call",
             "query_http_resource",
             "execute_http_resource",
             "query_vanna_sql_asset",
@@ -1533,18 +1556,18 @@ Remember: Return ONLY ONE JSON object. No additional text, no multiple objects.
         has_mcp_tools = any(name not in builtin_specialized_names for name in tool_name_set)
         if has_mcp_tools:
             guidance_lines.append(
-                "- If a connected MCP tool may help, prefer `tool_call` over early refusal so the runtime can inspect and use that system capability."
+                "- 如果已连接的 MCP 工具可能有帮助，优先使用 `tool_call`，不要过早拒绝，让运行时先检查并使用该系统能力。"
             )
 
         if not guidance_lines:
             return ""
 
         return (
-            "\nSPECIALIZED DATA-PRODUCTION POLICY:\n"
-            "- You are a specialized internal data-production agent, not a generic assistant.\n"
-            "- When a request may depend on internal business data, account opening, environment operations, HTTP/API resources, SQL assets, knowledge bases, skills, or MCP-connected systems, prefer `tool_call` over `final_answer`.\n"
-            "- Do NOT use `final_answer` to refuse, to say you lack access, or to ask for broad missing context before first attempting the relevant discovery/search tool.\n"
-            "- `final_answer` is only appropriate when the request is clearly pure conversation, or after the relevant discovery path has already been attempted and you can now summarize the result or ask for the exact missing parameter.\n"
+            "\n专用造数策略：\n"
+            "- 你是专用的内部造数 agent，不是通用助手。\n"
+            "- 当请求可能依赖内部业务数据、开户流程、环境操作、HTTP/API 资源、SQL asset、知识库、skills 或 MCP 连接系统时，优先使用 `tool_call`，而不是 `final_answer`。\n"
+            "- 在首次尝试相关发现/检索工具之前，不要用 `final_answer` 直接拒绝、声称没有权限，或提出宽泛的缺失上下文问题。\n"
+            "- 只有当请求明显只是普通对话，或者相关发现路径已经尝试过、你现在可以总结结果或追问精确缺失参数时，`final_answer` 才是合适的。\n"
             + "\n".join(guidance_lines)
             + "\n"
         )

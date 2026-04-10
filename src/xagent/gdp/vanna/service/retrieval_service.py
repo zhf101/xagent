@@ -11,8 +11,6 @@
 
 from __future__ import annotations
 
-import json
-import math
 import re
 from typing import Any
 
@@ -21,6 +19,7 @@ from sqlalchemy.orm import Session
 from xagent.core.model.embedding.base import BaseEmbedding
 from xagent.gdp.vanna.model.vanna import VannaEmbeddingChunk, VannaTrainingEntry
 from .contracts import RetrievalHit, RetrievalResult
+from .vector_repository import VannaVectorRepository
 
 
 class RetrievalService:
@@ -37,10 +36,12 @@ class RetrievalService:
         *,
         embedding_model: BaseEmbedding | None = None,
         embedding_model_name: str | None = None,
+        vector_repository: VannaVectorRepository | None = None,
     ) -> None:
         self.db = db
         self.embedding_model = embedding_model
         self.embedding_model_name = embedding_model_name
+        self.vector_repository = vector_repository or VannaVectorRepository()
 
     def retrieve(
         self,
@@ -132,15 +133,40 @@ class RetrievalService:
             query = query.filter(VannaEmbeddingChunk.system_short == system_short)
         if env:
             query = query.filter(VannaEmbeddingChunk.env == env)
-        if query_vector is not None and self.embedding_model_name:
-            query = query.filter(VannaEmbeddingChunk.embedding_model == self.embedding_model_name)
+        vector_rank_map: dict[int, float] = {}
+        if query_vector is not None:
+            try:
+                vector_hits = self.vector_repository.search_chunks(
+                    kb_id=kb_id,
+                    chunk_type=chunk_type,
+                    query_vector=query_vector,
+                    top_k=max(limit * 6, limit),
+                    system_short=system_short,
+                    env=env,
+                    lifecycle_statuses=lifecycle_statuses,
+                )
+                vector_rank_map = {
+                    int(item["chunk_id"]): float(item["rank_score"])
+                    for item in vector_hits
+                }
+            except Exception:
+                vector_rank_map = {}
+            if vector_rank_map:
+                query = query.filter(
+                    VannaEmbeddingChunk.id.in_(list(vector_rank_map.keys()))
+                )
+                if self.embedding_model_name:
+                    query = query.filter(
+                        VannaEmbeddingChunk.embedding_model == self.embedding_model_name
+                    )
 
         rows = query.order_by(VannaEmbeddingChunk.id.asc()).all()
         hits: list[RetrievalHit] = []
         for chunk_row, entry_row in rows:
             scored = self._score_hit(
                 question=question,
-                query_vector=query_vector,
+                vector_rank_score=float(vector_rank_map.get(int(chunk_row.id), 0.0)),
+                used_vector=bool(vector_rank_map),
                 chunk_row=chunk_row,
                 entry_row=entry_row,
             )
@@ -154,7 +180,8 @@ class RetrievalService:
         self,
         *,
         question: str,
-        query_vector: list[float] | None,
+        vector_rank_score: float,
+        used_vector: bool,
         chunk_row: VannaEmbeddingChunk,
         entry_row: VannaTrainingEntry,
     ) -> RetrievalHit | None:
@@ -176,22 +203,21 @@ class RetrievalService:
             ),
         )
 
-        vector_score = 0.0
-        vector = self._parse_vector_literal(chunk_row.embedding_vector)
-        if query_vector is not None and vector is not None:
-            vector_score = self._cosine_similarity(query_vector, vector)
-
-        # 当前权重更偏向向量，是为了减少自然语言改写后纯关键词失效的问题；
-        # 但词法仍保留 30%，避免向量模型漂移时完全失去可解释性。
+        # 这里不直接信任 provider 的原始 score 数值，
+        # 因为不同后端返回的分值语义可能是 cosine distance、L2 distance 或别的度量。
+        # GDP 业务层只信任“provider 已经按相似度排好序”这一点，
+        # 再把顺序折算成 rank_score 参与重排。
         total_score = (
-            0.7 * vector_score + 0.3 * lexical_score if query_vector else lexical_score
+            0.7 * vector_rank_score + 0.3 * lexical_score
+            if used_vector
+            else lexical_score
         )
         if total_score <= 0:
             return None
 
         reasons = list(lexical_reasons)
-        if vector_score > 0:
-            reasons.append(f"向量相似度 {vector_score:.3f}")
+        if vector_rank_score > 0:
+            reasons.append(f"向量召回排序分 {vector_rank_score:.3f}")
 
         return RetrievalHit(
             entry_id=int(entry_row.id),
@@ -209,7 +235,7 @@ class RetrievalService:
             metadata={
                 "entry_code": entry_row.entry_code,
                 "embedding_model": chunk_row.embedding_model,
-                "vector_score": round(vector_score, 6),
+                "vector_rank_score": round(vector_rank_score, 6),
                 "lexical_score": round(lexical_score, 6),
             },
             reasons=reasons,
@@ -264,39 +290,4 @@ class RetrievalService:
                 tokens.add(match)
         return {token for token in tokens if token}
 
-    def _parse_vector_literal(self, payload: Any) -> list[float] | None:
-        """兼容数据库里可能存在的 list / JSON 字符串两种向量存储形式。"""
-
-        if payload is None:
-            return None
-        if isinstance(payload, list):
-            try:
-                return [float(item) for item in payload]
-            except (TypeError, ValueError):
-                return None
-        if isinstance(payload, str):
-            try:
-                data = json.loads(payload)
-            except json.JSONDecodeError:
-                return None
-            if isinstance(data, list):
-                try:
-                    return [float(item) for item in data]
-                except (TypeError, ValueError):
-                    return None
-        return None
-
-    def _cosine_similarity(
-        self, left: list[float] | None, right: list[float] | None
-    ) -> float:
-        """计算余弦相似度，并把异常值钳制到 0~1。"""
-
-        if not left or not right or len(left) != len(right):
-            return 0.0
-        dot = sum(left_item * right_item for left_item, right_item in zip(left, right))
-        left_norm = math.sqrt(sum(item * item for item in left))
-        right_norm = math.sqrt(sum(item * item for item in right))
-        if left_norm <= 0 or right_norm <= 0:
-            return 0.0
-        return max(0.0, min(1.0, dot / (left_norm * right_norm)))
 

@@ -18,10 +18,12 @@ import asyncio
 import logging
 import os
 from contextlib import suppress
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -71,10 +73,30 @@ __all__ = ["app"]
 uploads_dir = get_uploads_dir()
 uploads_dir.mkdir(parents=True, exist_ok=True)
 
+# 离线接口文档静态资源目录。
+# 正常情况下建议放在仓库根目录 `static/docs`，但当前用户已经把资源下载到了
+# 一个带前导空格的目录 `./ static/docs`。这里同时兼容两种位置，优先使用规范路径，
+# 找不到时再回退到当前工作区里已经存在的目录，避免让用户重新搬文件。
+repo_root = Path(__file__).resolve().parents[3]
+_docs_asset_candidates = [
+    repo_root / "static" / "docs",
+    repo_root / " static" / "docs",
+]
+docs_assets_dir = next(
+    (candidate for candidate in _docs_asset_candidates if candidate.exists()),
+    _docs_asset_candidates[0],
+)
+
 
 # FastAPI app creation here
 app = FastAPI(
-    title="xagent", description="The Agent Operating System", redirect_slashes=False
+    title="xagent",
+    description="The Agent Operating System",
+    redirect_slashes=False,
+    # 默认文档页会依赖外部 CDN，离线环境下常见现象是 `/docs` 能打开但页面空白。
+    # 这里关闭 FastAPI 自带文档入口，改由下面的本地静态资源版路由接管。
+    docs_url=None,
+    redoc_url=None,
 )
 
 # Track background migration task for graceful shutdown cleanup.
@@ -176,6 +198,40 @@ app.mount(
     StaticFiles(directory=str(uploads_dir)),
     name="uploads",
 )
+
+# 这里单独挂载文档静态资源，而不是复用 uploads 目录。
+# 原因是离线 Swagger/ReDoc 资源属于应用静态资产，不应该混进用户上传文件空间。
+app.mount(
+    "/docs-assets",
+    StaticFiles(directory=str(docs_assets_dir)),
+    name="docs-assets",
+)
+
+
+@app.get("/docs", include_in_schema=False)
+async def custom_swagger_docs():
+    """返回离线可用的 Swagger UI 文档页。"""
+
+    return get_swagger_ui_html(
+        openapi_url=app.openapi_url or "/openapi.json",
+        title=f"{app.title} - Docs",
+        swagger_js_url="/docs-assets/swagger-ui-bundle.js",
+        swagger_css_url="/docs-assets/swagger-ui.css",
+        swagger_favicon_url="/docs-assets/favicon.png",
+    )
+
+
+@app.get("/redoc", include_in_schema=False)
+async def custom_redoc_docs():
+    """返回离线可用的 ReDoc 文档页。"""
+
+    return get_redoc_html(
+        openapi_url=app.openapi_url or "/openapi.json",
+        title=f"{app.title} - ReDoc",
+        redoc_js_url="/docs-assets/redoc.standalone.js",
+        redoc_favicon_url="/docs-assets/favicon.png",
+        with_google_fonts=False,
+    )
 
 # memory 管理路由需要延迟绑定 memory store getter，
 # 这样启动后如果 embedding model 或 vector backend 发生切换，

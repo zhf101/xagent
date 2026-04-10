@@ -8,11 +8,12 @@ the standard VectorStore interface.
 import importlib.util
 
 from .base import VectorStore
+from .factory import create_vector_store
 from .lancedb import (
     LanceDBConnectionManager,
     LanceDBVectorStore,
 )
-from .pgvector import PGVectorConnectionManager
+from .pgvector import PGVectorConnectionManager, PGVectorVectorStore
 
 # ChromaVectorStore is optional (requires chromadb)
 _chroma_available = importlib.util.find_spec("chromadb") is not None
@@ -27,9 +28,11 @@ if _milvus_available:
 
 __all__ = [
     "VectorStore",
+    "create_vector_store",
     "LanceDBVectorStore",
     "LanceDBConnectionManager",
     "PGVectorConnectionManager",
+    "PGVectorVectorStore",
 ]
 
 if _chroma_available:

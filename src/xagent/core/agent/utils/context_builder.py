@@ -103,14 +103,14 @@ class ContextBuilder:
             messages.append(
                 {
                     "role": "user",
-                    "content": f"UPLOADED FILES: {len(uploaded_files)} files available for processing:\n"
+                    "content": f"已上传文件：当前有 {len(uploaded_files)} 个文件可供处理：\n"
                     + "\n".join(
                         [
                             f"- {f.get('name', 'unknown')} ({f.get('size', 0)} bytes, {f.get('type', 'unknown')}) - File ID: {file_id}"
                             for f, file_id in zip(file_info, uploaded_files)
                         ]
                     )
-                    + "\nThese files have been uploaded and are available in the workspace.",
+                    + "\n这些文件已经上传，并且可在 workspace 中使用。",
                 }
             )
 
@@ -120,7 +120,7 @@ class ContextBuilder:
             messages.append(
                 {
                     "role": "user",
-                    "content": "=== Previous Conversation ===\nBelow is the conversation history that led to this task:",
+                    "content": "=== 之前的对话 ===\n下面是引出当前任务的历史对话：",
                 }
             )
             messages.extend(conversation_history)
@@ -128,7 +128,7 @@ class ContextBuilder:
             messages.append(
                 {
                     "role": "user",
-                    "content": "=== End of Previous Conversation ===\n\nNow proceeding with the current task execution:",
+                    "content": "=== 之前的对话结束 ===\n\n下面开始继续当前任务的执行：",
                 }
             )
 
@@ -151,7 +151,7 @@ class ContextBuilder:
                 # Create separator comment
                 separator_msg = {
                     "role": "user",
-                    "content": f"=== Results from dependency step: {dep_id} ({dep_result.agent_name or 'unknown'}) ===",
+                    "content": f"=== 依赖步骤结果：{dep_id}（{dep_result.agent_name or 'unknown'}）===",
                 }
 
                 if dep_tokens > individual_threshold and dep_result.compact_available:
@@ -225,9 +225,9 @@ class ContextBuilder:
                         # Instead of silently truncating, provide a more informative fallback
                         error_msg = {
                             "role": "user",
-                            "content": f"ERROR: Could not compact dependency {dep_id} due to size or context length limits. "
-                            f"Dependency contains {len(dep_result.messages)} messages ({dep_tokens} tokens). "
-                            f"Consider reducing dependency complexity or increasing context limits.",
+                            "content": f"错误：依赖步骤 {dep_id} 因内容过大或上下文长度限制，无法完成压缩。"
+                            f"该依赖共包含 {len(dep_result.messages)} 条消息（{dep_tokens} tokens）。"
+                            f"请考虑降低依赖复杂度，或提高上下文长度上限。",
                         }
                         processed_dependency_messages.append(separator_msg)
                         processed_dependency_messages.append(error_msg)
@@ -339,23 +339,23 @@ class ContextBuilder:
             compact_prompt = [
                 {
                     "role": "system",
-                    "content": "You are tasked with compacting a long conversation history from a previous step. "
-                    "Preserve key insights, important data, final results, and relevant context, "
-                    "but remove redundant reasoning steps and failed attempts. "
-                    "CRITICAL: You must return the response in the exact same format: \n"
+                    "content": "你现在要压缩来自上一个步骤的一段长对话历史。"
+                    "请保留关键洞察、重要数据、最终结果以及相关上下文，"
+                    "同时删除冗余推理过程和失败尝试。"
+                    "关键要求：你必须用完全相同的格式返回响应：\n"
                     "USER: message content\n"
                     "ASSISTANT: message content\n"
                     "SYSTEM: message content\n\n"
-                    "Each message must start with the role followed by a colon and space.",
+                    "每条消息都必须以角色名开头，后接冒号和空格。",
                 },
                 {
                     "role": "user",
-                    "content": f"Dependency: {dependency_id}\n"
-                    f"Target step: {target_step_name}\n"
-                    f"Target task: {target_step_description}\n\n"
-                    f"Conversation to compact:\n{conversation_text}\n\n"
-                    f"IMPORTANT: Return the compacted conversation in the exact same format shown above. "
-                    f"Each line must start with USER:, ASSISTANT:, or SYSTEM: followed by the message content.",
+                    "content": f"依赖步骤：{dependency_id}\n"
+                    f"目标步骤：{target_step_name}\n"
+                    f"目标任务：{target_step_description}\n\n"
+                    f"待压缩对话：\n{conversation_text}\n\n"
+                    f"重要：请按照上面完全相同的格式返回压缩后的对话。"
+                    f"每一行都必须以 USER:、ASSISTANT: 或 SYSTEM: 开头，后接消息内容。",
                 },
             ]
 
@@ -433,22 +433,22 @@ class ContextBuilder:
             compact_prompt = [
                 {
                     "role": "system",
-                    "content": "You are tasked with compacting a long conversation history from multiple previous steps. "
-                    "Preserve key insights, important data, final results, and relevant context, "
-                    "but remove redundant reasoning steps and failed attempts. "
-                    "CRITICAL: You must return the response in the exact same format: \n"
+                    "content": "你现在要压缩来自多个历史步骤的一段长对话历史。"
+                    "请保留关键洞察、重要数据、最终结果以及相关上下文，"
+                    "同时删除冗余推理过程和失败尝试。"
+                    "关键要求：你必须用完全相同的格式返回响应：\n"
                     "USER: message content\n"
                     "ASSISTANT: message content\n"
                     "SYSTEM: message content\n\n"
-                    "Each message must start with the role followed by a colon and space.",
+                    "每条消息都必须以角色名开头，后接冒号和空格。",
                 },
                 {
                     "role": "user",
-                    "content": f"Target step: {target_step_name}\n"
-                    f"Target task: {target_step_description}\n\n"
-                    f"Combined conversation to compact:\n{conversation_text}\n\n"
-                    f"IMPORTANT: Return the compacted conversation in the exact same format shown above. "
-                    f"Each line must start with USER:, ASSISTANT:, or SYSTEM: followed by the message content.",
+                    "content": f"目标步骤：{target_step_name}\n"
+                    f"目标任务：{target_step_description}\n\n"
+                    f"待压缩的合并对话：\n{conversation_text}\n\n"
+                    f"重要：请按照上面完全相同的格式返回压缩后的对话。"
+                    f"每一行都必须以 USER:、ASSISTANT: 或 SYSTEM: 开头，后接消息内容。",
                 },
             ]
 
@@ -550,21 +550,19 @@ class ContextBuilder:
 
         goal_context = ""
         if original_goal:
-            goal_context = f"\nOVERALL GOAL: {original_goal}\n"
-            goal_context += "This step is part of achieving the above overall goal. "
-            goal_context += "Always keep the overall goal in mind while executing this specific step. "
-            goal_context += (
-                "Your step contributes to achieving the larger objective.\n\n"
-            )
+            goal_context = f"\n整体目标：{original_goal}\n"
+            goal_context += "这个步骤是为了达成上面的整体目标。"
+            goal_context += "在执行当前具体步骤时，请始终记住整体目标。"
+            goal_context += "你当前的工作是在为更大的目标服务。\n\n"
 
         # Add skill context if available
         skill_section = ""
         if skill_context:
             skill_section = f"\n{skill_context}\n\n"
             skill_section += (
-                "IMPORTANT: The skill above provides domain knowledge and templates. "
+                "重要：上面的 skill 提供了领域知识和模板。"
             )
-            skill_section += "Use this knowledge to improve the quality and relevance of your work.\n\n"
+            skill_section += "请利用这些知识提升当前工作的质量和相关性。\n\n"
 
         return f"""你正在执行一个更大计划中的具体步骤：{step_name}
 

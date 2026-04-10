@@ -25,6 +25,7 @@ from ...config import (
     get_vector_pg_schema,
     get_vector_pg_url,
 )
+from .base import VectorStore
 
 logger = logging.getLogger(__name__)
 
@@ -33,11 +34,36 @@ __all__ = [
     "PGVectorConnection",
     "PGVectorTable",
     "PGVectorQuery",
+    "PGVectorVectorStore",
 ]
 
 _METADATA_TABLE = "_table_metadata"
 _ENGINE_CACHE: dict[tuple[str, str], tuple[Engine, "PGVectorConnection"]] = {}
 _ENGINE_LOCK = RLock()
+
+
+def _matches_metadata_filters(
+    metadata: dict[str, Any],
+    filters: dict[str, Any] | None,
+) -> bool:
+    """判断 metadata 是否满足统一 provider 约定的过滤条件。
+
+    统一 `VectorStore` 抽象目前约定的是“metadata 精确匹配”。
+    pgvector 这层虽然可以继续往 SQL 下推更复杂的 JSON 过滤，
+    但当前 GDP 两条主链只依赖最小能力集：
+    - 给定一个 metadata 字典
+    - 判断若干 key/value 是否完全相等
+
+    这里先把行为显式固定住，确保 LanceDB / pgvector / Milvus
+    至少在业务层可观测结果上是一致的。
+    """
+    if not filters:
+        return True
+
+    for key, expected_value in filters.items():
+        if metadata.get(key) != expected_value:
+            return False
+    return True
 
 
 @dataclass(frozen=True)
@@ -107,6 +133,172 @@ class PGVectorConnectionManager:
     ) -> "PGVectorConnection":
         """兼容 LanceDB 的环境变量入口。"""
         return self.get_connection(None)
+
+
+class PGVectorVectorStore(VectorStore):
+    """pgvector 后端的统一 `VectorStore` 实现。
+
+    这层存在的原因不是为了再造一套新的数据库访问逻辑，而是把：
+    - GDP Vanna
+    - GDP HTTP Resource
+    - 未来其他向量业务
+
+    全部约束到同一份 provider 契约上。
+
+    这样 factory 只负责“选 provider”，业务层只依赖 `VectorStore`，
+    而 pgvector 自己负责把这些抽象语义落到 PostgreSQL。
+    """
+
+    support_store_texts = True
+
+    def __init__(
+        self,
+        db_dir: str | None = None,
+        collection_name: str = "vectors",
+        connection_manager: Optional[PGVectorConnectionManager] = None,
+    ) -> None:
+        """初始化 pgvector store。
+
+        `db_dir` 参数保留下来只是为了和现有工厂/调用点签名兼容。
+        pgvector 真正的物理边界由 PostgreSQL schema 决定，因此这里不会使用它。
+        """
+        self._db_dir = db_dir
+        self._collection_name = collection_name
+        self._conn_manager = connection_manager or PGVectorConnectionManager()
+        self._conn = self._conn_manager.get_connection(db_dir)
+
+    def add_vectors(
+        self,
+        vectors: list[list[float]],
+        ids: Optional[list[str]] = None,
+        metadatas: Optional[list[dict[str, Any]]] = None,
+    ) -> list[str]:
+        """批量写入向量记录。
+
+        这里保留“首次写入自动建 collection”语义，原因很现实：
+        GDP 当前 collection 名称是按业务动态生成的，例如：
+        - `vanna_kb_<kb_id>_<chunk_type>`
+        - `http_resource_global`
+
+        如果要求每个 collection 先手工建表，再去切换 provider，
+        那统一 provider 抽象在 GDP 侧就只是表面统一、实际不可替换。
+        """
+        from uuid import uuid4
+
+        if ids is None:
+            ids = [str(uuid4()) for _ in vectors]
+        if metadatas is None:
+            metadatas = [{} for _ in vectors]
+
+        rows: list[dict[str, Any]] = []
+        for index, vector in enumerate(vectors):
+            rows.append(
+                {
+                    "id": ids[index],
+                    "vector": vector,
+                    "text": metadatas[index].get("text", ""),
+                    "metadata": json.dumps(metadatas[index], ensure_ascii=False),
+                }
+            )
+
+        try:
+            table = self._conn.open_table(self._collection_name)
+        except Exception:
+            table = self._conn.create_table(self._collection_name, data=rows)
+            return ids
+
+        table.add(rows)
+        return ids
+
+    def delete_vectors(self, ids: list[str]) -> bool:
+        """按 id 删除向量。
+
+        这里把“collection 不存在”视为幂等成功。
+        对业务层来说，它表达的是“目标记录现在已经不存在了”，
+        而不是“底层存储一定执行过一次 delete SQL”。
+        """
+        if not ids:
+            return True
+
+        try:
+            table = self._conn.open_table(self._collection_name)
+        except Exception:
+            return True
+
+        try:
+            id_conditions = " OR ".join([f"id = '{id_}'" for id_ in ids])
+            table.delete(id_conditions)
+            return True
+        except Exception as exc:
+            logger.error("Failed to delete pgvector rows: %s", exc)
+            return False
+
+    def search_vectors(
+        self,
+        query_vector: list[float],
+        top_k: int = 5,
+        filters: Optional[dict[str, Any]] = None,
+    ) -> list[dict[str, Any]]:
+        """执行向量检索并按统一 provider 结构返回。
+
+        注意这里故意保留 Python 侧 metadata 过滤，而不是强依赖 SQL JSON 过滤：
+        - 现在三种后端的最小公约数就是 metadata 精确匹配
+        - 业务层不需要知道某个后端是否支持更复杂表达式
+        - 先统一结果，再谈后续性能优化
+        """
+        if top_k <= 0 or not query_vector:
+            return []
+
+        try:
+            table = self._conn.open_table(self._collection_name)
+        except Exception:
+            return []
+
+        search_limit = max(top_k, top_k * 5 if filters else top_k)
+        results = (
+            table.search(query_vector, vector_column_name="vector")
+            .limit(search_limit)
+            .to_pandas()
+        )
+
+        formatted_results: list[dict[str, Any]] = []
+        for _, row in results.iterrows():
+            try:
+                metadata = json.loads(row["metadata"]) if row.get("metadata") else {}
+            except (json.JSONDecodeError, TypeError):
+                metadata = {}
+
+            if not _matches_metadata_filters(metadata, filters):
+                continue
+
+            formatted_results.append(
+                {
+                    "id": row["id"],
+                    "score": float(row["_distance"]) if "_distance" in row else 0.0,
+                    "metadata": metadata,
+                }
+            )
+            if len(formatted_results) >= top_k:
+                break
+
+        return formatted_results
+
+    def clear(self) -> None:
+        """清空当前 collection。
+
+        如果 collection 尚未创建，说明业务侧还没有任何索引数据，
+        此时“清空”天然已经满足预期，不需要额外报错。
+        """
+        try:
+            table = self._conn.open_table(self._collection_name)
+        except Exception:
+            return
+
+        table.delete("true")
+
+    def get_raw_connection(self) -> "PGVectorConnection":
+        """暴露底层连接，供极少数调试/高级操作使用。"""
+        return self._conn
 
 
 class PGVectorConnection:

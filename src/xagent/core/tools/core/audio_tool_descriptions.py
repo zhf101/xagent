@@ -7,51 +7,51 @@ Extracted from audio_tool.py for better maintainability.
 
 # Description for transcribe_audio tool
 TRANSCRIBE_AUDIO_DESCRIPTION = """
-Transcribe audio to text using Speech-to-Text (ASR).
+使用 Speech-to-Text (ASR) 将音频转写成文本。
 
-This tool converts spoken language in audio files into written text.
-Supports multiple languages and can provide detailed timing information.
+这个工具会把音频文件里的口语内容转换为书面文本。
+支持多语言，并且可以返回更细的时间戳信息。
 
-Available models (⭐[DEFAULT] marks the configured default model):
+可用模型（⭐[DEFAULT] 表示当前配置的默认模型）：
 {}
 
-**IMPORTANT: Prefer the default model marked with ⭐[DEFAULT]. Only specify model_id if the user explicitly requests a different model.**
+**重要：优先使用标记为 ⭐[DEFAULT] 的默认模型。只有当用户明确要求其他模型时，才填写 model_id。**
 
-Parameters:
-- audio_file_path (required): audio file path, file_id, or URL to transcribe
-- language (optional): language code (e.g., 'zh', 'en', 'yue', 'ja', 'ko')
-- model_id (optional): specific ASR model to use. Omit to use the default model marked with ⭐[DEFAULT].
-- verbose (optional): Set to True if you need segment details in the return value. Default: False
+参数：
+- audio_file_path（必填）：要转写的音频文件路径、file_id 或 URL
+- language（可选）：语言代码，例如 'zh'、'en'、'yue'、'ja'、'ko'
+- model_id（可选）：指定使用的 ASR 模型；留空则使用 ⭐[DEFAULT]
+- verbose（可选）：如果需要返回分段细节，设为 True；默认 False
 
-Language support:
-- 'zh': Chinese (Mandarin)
-- 'en': English
-- 'yue': Cantonese
-- 'ja': Japanese
-- 'ko': Korean
-- And more depending on model capabilities
+语言支持：
+- 'zh'：中文普通话
+- 'en'：英文
+- 'yue'：粤语
+- 'ja'：日语
+- 'ko'：韩语
+- 以及模型能力允许的更多语言
 
-Audio formats: wav, mp3, m4a, flac, ogg, and other common formats
+支持的音频格式：wav、mp3、m4a、flac、ogg 等常见格式
 
-Advanced features (if supported by model):
-- Speaker diarization: identify different speakers
-- Timestamps: get word-level or segment-level timing
-- Confidence scores: get transcription confidence
-- Smart segment merging: consecutive segments from same speaker are automatically merged (gap < 1s) to improve readability
+高级能力（取决于模型是否支持）：
+- Speaker diarization：区分不同说话人
+- Timestamps：返回词级或片段级时间信息
+- Confidence scores：返回转写置信度
+- Smart segment merging：相邻且属于同一说话人的片段会自动合并（间隔 < 1 秒），提升可读性
 
-Output:
-- file_id: File ID for accessing the full transcription JSON file in workspace
-- transcription_path: Path to saved transcription JSON file in workspace
-- saved_to_workspace: Whether the transcription was saved to workspace
-- segments: Detailed segment information (only present if verbose=True)
-- language: Detected language code
-- model_used: The actual model used for transcription
-- text_length: Length of transcribed text
-- segment_count: Number of segments
+输出：
+- file_id：workspace 中完整转写 JSON 文件的 File ID
+- transcription_path：保存的转写 JSON 文件路径
+- saved_to_workspace：是否已保存到 workspace
+- segments：详细分段信息（仅在 verbose=True 时出现）
+- language：识别出的语言代码
+- model_used：实际使用的模型
+- text_length：转写文本长度
+- segment_count：分段数量
 
-Note: Use read_file(file_id) to get the full transcription text.
+提示：如果要读取完整转写文本，请使用 read_file(file_id)。
 
-JSON Output Format (saved to file specified by file_id):
+JSON 输出格式（保存到 file_id 对应文件中）：
 ```json
 {{
   "model": "model_name",
@@ -74,71 +74,69 @@ JSON Output Format (saved to file specified by file_id):
 }}
 ```
 
-Note: Segments are automatically merged when consecutive segments from
-the same speaker are close together (< 1 second gap) to improve readability
-and reduce fragmentation.
+提示：相邻且属于同一说话人的片段会自动合并（间隔小于 1 秒），以提升可读性并减少碎片化。
 """.strip()
 
 # Description for synthesize_speech tool
 SYNTHESIZE_SPEECH_DESCRIPTION = """
-Synthesize speech from text using Text-to-Speech (TTS).
+使用 Text-to-Speech (TTS) 把文本合成为语音。
 
-This tool converts written text into natural-sounding speech audio.
-Supports multiple voices, languages, and audio formats.
+这个工具会把书面文本转换为自然语音音频。
+支持多种 voice、语言和音频格式。
 
-Available models (⭐[DEFAULT] marks the configured default model):
+可用模型（⭐[DEFAULT] 表示当前配置的默认模型）：
 {}
 
-**IMPORTANT: Prefer the default model marked with ⭐[DEFAULT]. Only specify model_id if the user explicitly requests a different model.**
+**重要：优先使用标记为 ⭐[DEFAULT] 的默认模型。只有当用户明确要求其他模型时，才填写 model_id。**
 
-Parameters:
-- text (required): text content to synthesize into speech
-- voice (optional): voice ID or name (e.g., 'zh-android', 'zh-female', 'en-male'). Omit for default voice.
-- language (optional): language code (e.g., 'zh', 'en', 'yue'). Auto-detected from text if not specified.
-- format (optional): audio output format (e.g., 'mp3', 'wav', 'pcm'). Default: 'mp3'
-- model_id (optional): specific TTS model to use. Omit to use the default model marked with ⭐[DEFAULT].
-- reference_audio (optional): reference audio file path for voice cloning (if supported by model)
+参数：
+- text（必填）：要合成为语音的文本内容
+- voice（可选）：voice ID 或名称，例如 'zh-android'、'zh-female'、'en-male'；留空则使用默认 voice
+- language（可选）：语言代码，例如 'zh'、'en'、'yue'；如果不填，部分模型会自动识别
+- format（可选）：输出音频格式，例如 'mp3'、'wav'、'pcm'；默认 'mp3'
+- model_id（可选）：指定使用的 TTS 模型；留空则使用 ⭐[DEFAULT]
+- reference_audio（可选）：用于 voice cloning 的参考音频路径（前提是模型支持）
 
-Voice options depend on the model:
-- Most models support standard voices: male, female, neutral
-- Some models support voice cloning using reference_audio
-- Multilingual models can auto-detect language from text
+voice 能力取决于模型：
+- 大多数模型支持标准 voice，例如 male、female、neutral
+- 部分模型支持基于 reference_audio 的 voice cloning
+- 多语言模型可能会根据文本自动判断语言
 
-Audio format options:
-- mp3: Compressed audio, good for speech (default)
-- wav: Uncompressed audio, higher quality
-- pcm: Raw audio data
+音频格式说明：
+- mp3：压缩格式，适合语音场景（默认）
+- wav：无压缩格式，质量更高
+- pcm：原始音频数据
 
-The generated audio file will be automatically saved to workspace.
+生成的音频文件会自动保存到 workspace。
 """.strip()
 
 # Description for synthesize_speech_json tool
 SYNTHESIZE_SPEECH_JSON_DESCRIPTION = """
-Batch synthesize speech from JSON structure using Text-to-Speech (TTS).
+使用 Text-to-Speech (TTS) 按 JSON 结构批量合成语音。
 
-This tool converts multiple text segments into speech audio files in a single call.
-Supports flexible JSON format with configurable field mapping, voice cloning, and batch processing.
+这个工具可以在一次调用里把多个文本片段生成对应的语音文件。
+支持灵活的 JSON 字段映射、voice cloning 和批量处理。
 
-Available models (⭐[DEFAULT] marks the configured default model):
+可用模型（⭐[DEFAULT] 表示当前配置的默认模型）：
 {}
 
-**IMPORTANT: Prefer the default model marked with ⭐[DEFAULT]. Only specify model_id if the user explicitly requests a different model.**
+**重要：优先使用标记为 ⭐[DEFAULT] 的默认模型。只有当用户明确要求其他模型时，才填写 model_id。**
 
-Parameters:
-- json_data (optional): JSON string or dict containing synthesis configuration. Either json_data or file_id must be provided.
-- file_id (optional): File ID, file path, or URL to read JSON data from. Either json_data or file_id must be provided.
-- segments_field (optional): Field name containing segments array (default: "segments")
-- text_field (optional): Field name containing text within each segment (default: "text")
-- voice_field (optional): Field name containing voice within each segment (default: "voice")
-- reference_field (optional): Field name containing reference audio file path/ID for voice cloning (default: "reference_audio")
-- default_voice (optional): Default voice for segments without voice specified
-- default_language (optional): Default language code (auto-detect if None)
-- format (optional): Output audio format (default: 'mp3')
-- sample_rate (optional): Sample rate in Hz (default: model-specific)
-- model_id (optional): Specific TTS model to use. Omit to use the default model marked with ⭐[DEFAULT].
-- batch_size (optional): Number of syntheses to process in parallel (1-20, default: 5)
+参数：
+- json_data（可选）：包含合成配置的 JSON 字符串或 dict；json_data 和 file_id 至少提供一个
+- file_id（可选）：读取 JSON 数据用的 File ID、文件路径或 URL；json_data 和 file_id 至少提供一个
+- segments_field（可选）：存放 segments 数组的字段名，默认 "segments"
+- text_field（可选）：每个 segment 内文本字段名，默认 "text"
+- voice_field（可选）：每个 segment 内 voice 字段名，默认 "voice"
+- reference_field（可选）：每个 segment 内参考音频字段名，默认 "reference_audio"
+- default_voice（可选）：当 segment 未指定 voice 时使用的默认 voice
+- default_language（可选）：默认语言代码；为 None 时自动检测
+- format（可选）：输出音频格式，默认 'mp3'
+- sample_rate（可选）：采样率（Hz），默认由模型决定
+- model_id（可选）：指定使用的 TTS 模型；留空则使用 ⭐[DEFAULT]
+- batch_size（可选）：并行处理数量（1-20，默认 5）
 
-JSON Format (nested segment structure):
+JSON 格式示例（嵌套 segment 结构）：
 ```json
 {{
     "segments": [
@@ -151,27 +149,27 @@ JSON Format (nested segment structure):
 }}
 ```
 
-Voice Cloning:
-- Use reference_audio in each segment to clone voices from reference audio files
-- Supports both workspace file IDs and direct file paths (absolute or relative)
-- Voice cloning quality depends on the reference audio quality
-- Not all models support voice cloning
+Voice Cloning：
+- 可在每个 segment 中使用 reference_audio，基于参考音频复制 voice
+- 同时支持 workspace file_id 和直接文件路径（绝对/相对路径）
+- voice cloning 质量与参考音频质量强相关
+- 不是所有模型都支持 voice cloning
 
-Batch Processing:
-- All segments are processed in parallel for efficiency
-- Use batch_size to control parallelism (1-20)
-- Progress is shown during synthesis
-- Failed segments don't stop the batch
+批处理说明：
+- 所有 segment 会并行处理，以提升效率
+- 可通过 batch_size 控制并发度（1-20）
+- 合成期间会显示进度
+- 单个 segment 失败不会阻断整批处理
 
-Output:
-- success (bool): Whether all syntheses succeeded
-- results (list): List of synthesis results, one per segment
-- total (int): Total number of segments processed
-- successful (int): Number of successful syntheses
-- failed (int): Number of failed syntheses
-- errors (list): List of error messages for failed segments
-- saved_to_workspace (bool): Whether audio files were saved to workspace
+输出：
+- success（bool）：是否全部合成成功
+- results（list）：每个 segment 对应的合成结果
+- total（int）：处理的 segment 总数
+- successful（int）：成功数量
+- failed（int）：失败数量
+- errors（list）：失败 segment 的错误信息列表
+- saved_to_workspace（bool）：音频文件是否已保存到 workspace
 
-Using file_id parameter is recommended for workflows with file chaining.
-file_id supports: File ID, file path, or URL.
+对于涉及文件链路的 workflow，建议优先使用 file_id。
+file_id 支持：File ID、文件路径或 URL。
 """.strip()

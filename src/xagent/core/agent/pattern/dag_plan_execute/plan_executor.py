@@ -706,22 +706,22 @@ class PlanExecutor:
                 valid_branches = list(step.conditional_branches.keys())
                 task_message = (
                     f"{goal_reminder}"
-                    f"Execute: {step.name} (Conditional Node)\n"
-                    f"Description: {step.description}\n\n"
-                    f"IMPORTANT: You must choose ONE of the following branches:\n"
+                    f"执行步骤：{step.name}（条件节点）\n"
+                    f"步骤说明：{step.description}\n\n"
+                    f"重要：你必须从以下分支中只选择一个：\n"
                     f"{', '.join(valid_branches)}\n\n"
-                    f"In your final JSON response, set the 'answer' field to ONLY contain the branch name "
-                    f"(e.g., '{valid_branches[0]}' or '{valid_branches[1]}').\n\n"
-                    f"Example:\n"
-                    f'{{\n  "type": "final_answer",\n  "reasoning": "Based on the analysis, the answer was found",\n  "answer": "{valid_branches[0]}",\n  "success": true,\n  "error": null\n}}\n'
+                    f"在你的最终 JSON 响应里，`answer` 字段只能填写分支名本身，"
+                    f"例如 `{valid_branches[0]}` 或 `{valid_branches[1]}`。\n\n"
+                    f"示例：\n"
+                    f'{{\n  "type": "final_answer",\n  "reasoning": "根据分析，应该进入该分支",\n  "answer": "{valid_branches[0]}",\n  "success": true,\n  "error": null\n}}\n'
                 )
             elif tool_names:
                 task_message_parts = [
                     f"{goal_reminder}",
-                    f"Execute: {step.name}",
-                    f"Description: {step.description}",
+                    f"执行步骤：{step.name}",
+                    f"步骤说明：{step.description}",
                     "",
-                    "Available tools:",
+                    "可用工具：",
                 ]
 
                 # Add detailed tool information with parameter schemas
@@ -730,11 +730,11 @@ class PlanExecutor:
                     tool_description = (
                         tool.description
                         if hasattr(tool, "description")
-                        else "No description"
+                        else "无描述"
                     )
 
                     task_message_parts.append(f"\n{tool_name}:")
-                    task_message_parts.append(f"  Description: {tool_description}")
+                    task_message_parts.append(f"  说明：{tool_description}")
 
                     # Get parameter schema if available
                     args_schema = None
@@ -746,7 +746,7 @@ class PlanExecutor:
 
                     # Add structured parameter information
                     if args_schema and "properties" in args_schema:
-                        task_message_parts.append("  Parameters (JSON schema):")
+                        task_message_parts.append("  参数（JSON schema）：")
                         schema_str = json.dumps(args_schema, indent=2)
                         for line in schema_str.split("\n"):
                             task_message_parts.append(f"    {line}")
@@ -754,11 +754,13 @@ class PlanExecutor:
                 task_message = "\n".join(task_message_parts)
 
                 if original_goal:
-                    task_message += "\n\nRemember: This step contributes to achieving the overall goal above."
+                    task_message += "\n\n记住：这个步骤服务于上面的整体目标。"
             else:
-                task_message = f"{goal_reminder}Execute: {step.name}\nDescription: {step.description}"
+                task_message = (
+                    f"{goal_reminder}执行步骤：{step.name}\n步骤说明：{step.description}"
+                )
                 if original_goal:
-                    task_message += "\nRemember: This step contributes to achieving the overall goal above."
+                    task_message += "\n记住：这个步骤服务于上面的整体目标。"
             context_messages.append({"role": "user", "content": task_message})
 
             # Execute the step with enhanced messages

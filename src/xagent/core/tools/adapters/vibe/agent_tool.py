@@ -16,18 +16,18 @@ logger = logging.getLogger(__name__)
 class CreateAgentToolArgs(BaseModel):
     """Arguments for creating a new agent."""
 
-    name: str = Field(description="Name of the agent to create")
+    name: str = Field(description="要创建的 agent 名称")
     description: str = Field(
-        description="IMPORTANT: Description of when to use this agent (e.g., 'Use this agent for data analysis tasks involving CSV files'). This helps users understand the agent's purpose and when to call it."
+        description="重要：说明这个 agent 适用于什么场景（例如：用于处理 CSV 数据分析任务），帮助用户理解什么时候该调用它。"
     )
-    instructions: str = Field(description="System instructions/prompt for the agent")
+    instructions: str = Field(description="该 agent 的 system instructions/prompt")
     tool_categories: Optional[list[str]] = Field(
         default=None,
-        description="List of tool categories to allow (e.g., ['file', 'knowledge']). If None, all tools are available",
+        description="允许使用的工具分类列表（例如 ['file', 'knowledge']）。如果为 None，则允许所有工具。",
     )
     skills: Optional[list[str]] = Field(
         default=None,
-        description="List of skill names to allow. If None, all skills are available",
+        description="允许使用的 skill 名称列表。如果为 None，则允许所有 skills。",
     )
 
 
@@ -123,25 +123,25 @@ class CreateAgentTool(AbstractBaseTool):
         categories_list = ", ".join(available_categories)
 
         return (
-            "Create a new agent with specific capabilities during task execution. "
-            "The agent will be created in DRAFT status and can be called immediately using the returned tool name.\n\n"
-            "Parameters:\n"
-            "- name: A short, descriptive name for the agent (e.g., 'researcher', 'data_analyzer')\n"
-            "- description: IMPORTANT - Clear description of when to use this agent (e.g., 'Use this agent for data analysis tasks involving CSV files'). This helps users understand the agent's purpose.\n"
-            f"- tool_categories (optional): Available categories: {categories_list}\n"
-            f"  Example: ['file', 'knowledge', 'basic']\n"
-            f"- skills (optional): Available skills: {skills_list}\n"
-            f"  Example: ['presentation-generator', 'poster-design']\n"
-            "- instructions: System prompt/instructions defining the agent's behavior and expertise\n\n"
-            "Returns:\n"
-            "- agent_id: Database ID of the created agent\n"
-            "- agent_name: Name of the agent\n"
-            "- tool_name: Tool name that can be used to call this agent\n"
-            "- markdown_link: Markdown link in format [Agent Name](agent://agent_id) - USE THIS FORMAT in your response\n"
-            "- status: 'success' or 'error'\n"
-            "- message: Detailed information about the created agent\n\n"
-            "IMPORTANT: Always include the markdown_link in your response when creating an agent successfully. "
-            "Use the format: [Agent Name](agent://agent_id)"
+            "在任务执行过程中创建一个具备特定能力的新 agent。"
+            "该 agent 会以 DRAFT 状态创建，并且可以通过返回的 tool name 立即调用。\n\n"
+            "参数：\n"
+            "- name：简短且有辨识度的 agent 名称（例如 'researcher'、'data_analyzer'）\n"
+            "- description：重要，明确说明这个 agent 何时使用（例如“用于处理 CSV 数据分析任务”），帮助用户理解其用途。\n"
+            f"- tool_categories（可选）：可用分类有：{categories_list}\n"
+            f"  示例：['file', 'knowledge', 'basic']\n"
+            f"- skills（可选）：可用 skills 有：{skills_list}\n"
+            f"  示例：['presentation-generator', 'poster-design']\n"
+            "- instructions：定义该 agent 行为和专长的 system prompt/instructions\n\n"
+            "返回值：\n"
+            "- agent_id：新建 agent 的数据库 ID\n"
+            "- agent_name：agent 名称\n"
+            "- tool_name：调用该 agent 时要使用的工具名\n"
+            "- markdown_link：格式为 [Agent Name](agent://agent_id) 的 Markdown 链接，请在回复中使用这个格式\n"
+            "- status：'success' 或 'error'\n"
+            "- message：关于创建结果的详细说明\n\n"
+            "重要：当成功创建 agent 时，你的回复里必须包含 markdown_link。"
+            "格式必须是：[Agent Name](agent://agent_id)"
         )
 
     @property

@@ -77,11 +77,12 @@ class APITool(AbstractBaseTool):
 
     @property
     def description(self) -> str:
-        return """Make HTTP requests to arbitrary APIs.
-        Supports GET, POST, PUT, DELETE, PATCH methods with custom headers, body, and authentication.
+        return """Make direct HTTP requests to a specific API endpoint explicitly provided by the user.
+        Use this tool when the user gives a concrete URL, endpoint, curl snippet, OpenAPI path, or asks to call a designated HTTP API directly.
+        Supports GET, POST, PUT, DELETE, PATCH methods with custom headers, query params, raw or JSON body, and authentication.
         Authentication types: 'bearer' (Bearer token), 'basic' (Basic auth), 'api_key' (X-API-Key header), 'api_key_query' (API key in query params).
         Returns parsed JSON response or text content with status code and headers.
-        Useful for integrating with external services, APIs, and webhooks."""
+        Do NOT use this tool to discover managed GDP HTTP assets; use query_http_resource first for asset discovery and execute_http_resource only after an asset is selected."""
 
     @property
     def tags(self) -> list[str]:

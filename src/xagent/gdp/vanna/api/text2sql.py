@@ -861,30 +861,30 @@ async def generate_llm_prediction(
         data_summary += f"  ... and {len(chart_data.rows) - 10} more rows\n"
 
     prediction_prompt = f"""
-You are a data analysis expert. Please perform trend analysis and prediction based on the following data:
+你是一名数据分析专家。请基于下列数据执行趋势分析与预测：
 
 {data_summary}
 
-Please analyze the data trend and predict values for the next {predict_periods} periods.
+请分析数据趋势，并预测未来 {predict_periods} 个周期的取值。
 
-Analysis requirements:
-1. Identify the main trend of the data (growth, decline, cyclical, stable, etc.)
-2. Provide confidence level for the trend analysis
-3. Predict values for the next {predict_periods} periods
-4. Provide reasonable confidence intervals for each prediction (if possible)
+分析要求：
+1. 识别数据的主要趋势（增长、下降、周期性、稳定等）
+2. 给出趋势分析的置信度
+3. 预测未来 {predict_periods} 个周期的数值
+4. 如果可以，请为每个预测值给出合理的置信区间
 
-Please return results in JSON format with the following fields:
-- trendAnalysis: Trend analysis description
-- confidence: Prediction confidence level (high/medium/low)
-- predictedData: Array of predicted data, each element contains:
-  - period: Time period description
-  - predictedValue: Predicted value
-  - confidenceLower: Confidence interval lower bound (optional)
-  - confidenceUpper: Confidence interval upper bound (optional)
+请按 JSON 格式返回结果，字段如下：
+- trendAnalysis：趋势分析说明
+- confidence：预测置信度（high/medium/low）
+- predictedData：预测结果数组，每个元素包含：
+  - period：时间周期说明
+  - predictedValue：预测值
+  - confidenceLower：置信区间下界（可选）
+  - confidenceUpper：置信区间上界（可选）
 
-Example return format:
+返回示例：
 {{
-  "trendAnalysis": "Data shows a steady growth trend with a monthly growth rate of approximately 10%",
+  "trendAnalysis": "数据整体呈稳定增长趋势，月均增长率约为 10%",
   "confidence": "high",
   "predictedData": [
     {{
@@ -896,10 +896,10 @@ Example return format:
   ]
 }}
 
-Notes:
-1. If data is insufficient or trend is unclear, please lower confidence and explain the reason
-2. Predicted values should be based on reasonable extrapolation from historical data
-3. For non-time series data (e.g., pie charts, bar charts), please make reasonable predictions based on existing patterns
+注意事项：
+1. 如果数据不足或趋势不清晰，请降低 confidence，并说明原因
+2. 预测值必须基于历史数据的合理外推
+3. 对于非时间序列数据（例如饼图、柱状图），请基于现有模式做合理预测
 """
 
     # Generate prediction using LLM

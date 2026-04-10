@@ -40,6 +40,15 @@ __all__ = ["ToolFactory", "ToolRegistry", "register_tool"]
 # 其中 MCP 工具不放在这个静态名单里，因为它们的名字由运行时动态加载决定，
 # 后面会按 `ToolCategory.MCP` 统一放行。
 PROFESSIONAL_RUNTIME_FIXED_TOOL_NAMES = {
+    # `api_call` 必须和 GDP HTTP 资产工具并存，而不是互斥。
+    #
+    # 业务边界是：
+    # - `api_call`：用户已经明确给出目标接口，要直连一个具体 HTTP API
+    # - `query_http_resource` / `execute_http_resource`：用户只描述业务意图，要先在资产库里找候选能力
+    #
+    # 如果这里不把 `api_call` 放进运行时白名单，模型即使已经被正确提示，
+    # 也根本不可能选中它，最终只能被迫错走资产流。
+    "api_call",
     "query_http_resource",
     "execute_http_resource",
     "query_vanna_sql_asset",

@@ -94,15 +94,15 @@ class Agent:
         prompt = [
             {
                 "role": "system",
-                "content": "You are answering questions about a previous agent execution. "
-                "Use the execution history to provide accurate and specific answers. ",
+                "content": "你正在回答关于一次历史 agent 执行的问题。"
+                "请基于执行历史给出准确、具体的回答。",
             },
             {
                 "role": "user",
-                "content": f"Agent: {self.name}\n"
-                f"Execution History:\n{history_text}\n\n"
-                f"Final Result: {self._final_result}\n\n"
-                f"Question: {query}",
+                "content": f"Agent：{self.name}\n"
+                f"执行历史：\n{history_text}\n\n"
+                f"最终结果：{self._final_result}\n\n"
+                f"问题：{query}",
             },
         ]
 

@@ -92,8 +92,11 @@ async def create_gdp_http_runtime_tools(config: "WebToolConfig") -> list[Any]:
                 query_http_resource,
                 name="query_http_resource",
                 description=(
-                    "Search accessible HTTP resources and return candidate tools with "
-                    "input/output schema, annotations, and argument outline."
+                    "Search managed GDP HTTP assets when the user describes a business "
+                    "capability but does not provide a specific endpoint. Return candidate "
+                    "assets with input/output schema, annotations, and argument outline. "
+                    "Do NOT use this tool for direct calls to an explicitly provided URL "
+                    "or endpoint; use api_call for that case."
                 ),
                 tags=["http", "resource", "query", "gdp"],
             ),
@@ -101,9 +104,11 @@ async def create_gdp_http_runtime_tools(config: "WebToolConfig") -> list[Any]:
                 execute_http_resource,
                 name="execute_http_resource",
                 description=(
-                    "Execute a previously selected HTTP resource by resource_key or "
-                    "resource_id with structured arguments, and return request/response "
-                    "snapshots plus normalized error semantics."
+                    "Execute a previously selected managed GDP HTTP asset by resource_key "
+                    "or resource_id with structured arguments, and return request/response "
+                    "snapshots plus normalized error semantics. Use this only after the "
+                    "target asset has been identified, not as a substitute for arbitrary "
+                    "direct HTTP calls."
                 ),
                 tags=["http", "resource", "execute", "gdp"],
             ),
@@ -111,4 +116,3 @@ async def create_gdp_http_runtime_tools(config: "WebToolConfig") -> list[Any]:
     except Exception as exc:
         logger.warning("Failed to create HTTPruntime tools: %s", exc)
         return []
-

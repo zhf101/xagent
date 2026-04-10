@@ -708,37 +708,52 @@ class PlanGenerator:
                 tool_names.add(str(getattr(tool, "name", "unknown_tool")))
 
         discovery_rules: list[str] = []
+        # 规划阶段也必须同步同一套 HTTP 路由边界。
+        #
+        # 否则会出现一种很隐蔽的问题：
+        # - ReAct 执行阶段知道“明确 endpoint 应走 api_call”
+        # - 但 DAG 规划阶段仍把所有 HTTP 请求都规划成资产查询流
+        #
+        # 结果就是不同执行模式下，同一句用户话术会走不同工具。
+        if "api_call" in tool_names:
+            discovery_rules.append(
+                "- If the user already specifies a concrete URL, endpoint, curl snippet, OpenAPI path, or asks to call a designated HTTP API directly, prefer execution mode so `api_call` can be used directly."
+            )
         if "query_http_resource" in tool_names:
             discovery_rules.append(
-                "- Use execution mode to query HTTP assets before deciding that no API/resource can handle the request."
+                "- Use execution mode to query HTTP assets only when the user needs an internal managed HTTP capability but has not specified a concrete endpoint yet."
+            )
+        if "execute_http_resource" in tool_names:
+            discovery_rules.append(
+                "- Use execute_http_resource only after a managed HTTP asset is identified; it is not the default path for arbitrary direct API calls."
             )
         if "query_vanna_sql_asset" in tool_names:
             discovery_rules.append(
-                "- Use execution mode to query SQL assets before saying the requested data/report cannot be produced."
+                "- 在断言目标数据/报表无法产出之前，先进入执行模式查询 SQL assets。"
             )
         if "knowledge_search" in tool_names or "list_knowledge_bases" in tool_names:
             discovery_rules.append(
-                "- Use execution mode to inspect/search the knowledge base before answering internal business questions from built-in knowledge."
+                "- 回答内部业务问题前，先进入执行模式检查/搜索知识库，而不是直接依赖内置知识。"
             )
         if "read_skill_doc" in tool_names or "list_skill_docs" in tool_names:
             discovery_rules.append(
-                "- Use execution mode to inspect skill documentation before claiming process or capability limitations."
+                "- 在声称流程或能力受限之前，先进入执行模式检查 skill 文档。"
             )
         if has_mcp_tools:
             discovery_rules.append(
-                "- If connected MCP tools may help, prefer execution mode over direct chat so the runtime can inspect and use them."
+                "- 如果已连接的 MCP 工具可能有帮助，优先进入执行模式，而不是直接聊天，让运行时先检查并使用这些能力。"
             )
 
         if not discovery_rules:
             return ""
 
         return (
-            "\n## Specialized Data-Production Policy\n"
-            "- You are running inside a specialized internal data-production system, not a generic chat bot.\n"
-            "- If the request may depend on internal business data, account opening workflows, environment operations, HTTP/API resources, SQL assets, knowledge bases, skills, or MCP-connected systems, you MUST return `{\\\"type\\\": \\\"plan\\\"}`.\n"
-            "- Do NOT return `type=\\\"chat\\\"` merely because parameters are incomplete, because you are unsure which asset to use, or because you think you cannot access internal systems.\n"
-            "- The execution phase exists specifically to inspect assets first and ask for precise missing parameters later.\n"
-            "- Use `type=\\\"chat\\\"` only for pure general conversation or questions that can be fully answered without any internal tool, asset, or knowledge lookup.\n"
+            "\n## 专用造数策略\n"
+            "- 你当前运行在专用的内部造数系统中，而不是通用聊天机器人。\n"
+            "- 如果请求可能依赖内部业务数据、开户流程、环境操作、HTTP/API 资源、SQL assets、知识库、skills 或 MCP 连接系统，你必须返回 `{\\\"type\\\": \\\"plan\\\"}`。\n"
+            "- 不要仅仅因为参数不完整、暂时不确定该用哪个 asset，或者你以为自己无法访问内部系统，就返回 `type=\\\"chat\\\"`。\n"
+            "- 执行阶段的存在，就是为了先检查资产，再在必要时追问精确缺失参数。\n"
+            "- 只有当请求是纯粹的普通对话，或者无需任何内部工具、资产、知识检索就能完整回答时，才使用 `type=\\\"chat\\\"`。\n"
             + "\n".join(discovery_rules)
             + "\n"
         )
@@ -846,7 +861,7 @@ class PlanGenerator:
 - **不要**承诺未来动作或描述执行步骤
 - **要**提供直接、即时的答案回应用户的问题
 - **要**提供有用信息、解释或直接问澄清问题
-- 记住：type="chat" 意味着对话，不是执行。用户看到你的消息作为最终响应，不是行动计划。
+- 记住：type="chat" 意味着对话，不是执行。用户看到的是你的最终回复，而不是行动计划。
 
 ## 关键：文件和媒体处理规则
 - **如果用户上传了图片、视频、音频或其他媒体文件**：你必须使用 type="plan" 来执行工具。你不能在聊天模式下分析媒体。
@@ -874,7 +889,7 @@ class PlanGenerator:
         messages.append(
             {
                 "role": "user",
-                "content": f"User input: {goal}\n\nAnalyze and respond with appropriate JSON.",
+                "content": f"用户输入：{goal}\n\n请结合以上规则，返回合适的 JSON 响应。",
             }
         )
 
@@ -996,10 +1011,10 @@ class PlanGenerator:
                 "..." if len(step.description) > 100 else ""
             )
             current_steps_summary.append(
-                f"{status_emoji} {step.id}: {step.name}\n   Description: {desc_preview}\n   Status: {step.status.value}"
+                f"{status_emoji} {step.id}: {step.name}\n   说明：{desc_preview}\n   状态：{step.status.value}"
             )
 
-        current_plan_context = "\nCurrent plan steps:\n" + "\n\n".join(
+        current_plan_context = "\n当前计划步骤：\n" + "\n\n".join(
             current_steps_summary
         )
 
@@ -1018,34 +1033,34 @@ class PlanGenerator:
         if tools:
             tools_context = self._build_tools_context(tools)
         else:
-            tools_context = "\n\nNote: No tools are currently available. Please generate additional conceptual steps that would help achieve the goal. Use hypothetical tool names that would be appropriate for each step."
+            tools_context = "\n\n注意：当前没有可用工具。请生成仍然有助于达成目标的额外概念步骤，并为每个步骤使用合适的假设性 tool 名称。"
 
         system_prompt = custom_prompt + (
-            "You are an AI planning assistant that extends existing execution plans.\n"
-            "The current plan has already been created and some steps may have been executed.\n"
-            "Your task is to add ADDITIONAL steps that are needed to achieve the goal.\n"
-            "You must NOT modify or recreate existing steps - only add new ones.\n"
-            "New steps can depend on existing steps or other new steps.\n\n"
-            "IMPORTANT: When a NEW USER REQUEST is provided:\n"
-            "- Review all PENDING steps (marked with ⏳) and their descriptions carefully\n"
-            "- Check if those pending steps' descriptions still align with the new user requirements\n"
-            "- If pending steps will produce results that conflict with the new request, add new steps to modify/adjust those results\n"
-            "- Remember: Pending steps cannot be changed, so you must add compensating steps if needed\n\n"
-            f"You have access to the following tools that you can use in your plan steps:{tools_context}\n\n"
+            "你是一个负责扩展既有执行计划的 AI 规划助手。\n"
+            "当前计划已经创建完成，并且其中部分步骤可能已经执行。\n"
+            "你的任务是补充为达成目标仍然需要的额外步骤。\n"
+            "你不能修改、重建或覆盖已有步骤，只能新增步骤。\n"
+            "新增步骤可以依赖已有步骤，也可以依赖其他新增步骤。\n\n"
+            "重要：当出现新的用户请求时：\n"
+            "- 仔细检查所有仍处于 PENDING 状态（标记为 ⏳）的步骤及其描述\n"
+            "- 判断这些待执行步骤的描述是否仍与新的用户需求一致\n"
+            "- 如果待执行步骤未来产生的结果会与新请求冲突，就新增步骤去修正或补偿这些结果\n"
+            "- 记住：待执行步骤本身不能被修改，因此必要时你必须增加补偿步骤\n\n"
+            f"你可以在计划步骤中使用以下工具：{tools_context}\n\n"
             f"{self._PLANNING_GUIDELINES}"
-            "DIFFICULTY ASSESSMENT: For each additional step, you must assess its difficulty level:\n"
-            "- 'easy': Simple tasks that can be done quickly (basic search, simple calculations, straightforward analysis)\n"
-            "- 'hard': Complex tasks requiring deep thinking, creative problem-solving, or extensive processing\n\n"
-            "Always return valid JSON format for the new steps only."
+            "难度评估：你必须为每个新增步骤评估 difficulty：\n"
+            "- 'easy'：可以快速完成的简单任务，例如基础搜索、简单计算、直接分析\n"
+            "- 'hard'：需要深入思考、复杂问题拆解或大量处理的任务\n\n"
+            "只返回新增步骤对应的合法 JSON。"
             f"{self._PLANNING_EXAMPLE}"
         )
 
         logger.debug(f"PLAN EXTENSION SYSTEM PROMPT:\n{system_prompt}")
 
         user_prompt = (
-            f"Goal: {goal}\n"
-            f"Iteration: {iteration}\n"
-            f"Current Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"目标：{goal}\n"
+            f"迭代轮次：{iteration}\n"
+            f"当前时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
             f"{current_plan_context}\n"
             f"{history_context}"
         )
@@ -1054,54 +1069,50 @@ class PlanGenerator:
         if user_input_context and "new_input" in user_input_context:
             new_input = user_input_context["new_input"]
             user_prompt += f"\n{'=' * 80}\n"
-            user_prompt += f"NEW USER REQUEST: {new_input}\n"
+            user_prompt += f"新的用户请求：{new_input}\n"
             user_prompt += f"{'=' * 80}\n"
-            user_prompt += (
-                "The user has provided additional requirements or modifications.\n"
-            )
-            user_prompt += "Review the PENDING steps above - if their descriptions conflict with this request, add new steps to address it.\n"
+            user_prompt += "用户补充了新的要求或修改。\n"
+            user_prompt += "请回看上面的 PENDING 步骤；如果它们的描述与该请求冲突，就新增步骤来处理。\n"
 
             # Add file information if available
             if "uploaded_files" in user_input_context:
                 uploaded_files = user_input_context["uploaded_files"]
                 file_info = user_input_context.get("file_info", [])
-                user_prompt += f"\nUPLOADED FILES: {len(uploaded_files)} files available for processing:\n"
+                user_prompt += f"\n已上传文件：共有 {len(uploaded_files)} 个文件可处理：\n"
                 for f in file_info:
                     file_name = f.get("name", "unknown")
                     file_size = f.get("size", 0)
                     file_type = f.get("type", "unknown")
                     user_prompt += f"- {file_name} ({file_size} bytes, {file_type})\n"
-                user_prompt += "These files have been uploaded and are available in the workspace.\n"
-                user_prompt += (
-                    "You should consider these files when planning additional steps.\n"
-                )
+                user_prompt += "这些文件已经上传，并且可在 workspace 中使用。\n"
+                user_prompt += "规划额外步骤时，请把这些文件纳入考虑。\n"
         else:
-            user_prompt += "Based on the execution results and current plan, what ADDITIONAL steps are needed to achieve the goal?\n"
+            user_prompt += "请根据执行结果和当前计划，判断还需要补充哪些额外步骤才能达成目标。\n"
 
         user_prompt += (
-            "Create additional steps as a JSON object with a 'plan' field containing a 'steps' array. Each step must have:\n"
-            "- id: unique identifier (string, different from existing step IDs)\n"
-            "- name: step name (string)\n"
-            "- description: what this step does (string)\n"
-            "- tool_names: list of tools available for this step (array of strings, can be empty)\n"
-            "- dependencies: list of step IDs this step depends on (array of strings)\n"
-            "- difficulty: 'easy' or 'hard' (string)\n"
-            "CRITICAL DEPENDENCY RULES:\n"
-            "- You can ONLY depend on step IDs that are listed in the 'Current plan steps' above\n"
-            "- You CANNOT depend on step IDs that don't exist or that you are creating in this response\n"
-            "- If you need multiple new steps that depend on each other, create them without dependencies first\n"
-            "- Invalid dependencies will be automatically removed and may cause execution issues\n\n"
-            "Format:\n"
+            "请以 JSON 对象返回额外步骤，结构为包含 `plan.steps` 数组。每个 step 必须包含：\n"
+            "- id：唯一标识符（string，且不能与现有 step ID 重复）\n"
+            "- name：步骤名称（string）\n"
+            "- description：步骤要做的事情（string）\n"
+            "- tool_names：该步骤可用的工具列表（string 数组，可以为空）\n"
+            "- dependencies：该步骤依赖的 step ID 列表（string 数组）\n"
+            "- difficulty：`easy` 或 `hard`\n"
+            "关键依赖规则：\n"
+            "- 你只能依赖上方 `Current plan steps` 中已经列出的 step ID\n"
+            "- 你不能依赖不存在的 step ID，也不能依赖你这次响应里新创建的 step ID\n"
+            "- 如果你需要多个新增步骤互相依赖，先先让它们不带 dependencies 创建出来\n"
+            "- 非法 dependencies 会被自动移除，并且可能导致执行问题\n\n"
+            "格式：\n"
             "{\n"
             '  "plan": {\n'
-            '    "goal": "repeat the original goal here",\n'
+            '    "goal": "在这里重复原始目标",\n'
             '    "steps": [\n'
-            "      // step objects here\n"
+            "      // 在这里放 step 对象\n"
             "    ]\n"
             "  }\n"
             "}\n\n"
-            'If no additional steps are needed, return an object with empty steps array: {"plan": {"goal": "goal here", "steps": []}}\n'
-            "Return only the JSON object, no additional text."
+            '如果不需要额外步骤，就返回空 steps 数组，例如：{"plan": {"goal": "goal here", "steps": []}}\n'
+            "只返回 JSON 对象，不要附加其他说明文字。"
         )
 
         return [
@@ -1625,12 +1636,12 @@ class PlanGenerator:
             ]:
                 missing_tools = error_context.get("missing_tools", [])
                 if missing_tools:
-                    error_message += f"Missing Tools: {', '.join(missing_tools)}\n"
-                    error_message += "IMPORTANT: Only use tools from the AVAILABLE TOOLS list provided above.\n"
-                    error_message += "Do NOT invent or assume tool names that don't exist in the available tools.\n"
+                    error_message += f"缺失工具：{', '.join(missing_tools)}\n"
+                    error_message += "重要：只能使用上方 AVAILABLE TOOLS 列表中提供的工具。\n"
+                    error_message += "不要凭空发明，也不要假设存在未列出的工具名。\n"
 
             error_message += (
-                "\nPlease correct your plan based on this error information and retry."
+                "\n请根据这些错误信息修正计划后再重试。"
             )
 
         content = (

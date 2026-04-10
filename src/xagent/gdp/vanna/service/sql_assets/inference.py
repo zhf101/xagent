@@ -96,13 +96,13 @@ class SqlAssetInferenceService:
         """构造专门给参数推理使用的 Prompt。"""
 
         system_prompt = (
-            "You bind parameters for a reusable SQL asset. "
-            "Do not write, rewrite, or explain SQL. "
-            "Return only one JSON object with keys: asset_code, bindings, missing_params, assumptions. "
-            "Use only parameter names from the provided schema. "
-            "Only infer values that are clearly supported by the question or context. "
-            "If a required parameter cannot be determined, put its name in missing_params. "
-            "assumptions must be a short list of inference assumptions."
+            "你负责给可复用 SQL asset 绑定参数。"
+            "不要编写、改写或解释 SQL。"
+            "只返回一个 JSON 对象，键必须是：asset_code、bindings、missing_params、assumptions。"
+            "只能使用提供的 schema 中出现过的参数名。"
+            "只能推断那些能被问题或上下文明确支持的值。"
+            "如果某个必填参数无法确定，就把它的参数名放进 missing_params。"
+            "assumptions 必须是简短的推断前提列表。"
         )
         user_payload = {
             "asset": {
@@ -122,7 +122,7 @@ class SqlAssetInferenceService:
             "context": dict(context or {}),
         }
         user_prompt = (
-            "Infer parameter bindings for the current SQL asset.\n"
+            "请为当前 SQL asset 推断参数绑定。\n"
             + json.dumps(user_payload, ensure_ascii=False, indent=2)
         )
         return {
