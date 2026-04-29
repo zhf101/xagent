@@ -14,7 +14,6 @@ import {
   Brain,
   Image as ImageIcon,
   Star,
-  Zap,
   Box,
   Settings,
   CheckCircle2,
@@ -97,80 +96,6 @@ const LOCAL_PROVIDER_CONFIGS: Record<string, Partial<ProviderConfig>> = {
     category: ["llm", "embedding"],
     defaultBaseUrl: "https://api.openai.com/v1",
   },
-  "minimax-coding-plan": {
-    icon: <img src="/minimax.svg" alt="MiniMax" className="w-6 h-6" />,
-    category: ["llm"],
-    defaultBaseUrl: "https://api.minimax.io/anthropic"
-  },
-  "minimax-cn-coding-plan": {
-    icon: <img src="/minimax.svg" alt="MiniMax" className="w-6 h-6" />,
-    category: ["llm"],
-    defaultBaseUrl: "https://api.minimaxi.com/anthropic"
-  },
-  "kimi-for-coding": {
-    icon: <img src="/kimi.svg" alt="Kimi" className="w-6 h-6" />,
-    category: ["llm"],
-    defaultBaseUrl: "https://api.kimi.com/coding"
-  },
-  "zai-coding-plan": {
-    icon: <img src="/zhipu.svg" alt="Z.AI" className="w-6 h-6" />,
-    category: ["llm"],
-    defaultBaseUrl: "https://api.z.ai/api/coding/paas/v4"
-  },
-  "zhipuai-coding-plan": {
-    icon: <img src="/zhipu.svg" alt="Zhipu" className="w-6 h-6" />,
-    category: ["llm"],
-    defaultBaseUrl: "https://open.bigmodel.cn/api/coding/paas/v4"
-  },
-  "alibaba-coding-plan": {
-    icon: <img src="/dashscope.png" alt="Alibaba Bailian" className="w-6 h-6" />,
-    category: ["llm"],
-    defaultBaseUrl: "https://coding-intl.dashscope.aliyuncs.com/v1"
-  },
-  "alibaba-coding-plan-cn": {
-    icon: <img src="/dashscope.png" alt="Alibaba Bailian" className="w-6 h-6" />,
-    category: ["llm"],
-    defaultBaseUrl: "https://coding.dashscope.aliyuncs.com/v1"
-  },
-  azure_openai: {
-    icon: <Zap className="w-6 h-6 text-blue-500" />,
-    category: ["llm"]
-    // No default base url for Azure, user must provide
-  },
-  zhipu: {
-    icon: <img src="/zhipu.svg" alt="Zhipu" className="w-6 h-6" />,
-    category: ["llm"],
-    defaultBaseUrl: "https://open.bigmodel.cn/api/paas/v4",
-  },
-  dashscope: {
-    icon: <img src="/dashscope.png" alt="DashScope" className="w-6 h-6" />,
-    category: ["embedding", "image"],
-    defaultBaseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    categoryBaseUrls: {
-      embedding: "https://dashscope.aliyuncs.com/api/v1/services/embeddings/text-embedding/text-embedding",
-      image: "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
-    }
-  },
-  gemini: {
-    icon: <img src="/gemini.svg" alt="Gemini" className="w-6 h-6" />,
-    category: ["llm", "image"],
-    defaultBaseUrl: "https://generativelanguage.googleapis.com/v1beta",
-  },
-  claude: {
-    icon: <img src="/claude.svg" alt="Claude" className="w-6 h-6" />,
-    category: ["llm"],
-    defaultBaseUrl: "https://api.anthropic.com/v1",
-  },
-  xinference: {
-    icon: <img src="/xagent_logo.svg" alt="Xinference" className="w-6 h-6" />,
-    category: ["llm", "embedding", "image", "speech"],
-    defaultBaseUrl: "http://localhost:9997",
-  },
-  ollama: {
-    icon: <Box className="w-6 h-6" />,
-    category: ["llm", "embedding"],
-    defaultBaseUrl: "http://localhost:11434"
-  }
 }
 
 export function ModelsPage() {
@@ -221,7 +146,7 @@ export function ModelsPage() {
           icon: localConfig.icon || <Brain className="w-6 h-6" />,
           defaultBaseUrl: p.default_base_url || localConfig.defaultBaseUrl,
           categoryBaseUrls: localConfig.categoryBaseUrls,
-          category: localConfig.category || ["llm", "embedding", "image", "speech"],
+          category: localConfig.category || ["llm", "embedding"],
           requires_base_url: p.requires_base_url
         }
       })
@@ -285,8 +210,6 @@ export function ModelsPage() {
     return {
       llm: models.filter(m => m.category === 'llm').length,
       embedding: models.filter(m => m.category === 'embedding').length,
-      image: models.filter(m => m.category === 'image').length,
-      speech: models.filter(m => m.category === 'speech').length
     }
   }, [models])
 
@@ -394,18 +317,6 @@ export function ModelsPage() {
             >
               {t('models.tabs.embedding')} <Badge variant="secondary" className="ml-2 rounded-full px-2 py-0.5 bg-slate-100 text-slate-600 hover:bg-slate-100 border-none font-normal">{modelCounts.embedding}</Badge>
             </TabsTrigger>
-            <TabsTrigger
-              value="image"
-              className="data-[state=active]:border-primary data-[state=active]:text-primary data-[state=active]:bg-transparent border border-transparent rounded-md px-4 py-2 shadow-none data-[state=active]:shadow-none text-slate-700 font-normal"
-            >
-              {t('models.tabs.image')} <Badge variant="secondary" className="ml-2 rounded-full px-2 py-0.5 bg-slate-100 text-slate-600 hover:bg-slate-100 border-none font-normal">{modelCounts.image}</Badge>
-            </TabsTrigger>
-            <TabsTrigger
-              value="speech"
-              className="data-[state=active]:border-primary data-[state=active]:text-primary data-[state=active]:bg-transparent border border-transparent rounded-md px-4 py-2 shadow-none data-[state=active]:shadow-none text-slate-700 font-normal"
-            >
-              {t('models.tabs.speech')} <Badge variant="secondary" className="ml-2 rounded-full px-2 py-0.5 bg-slate-100 text-slate-600 hover:bg-slate-100 border-none font-normal">{modelCounts.speech}</Badge>
-            </TabsTrigger>
           </TabsList>
         </Tabs>
 
@@ -446,21 +357,13 @@ export function ModelsPage() {
                   thinking_mode: t('models.abilities.thinking_mode'),
                   tool_calling: t('models.abilities.tool_calling'),
                   embedding: t('models.abilities.embedding'),
-                  generate: t('models.abilities.generate'),
-                  edit: t('models.abilities.edit'),
-                  asr: t('models.abilities.asr'),
-                  tts: t('models.abilities.tts')
                 }
                 const icons: Record<string, any> = {
                   chat: <Brain className="w-3 h-3 mr-1" />,
                   vision: <ImageIcon className="w-3 h-3 mr-1" />,
                   thinking_mode: <Box className="w-3 h-3 mr-1" />,
-                  tool_calling: <Zap className="w-3 h-3 mr-1" />,
+                  tool_calling: <Box className="w-3 h-3 mr-1" />,
                   embedding: <Box className="w-3 h-3 mr-1" />,
-                  generate: <ImageIcon className="w-3 h-3 mr-1" />,
-                  edit: <Box className="w-3 h-3 mr-1" />,
-                  asr: <Brain className="w-3 h-3 mr-1" />,
-                  tts: <Star className="w-3 h-3 mr-1" />
                 }
 
                 // Check defaults

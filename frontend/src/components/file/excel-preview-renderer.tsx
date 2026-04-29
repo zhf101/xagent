@@ -1,7 +1,6 @@
-"use client"
-
 import { useEffect, useRef, useState } from "react"
 import { useI18n } from "@/contexts/i18n-context"
+import DOMPurify from "dompurify"
 import * as XLSX from "xlsx"
 
 interface ExcelPreviewRendererProps {
@@ -16,16 +15,17 @@ export function ExcelPreviewRenderer({ base64Content }: ExcelPreviewRendererProp
     const { t } = useI18n()
 
     useEffect(() => {
+        let cancelled = false
+
         const render = async () => {
             if (!base64Content) {
                 return
             }
 
             try {
-                let workbook;
+                let workbook: XLSX.WorkBook
 
-                // Check if content is likely base64
-                const isBase64 = /^[A-Za-z0-9+/=]+$/.test(base64Content.replace(/\s/g, ''));
+                const isBase64 = /^[A-Za-z0-9+/=]+$/.test(base64Content.replace(/\s/g, ''))
 
                 if (isBase64) {
                     try {
@@ -35,21 +35,24 @@ export function ExcelPreviewRenderer({ base64Content }: ExcelPreviewRendererProp
                             bytes[i] = binary.charCodeAt(i)
                         }
                         workbook = XLSX.read(bytes, { type: "array" })
-                    } catch (e) {
-                        // Fallback for non-base64 text
+                    } catch (_e) {
                         workbook = XLSX.read(base64Content, { type: "string" })
                     }
                 } else {
                     workbook = XLSX.read(base64Content, { type: "string" })
                 }
 
+                if (cancelled) return
+
                 const sheetData: { [key: string]: string } = {}
 
                 workbook.SheetNames.forEach((sheetName: string) => {
                     const worksheet = workbook.Sheets[sheetName]
                     const html = XLSX.utils.sheet_to_html(worksheet)
-                    sheetData[sheetName] = html
+                    sheetData[sheetName] = DOMPurify.sanitize(html)
                 })
+
+                if (cancelled) return
 
                 setSheets(sheetData)
                 if (workbook.SheetNames.length > 0) {
@@ -57,12 +60,18 @@ export function ExcelPreviewRenderer({ base64Content }: ExcelPreviewRendererProp
                 }
                 setError(null)
             } catch (e) {
-                console.error(e)
-                setError(t("files.previewDialog.errors.excelRenderFailed") || "Failed to render Excel file")
+                if (!cancelled) {
+                    console.error(e)
+                    setError(t("files.previewDialog.errors.excelRenderFailed") || "Failed to render Excel file")
+                }
             }
         }
 
         render()
+
+        return () => {
+            cancelled = true
+        }
     }, [base64Content, t])
 
     if (error) {

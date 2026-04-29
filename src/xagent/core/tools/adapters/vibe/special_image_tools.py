@@ -20,10 +20,8 @@ async def create_special_image_tools(config: "BaseToolConfig") -> List[Any]:
         return []
 
     try:
-        from .image_web_search import create_image_web_search_tool
-
-        image_search_tool = create_image_web_search_tool(workspace)
-        tools.append(image_search_tool)
+        # image_web_search disabled for internal network
+        pass
     except Exception as e:
         logger.warning(f"Failed to create image web search tool: {e}")
 

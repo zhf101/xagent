@@ -52,6 +52,17 @@ class APICallArgs(BaseModel):
     allow_redirects: bool = Field(
         default=True, description="Whether to follow HTTP redirects"
     )
+    business_validation: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "Optional business failure rule. Use failure_conditions with JSON paths "
+            "to treat HTTP 2xx responses as terminal business failures."
+        ),
+    )
+    api_name: Optional[str] = Field(
+        default=None,
+        description="Optional API name shown in business failure messages",
+    )
 
 
 class APICallResult(BaseModel):
@@ -60,6 +71,21 @@ class APICallResult(BaseModel):
     headers: Dict[str, str] = Field(description="Response headers")
     body: Any = Field(description="Response body (parsed JSON or text)")
     error: Optional[str] = Field(default=None, description="Error message if failed")
+    protocol_success: Optional[bool] = Field(
+        default=None, description="Whether the HTTP protocol/status layer succeeded"
+    )
+    business_success: Optional[bool] = Field(
+        default=None, description="Whether configured business validation succeeded"
+    )
+    error_type: Optional[str] = Field(
+        default=None, description="Failure type: network_error, http_error, business_error, etc."
+    )
+    terminal: bool = Field(
+        default=False, description="Whether the failure should stop the agent loop"
+    )
+    can_retry: bool = Field(
+        default=False, description="Whether repeating the same API call may help"
+    )
 
 
 class APITool(AbstractBaseTool):
@@ -113,6 +139,8 @@ class APITool(AbstractBaseTool):
             timeout=api_args.timeout,
             retry_count=api_args.retry_count,
             allow_redirects=api_args.allow_redirects,
+            business_validation=api_args.business_validation,
+            api_name=api_args.api_name or self.name,
         )
 
         return APICallResult.model_validate(result).model_dump()

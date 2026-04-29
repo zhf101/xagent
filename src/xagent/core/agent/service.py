@@ -19,12 +19,12 @@ from .trace import Tracer
 
 logger = logging.getLogger(__name__)
 
-# Sentinel value for distinguishing "not set" from False
-_UNSET = object()
+# 用于区分"未设置"和 False 的哨兵值
+_VALID_PATTERNS = frozenset({"single_call", "react", "dag_plan_execute"})
 
 
 class AgentService:
-    """Service for managing agent execution with proper configuration and error handling."""
+    """管理 agent 执行的服务，提供正确的配置和错误处理。"""
 
     def __init__(
         self,
@@ -33,7 +33,7 @@ class AgentService:
         memory: Optional[MemoryStore] = None,
         tools: Optional[List[Tool]] = None,
         llm: Optional[BaseLLM] = None,
-        use_dag_pattern: bool | object = _UNSET,  # Deprecated: Use pattern instead
+        use_dag_pattern: bool | None = None,  # 已弃用：请使用 pattern 参数
         pattern: str
         | AgentPattern = "dag_plan_execute",  # New: "single_call", "react", "dag_plan_execute"
         tracer: Optional[Tracer] = None,
@@ -90,19 +90,20 @@ class AgentService:
         )
         self.memory_similarity_threshold = memory_similarity_threshold
 
-        # Handle backward compatibility: if use_dag_pattern is explicitly set, override pattern
-        if use_dag_pattern is _UNSET:
-            # Not set, use the pattern parameter as-is
-            pass
-        elif use_dag_pattern is True:
-            # Explicitly set to True, use dag_plan_execute
-            pattern = "dag_plan_execute"
-        else:
-            # Explicitly set to False (or any other value), use react
+        # 向后兼容：如果 use_dag_pattern 被显式设置，则覆盖 pattern 参数
+        if use_dag_pattern is not None:
+            pattern = "dag_plan_execute" if use_dag_pattern else "react"
+
+        if pattern not in _VALID_PATTERNS:
+            logger.warning(
+                "未知的模式 %r，回退到 react。有效模式：%s",
+                pattern,
+                "、".join(sorted(_VALID_PATTERNS)),
+            )
             pattern = "react"
 
-        self.pattern = pattern  # Store pattern for reference
-        self.use_dag_pattern = use_dag_pattern  # Keep for backward compatibility
+        self.pattern = pattern  # 存储模式供后续引用
+        self.use_dag_pattern = use_dag_pattern  # 保留以保持向后兼容
         self.tool_config = tool_config
         self.tracer = tracer or Tracer()  # Use provided tracer or create a new one
 
@@ -449,7 +450,9 @@ class AgentService:
             error_details = {}
 
             if isinstance(e, AgentException):
-                detailed_error = str(e)
+                # 使用 raw_message（不含 Pattern 前缀）作为用户可见的提示
+                user_message = getattr(e, 'raw_message', None)
+                detailed_error = user_message if user_message else str(e)
                 error_details = {
                     "exception_type": e.__class__.__name__,
                     "context": e.context,
@@ -483,7 +486,7 @@ class AgentService:
                 "status": "error",
                 "output": f"Execution failed: {detailed_error}",
                 "success": False,
-                "error": detailed_error,
+                "error": str(e),
                 "error_details": error_details,
                 "metadata": {
                     "agent_name": self.name,

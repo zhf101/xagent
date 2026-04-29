@@ -22,8 +22,6 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.responses import JSONResponse
-from googleapiclient.discovery import build  # type: ignore
-from googleapiclient.http import MediaIoBaseDownload  # type: ignore
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -99,12 +97,44 @@ from ..services.kb_file_service import (
 from ..services.kb_file_service import (
     upsert_uploaded_file_record as _upsert_uploaded_file_record,
 )
-from .cloud_storage import get_google_credentials
 
 T = TypeVar("T", bound=Callable[..., Any])
 logger = logging.getLogger(__name__)
 
 _SQL_LIKE_ESCAPE = "\\"
+
+
+def _load_google_drive_dependencies() -> tuple[Callable[..., Any], Any]:
+    """按需加载 Google Drive 依赖，避免可选集成阻塞整个 Web 启动。"""
+    try:
+        from googleapiclient.discovery import build  # type: ignore
+        from googleapiclient.http import MediaIoBaseDownload  # type: ignore
+    except ModuleNotFoundError as e:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Google Drive cloud ingestion is unavailable because "
+                "optional dependency 'googleapiclient' is not installed."
+            ),
+        ) from e
+
+    return build, MediaIoBaseDownload
+
+
+def _load_google_credentials_getter() -> Callable[..., Any]:
+    """按需加载 Google 凭证获取函数，缺少 cloud_storage 模块时仅禁用对应能力。"""
+    try:
+        from .cloud_storage import get_google_credentials
+    except ModuleNotFoundError as e:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Google Drive cloud ingestion is unavailable because "
+                "cloud storage integration is not installed."
+            ),
+        ) from e
+
+    return get_google_credentials
 
 
 def _like_contains_pattern(value: str) -> str:
@@ -503,6 +533,9 @@ async def ingest_cloud(
         async with semaphore:
             try:
                 if file_info.provider == "google-drive":
+                    build, MediaIoBaseDownload = _load_google_drive_dependencies()
+                    get_google_credentials = _load_google_credentials_getter()
+
                     # Get credentials (run in thread to avoid blocking)
                     try:
                         creds = await asyncio.to_thread(

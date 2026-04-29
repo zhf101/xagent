@@ -1,6 +1,6 @@
 """rename_vibe_mode_to_execution_mode
 
-Revision ID: 001_rename_vibe_mode_to_execution_mode
+Revision ID: 001_rename_vibe_mode
 Revises: 654adb358ecd
 Create Date: 2026-04-20 12:00:00.000000
 
@@ -13,7 +13,7 @@ from alembic import op
 from sqlalchemy.engine.reflection import Inspector
 
 # revision identifiers, used by Alembic.
-revision: str = "001_rename_vibe_mode_to_execution_mode"
+revision: str = "001_rename_vibe_mode"
 down_revision: Union[str, None] = "654adb358ecd"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None

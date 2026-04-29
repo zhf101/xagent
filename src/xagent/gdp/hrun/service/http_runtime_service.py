@@ -26,12 +26,15 @@ import re
 from typing import Any
 from urllib.parse import quote, urlencode
 
-from jinja2 import BaseLoader, Environment, StrictUndefined, TemplateSyntaxError
+from jinja2 import BaseLoader, StrictUndefined
+from jinja2.exceptions import SecurityError, TemplateSyntaxError
+from jinja2.sandbox import SandboxedEnvironment
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from xagent.gdp.hrun.model.http_resource import GdpHttpResource
 from xagent.core.tools.core.api_tool import APIClientCore
+from xagent.core.tools.core.response_validator import ResponseBusinessValidator
 from xagent.gdp.hrun.adapter.http_asset_protocol import GdpHttpAssetStatus
 from xagent.gdp.hrun.adapter.http_asset_protocol import GdpHttpAssetUpsertRequest
 from xagent.gdp.hrun.service.http_resource_vector_repository import (
@@ -65,6 +68,28 @@ _SECRET_HEADER_NAMES = {
 logger = logging.getLogger(__name__)
 
 
+def _mark_template_safe_callable(func: Any) -> Any:
+    """给允许在模板里显式调用的 helper 打安全标记。
+
+    HTTP runtime 的模板能力只打算暴露极少量“我们自己定义并审过”的调用点，
+    不能沿用 Jinja 的开放式可调用语义，否则模板作者一旦拿到对象/方法引用，
+    就可能沿属性链继续摸到 Python 运行时细节。
+
+    这里不做“按名字放行”，而是给具体 callable 打标记，避免后续有人新增 helper
+    时忘记同步安全名单。
+    """
+
+    setattr(func, "__xagent_template_safe_callable__", True)
+    return func
+
+
+def _is_template_safe_callable(obj: Any) -> bool:
+    """判断某个 callable 是否属于模板白名单。"""
+
+    candidate = getattr(obj, "__func__", obj)
+    return bool(getattr(candidate, "__xagent_template_safe_callable__", False))
+
+
 class _TemplateObject:
     """Jinja 上下文代理。
 
@@ -80,6 +105,7 @@ class _TemplateObject:
     def __getitem__(self, key: str) -> Any:
         return _wrap_template_value(self._data[key])
 
+    @_mark_template_safe_callable
     def get(self, key: str, default: Any = None) -> Any:
         if key not in self._data:
             return default
@@ -143,6 +169,7 @@ def _b64encode_filter(value: Any) -> str:
     return base64.b64encode(str(value).encode("utf-8")).decode("ascii")
 
 
+@_mark_template_safe_callable
 def _dig(value: Any, path: str, default: Any = None) -> Any:
     """模板里的安全取值助手。
 
@@ -172,12 +199,42 @@ def _dig(value: Any, path: str, default: Any = None) -> Any:
     return current
 
 
-_JINJA_ENV = Environment(
+class _HttpRuntimeSandboxedEnvironment(SandboxedEnvironment):
+    """HTTP runtime 专用的受限模板环境。
+
+    这里的目标不是把 Jinja 变成通用脚本语言，而是把它压缩成一个
+    “只能做字段拼装和安全取值”的最小 DSL：
+
+    1. 默认拒绝所有以下划线开头的属性，阻断 `__class__` / `__globals__`
+       这类典型 SSTI 探测入口。
+    2. 只有我们显式打过标记的 callable 才允许在模板里调用。
+       这样 `dig(...)`、`arguments.get(...)` 仍可用，但字符串/函数/类方法
+       不会被模板随意调用。
+    3. `_TemplateObject` 只允许访问真实 JSON key 和受控的 `get()`，
+       避免模板作者拿到代理对象内部实现细节。
+    """
+
+    def is_safe_attribute(self, obj: Any, attr: str, value: Any) -> bool:
+        if attr.startswith("_"):
+            return False
+
+        if isinstance(obj, _TemplateObject):
+            return attr == "get" or attr in obj._data
+
+        return super().is_safe_attribute(obj, attr, value)
+
+    def is_safe_callable(self, obj: Any) -> bool:
+        return _is_template_safe_callable(obj)
+
+
+_JINJA_ENV = _HttpRuntimeSandboxedEnvironment(
     loader=BaseLoader(),
     autoescape=False,
     keep_trailing_newline=False,
     undefined=StrictUndefined,
 )
+_JINJA_ENV.globals.clear()
+_JINJA_ENV.tests.clear()
 _JINJA_ENV.filters["tojson"] = _tojson_filter
 _JINJA_ENV.filters["fromjson"] = _fromjson_filter
 _JINJA_ENV.filters["urlencode"] = _urlencode_filter
@@ -1031,6 +1088,8 @@ class HttpRequestAssembler:
             return _JINJA_ENV.from_string(template).render(**context)
         except TemplateSyntaxError as exc:
             raise ValueError(f"模板语法错误: {exc}") from exc
+        except SecurityError as exc:
+            raise ValueError(f"模板包含不安全操作: {exc}") from exc
         except Exception as exc:
             raise ValueError(f"模板渲染失败: {exc}") from exc
 
@@ -1191,6 +1250,7 @@ class HttpResponseInterpreter:
 
     def __init__(self, request_assembler: HttpRequestAssembler | None = None) -> None:
         self.request_assembler = request_assembler or HttpRequestAssembler()
+        self.business_validator = ResponseBusinessValidator()
 
     def interpret(
         self,
@@ -1426,6 +1486,20 @@ class HttpResponseInterpreter:
         self,
         response_template: dict[str, Any],
     ) -> dict[str, Any] | None:
+        raw_business_validation = response_template.get("businessValidation")
+        if isinstance(raw_business_validation, dict):
+            return dict(raw_business_validation)
+
+        raw_failure_conditions = response_template.get("failure_conditions")
+        if isinstance(raw_failure_conditions, list):
+            return {
+                "type": "json_path",
+                "failure_conditions": raw_failure_conditions,
+                "message_path": response_template.get("message_path"),
+                "message_paths": response_template.get("message_paths"),
+                "is_terminal": response_template.get("is_terminal", True),
+            }
+
         raw_rule = response_template.get("successRule")
         if not isinstance(raw_rule, dict):
             return None
@@ -1437,6 +1511,7 @@ class HttpResponseInterpreter:
             "path": path,
             "equals": raw_rule.get("equals"),
             "error_path": str(raw_rule.get("errorPath") or "").strip() or None,
+            "message_path": str(raw_rule.get("messagePath") or "").strip() or None,
         }
 
     def _evaluate_business_success(
@@ -1454,6 +1529,24 @@ class HttpResponseInterpreter:
 
         if success_rule is None:
             return None, None
+
+        # 新格式支持两类业务判定：
+        # 1. failure_conditions：命中任一失败条件即失败。
+        # 2. success_conditions：必须全部满足成功条件才成功，否则失败。
+        # 这里保留 `successRule` 旧格式，是为了不破坏已经注册的 HTTP 资产。
+        if isinstance(success_rule.get("failure_conditions"), list) or isinstance(
+            success_rule.get("success_conditions"), list
+        ):
+            validation_result = self.business_validator.validate(
+                response_body,
+                success_rule,
+            )
+            if validation_result is None:
+                return None, None
+            if validation_result.matched:
+                return False, validation_result.message
+            return True, None
+
         if not isinstance(response_body, dict):
             return False, "响应不是对象结构，无法执行业务成功判定"
 
@@ -1465,7 +1558,7 @@ class HttpResponseInterpreter:
             business_ok = self._is_truthy_business_value(value)
 
         error_message = None
-        error_path = success_rule.get("error_path")
+        error_path = success_rule.get("error_path") or success_rule.get("message_path")
         if isinstance(error_path, str) and error_path:
             error_value = self._simple_json_path_get(response_body, error_path)
             if error_value not in (None, ""):

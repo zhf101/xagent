@@ -124,6 +124,7 @@ class PatternExecutionError(PatternError):
         iteration: Optional[int] = None,
         **kwargs: Any,
     ) -> None:
+        self.raw_message = message
         super().__init__(f"Pattern '{pattern_name}' failed: {message}", **kwargs)
         self.pattern_name = pattern_name
         self.iteration = iteration

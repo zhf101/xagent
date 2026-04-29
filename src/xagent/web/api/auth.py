@@ -1,4 +1,69 @@
-"""Authentication API endpoints"""
+"""用户认证API端点 - 包含OAuth第三方登录支持
+
+【合并来源】main分支多个提交:
+- a52ca29 feat(oauth): add URL token injection for HubSpot compatibility (#333)
+- 4eb362a fix: resolve LinkedIn OAuth scope error and Custom API tool parsing (#304)
+- 46b1691 feat: Google Drive account deletion and list refresh features (#276)
+
+【OAuth认证流程说明】
+OAuth 2.0是业界标准的第三方授权协议,用于:
+- 允许用户使用Google/LinkedIn等第三方账号登录
+- 获取用户授权访问其Google Drive/Gmail等数据
+- 避免直接处理用户密码,降低安全风险
+
+合并前的问题:
+- 仅支持本地用户名/密码登录
+- 无第三方登录,用户体验差
+- 无法集成外部服务(Google Drive等)
+
+合并后的改进:
+- 支持Generic OAuth Provider(可配置Google/LinkedIn/GitHub等)
+- 自动创建用户账号(首次登录时)
+- Token刷新机制(accessToken/refreshToken双Token)
+- 集成MCP OAuth应用(Google Drive、Gmail工具需要OAuth授权)
+
+【认证端点列表】
+1. POST   /api/auth/setup           - 初始管理员设置(首次启动)
+2. POST   /api/auth/register        - 用户注册
+3. POST   /api/auth/login           - 用户名/密码登录
+4. GET    /api/auth/oauth/{provider} - 发起OAuth登录(重定向到Google等)
+5. GET    /api/auth/oauth/{provider}/callback - OAuth回调(处理授权码)
+6. POST   /api/auth/refresh         - 刷新Access Token
+7. POST   /api/auth/logout          - 登出
+
+【Token机制说明】
+采用双Token机制:
+- Access Token:  短期有效(默认120分钟),用于API请求认证
+- Refresh Token: 长期有效(默认7天),用于刷新Access Token
+
+优势:
+- 即使Access Token泄露,影响时间短
+- Refresh Token可被撤销(登出时)
+- 减少数据库查询(无需每次验证密码)
+
+【OAuth登录流程】
+用户点击"Google登录" → 
+重定向到Google授权页 → 
+用户同意授权 → 
+Google回调带code参数 → 
+后端用code换access_token → 
+获取用户信息(email/name) → 
+创建/查找用户 → 
+生成JWT Token返回前端
+
+【数据库模型】
+- User: 用户基础表(username/email/password_hash)
+- UserOAuth: OAuth绑定表(provider/provider_user_id/access_token/refresh_token)
+- OAuthProvider: OAuth提供商配置(client_id/client_secret/授权URL等)
+- PublicMCPApp: 公共MCP应用库
+
+【合并后关键改动】
+- 新增通用OAuth登录支持(generic_oauth_login/callback)
+- 自动为用户配置默认MCP服务器(_ensure_user_mcp_server)
+- Refresh Token旋转机制(刷新时生成新refreshToken,增强安全性)
+- 修复LinkedIn OAuth scope错误(兼容不同provider的scope格式)
+- 支持URL Token注入(HubSpot等MCP应用需要)
+"""
 
 import asyncio
 import hashlib

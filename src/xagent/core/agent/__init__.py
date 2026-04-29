@@ -1,5 +1,5 @@
 """
-Enhanced Agent system with nested agent support and improved patterns.
+增强型 Agent 系统，支持嵌套代理和改进的执行模式。
 """
 
 from .agent import Agent

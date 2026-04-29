@@ -62,6 +62,21 @@ class CustomApiToolResult(BaseModel):
         default=None, description="Response body (JSON or text)"
     )
     error: Optional[str] = Field(default=None, description="Error message if any")
+    protocol_success: Optional[bool] = Field(
+        default=None, description="Whether the HTTP protocol/status layer succeeded"
+    )
+    business_success: Optional[bool] = Field(
+        default=None, description="Whether configured business validation succeeded"
+    )
+    error_type: Optional[str] = Field(
+        default=None, description="Failure type: network_error, http_error, business_error, etc."
+    )
+    terminal: bool = Field(
+        default=False, description="Whether the failure should stop the agent loop"
+    )
+    can_retry: bool = Field(
+        default=False, description="Whether repeating the same API call may help"
+    )
 
 
 class CustomApiTool(AbstractBaseTool):
@@ -77,6 +92,7 @@ class CustomApiTool(AbstractBaseTool):
         name: str,
         description: str,
         env: Dict[str, str],
+        business_validation: Optional[Dict[str, Any]] = None,
         visibility: ToolVisibility = ToolVisibility.PUBLIC,
     ):
         # Format name for LLM (replace spaces/dashes with underscores)
@@ -95,6 +111,8 @@ class CustomApiTool(AbstractBaseTool):
                 env_info += f"- {k}\n"
 
         self._description = f"Custom API: {name}\n{description}{env_info}"
+        self._display_name = name
+        self._business_validation = business_validation
         self._env = {}
         self._env_patterns = []
         for k, v in (env or {}).items():
@@ -164,6 +182,8 @@ class CustomApiTool(AbstractBaseTool):
                 headers=headers,
                 params=params,
                 body=body,
+                business_validation=self._business_validation,
+                api_name=self._display_name,
             )
 
             if not result.get("success"):
@@ -175,6 +195,11 @@ class CustomApiTool(AbstractBaseTool):
                 headers=result.get("headers", {}),
                 body=result.get("body"),
                 error=result.get("error"),
+                protocol_success=result.get("protocol_success"),
+                business_success=result.get("business_success"),
+                error_type=result.get("error_type"),
+                terminal=bool(result.get("terminal", False)),
+                can_retry=bool(result.get("can_retry", False)),
             ).model_dump()
 
         except Exception as e:
@@ -214,8 +239,16 @@ def create_custom_api_tools(configs: List[Dict[str, Any]]) -> List[CustomApiTool
             name = config.get("name", "custom_api")
             desc = config.get("description", "")
             env = config.get("env", {})
+            business_validation = config.get("business_validation") or config.get(
+                "businessValidation"
+            )
 
-            tool = CustomApiTool(name=name, description=desc, env=env)
+            tool = CustomApiTool(
+                name=name,
+                description=desc,
+                env=env,
+                business_validation=business_validation,
+            )
             tools.append(tool)
         except Exception as e:
             logger.error(f"Failed to create Custom API tool for config {config}: {e}")

@@ -14,7 +14,7 @@ from sqlalchemy.engine.reflection import Inspector
 
 # revision identifiers, used by Alembic.
 revision: str = "20250209_add_agent_id_to_tasks"
-down_revision: Union[str, None] = "20250209_add_suggested_prompts_to_agents"
+down_revision: Union[str, None] = "20250209_add_suggested_prompts"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

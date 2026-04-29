@@ -45,19 +45,19 @@ class Agent:
 
     def get_runner(self) -> "AgentRunner":
         """
-        Returns an AgentRunner to execute this agent.
+        返回用于执行该 agent 的 AgentRunner。
         """
         from .runner import AgentRunner
 
         return AgentRunner(agent=self)
 
     def add_sub_agent(self, agent: "Agent") -> None:
-        """Add a sub-agent to this agent."""
+        """向该 agent 添加一个子 agent。"""
         agent._parent_agent = self
         self._sub_agents[agent.name] = agent
 
     def get_sub_agent(self, name: str) -> Optional["Agent"]:
-        """Get a sub-agent by name."""
+        """按名称获取子 agent。"""
         return self._sub_agents.get(name)
 
     def has_execution_history(self) -> bool:

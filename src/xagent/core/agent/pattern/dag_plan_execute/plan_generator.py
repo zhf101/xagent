@@ -51,7 +51,7 @@ class PlanGenerator:
         "{\n"
         '  "plan": {\n'
         '    "steps": [\n'
-        '      {"id": "step1", "name": "Research", "description": "Gather information", "tool_names": ["web_search"], "dependencies": [], "difficulty": "hard"},\n'
+        '      {"id": "step1", "name": "Research", "description": "Gather information", "tool_names": ["knowledge_search"], "dependencies": [], "difficulty": "hard"},\n'
         '      {"id": "step2", "name": "Analyze Data", "description": "Analyze collected information", "tool_names": ["execute_python_code"], "dependencies": ["step1"], "difficulty": "hard"},\n'
         '      {"id": "step3", "name": "Organize Results", "description": "Summarize and format findings", "tool_names": [], "dependencies": ["step1", "step2"], "difficulty": "easy"}\n'
         "    ]\n"
@@ -1195,7 +1195,7 @@ class PlanGenerator:
 
         system_prompt += (
             "重要提示：并非每个步骤都需要使用工具。有些步骤可以是纯分析或组织任务。\n"
-            "- 以下场景使用工具：网络搜索、计算、代码执行、数据处理\n"
+            "- 以下场景使用工具：计算、代码执行、数据处理\n"
             "- 对于纯分析任务（总结、组织、解释、格式化结果）：将 tool_name 设置为 null 或空字符串\n\n"
             "文件引用：\n"
             "- 你可能会看到格式为 [filename](file://fileId) 的文件引用\n"
@@ -1290,7 +1290,7 @@ class PlanGenerator:
             f'    "task_name": "数据分析与报告",\n'
             f'    "goal": "{goal}",\n'
             f'    "steps": [\n'
-            f'      {{"id": "step1", "name": "调研", "description": "收集信息", "tool_names": ["web_search", "zhipu_web_search"], "dependencies": [], "difficulty": "hard"}},\n'
+            f'      {{"id": "step1", "name": "调研", "description": "收集信息", "tool_names": ["knowledge_search"], "dependencies": [], "difficulty": "hard"}},\n'
             f'      {{"id": "step2", "name": "数据分析", "description": "分析收集到的信息", "tool_names": ["execute_python_code"], "dependencies": ["step1"], "difficulty": "hard"}},\n'
             f'      {{"id": "step3", "name": "整理结果", "description": "总结并格式化研究结果", "tool_names": [], "dependencies": ["step1", "step2"], "difficulty": "easy"}}\n'
             f"    ]\n"

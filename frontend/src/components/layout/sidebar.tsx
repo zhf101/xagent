@@ -652,6 +652,7 @@ export function Sidebar({ className }: SidebarProps) {
   // Monitor task list changes, if content is not enough to fill the container and there is more data, automatically load the next page
   useEffect(() => {
     if (!navRef.current || !isHistoryExpanded || isTaskListUnavailable) return
+    if (!taskListRef.current) return
 
     const { scrollHeight, clientHeight } = taskListRef.current
     // If content height is less than or equal to container height (plus a buffer), and there is more data, and not loading
@@ -707,8 +708,7 @@ export function Sidebar({ className }: SidebarProps) {
   // 普通页面走全局折叠开关；agent 页面走”默认收起 + 临时展开”的旧逻辑。
   const isSidebarVisible = isAgentPage ? isExpanded : !isSidebarCollapsed
 
-  // Allow user to manually collapse the sidebar
-  const [isSidebarOpen, setIsSidebarOpen] = useState(true)
+  // 非 agent 页面使用 isSidebarCollapsed 控制侧边栏折叠；agent 页面使用 isExpanded 控制临时展开
 
   // agent 页临时展开时，点击外部自动收起，保持之前“主工作区优先”的体验。
   useEffect(() => {
@@ -857,7 +857,7 @@ export function Sidebar({ className }: SidebarProps) {
               setIsExpanded(false)
               return
             }
-            setIsSidebarOpen(false)
+            setIsSidebarCollapsed(true)
           }}
           className="p-1 text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition-colors"
           aria-label="收起侧边栏"
@@ -897,79 +897,78 @@ export function Sidebar({ className }: SidebarProps) {
                 {groupExpanded && (
                   <div className="space-y-1">
                     {group.items.map((item) => {
-                  const isActive = isPathActive(item.href)
-                  const hasChildren = item.children && item.children.length > 0
-                  const isExpanded = isMenuExpanded(item.href)
+                      const isActive = isPathActive(item.href)
+                      const hasChildren = Boolean(item.children?.length)
+                      const isExpanded = isMenuExpanded(item.href)
+                      const activeStyle = "bg-primary/10 text-primary font-semibold rounded-lg mx-2"
+                      const inactiveStyle = "text-muted-foreground hover:bg-accent/50 hover:text-foreground mx-2 rounded-lg"
 
-                  const activeStyle = `
-                    bg-primary/10
-                    text-primary
-                    font-semibold
-                    rounded-lg
-                    mx-2
-                  `;
-                  const inactiveStyle = "text-muted-foreground hover:bg-accent/50 hover:text-foreground mx-2 rounded-lg"
+                      if (hasChildren) {
+                        return (
+                          <div key={item.name} className="mb-1">
+                            <button
+                              onClick={() => toggleMenu(item.href)}
+                              className={cn(
+                                "group flex w-[calc(100%-1rem)] items-center justify-between px-3 py-2 text-sm transition-colors relative",
+                                isActive ? activeStyle : inactiveStyle
+                              )}
+                            >
+                              <div className="flex items-center gap-3">
+                                <item.icon className={cn("h-5 w-5", isActive ? "text-primary" : "text-gray-500")} />
+                                {item.nameKey ? t(item.nameKey) : item.name}
+                              </div>
+                              {isExpanded ? (
+                                <ChevronDown className="h-3 w-3 opacity-50" />
+                              ) : (
+                                <ChevronRight className="h-3 w-3 opacity-50" />
+                              )}
+                            </button>
+                            {isExpanded && item.children && (
+                              <div className="ml-4 mt-1 space-y-1 border-l border-border/40 pl-2">
+                                {item.children.map((child) => {
+                                  const isChildActive = pathname === child.href
 
-                  if (hasChildren) {
-                    return (
-                      <div key={item.name} className="mb-1">
-                        <button
-                          onClick={() => toggleMenu(item.href)}
+                                  return (
+                                    <div key={child.href}>
+                                      <Link
+                                        href={child.href}
+                                        className={cn(
+                                          "group flex items-center px-4 py-2 text-sm font-medium transition-colors rounded-lg mx-2",
+                                          isChildActive
+                                            ? "bg-primary/10 text-primary"
+                                            : "text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+                                        )}
+                                      >
+                                        <child.icon
+                                          className={cn(
+                                            "h-4 w-4 mr-3",
+                                            isChildActive ? "text-primary" : child.color || "text-muted-foreground"
+                                          )}
+                                        />
+                                        {child.nameKey ? t(child.nameKey) : child.name}
+                                      </Link>
+                                    </div>
+                                  )
+                                })}
+                              </div>
+                            )}
+                          </div>
+                        )
+                      }
+
+                      return (
+                        <Link
+                          key={item.name}
+                          href={item.href}
                           className={cn(
-                            "group flex items-center justify-between px-3 py-2 text-sm transition-colors relative w-[calc(100%-1rem)]",
+                            "group flex items-center px-3 py-2 text-sm font-medium transition-colors mb-1",
                             isActive ? activeStyle : inactiveStyle
                           )}
                         >
-                          <div className="flex items-center gap-3">
-                            <item.icon className={cn("h-5 w-5", isActive ? "text-primary" : "text-gray-500")} />
-                            {item.nameKey ? t(item.nameKey) : item.name}
-                          </div>
-                          {isExpanded ? (
-                            <ChevronDown className="h-3 w-3 opacity-50" />
-                          ) : (
-                            <ChevronRight className="h-3 w-3 opacity-50" />
-                          )}
-                        </button>
-                        {isExpanded && item.children && (
-                          <div className="ml-4 mt-1 space-y-1 border-l border-border/40 pl-2">
-                            {item.children.map((child) => {
-                              const isChildActive = pathname === child.href
-                              return (
-                                <div key={child.href}>
-                                  <Link
-                                    href={child.href}
-                                    className={cn(
-                                      "group flex items-center px-4 py-2 text-sm font-medium transition-colors rounded-lg mx-2",
-                                      isChildActive
-                                        ? "bg-primary/10 text-primary"
-                                        : "text-muted-foreground hover:bg-accent/50 hover:text-foreground"
-                                    )}
-                                  >
-                                    <child.icon className={cn("h-4 w-4 mr-3", isChildActive ? "text-primary" : child.color || "text-muted-foreground")} />
-                                    {child.nameKey ? t(child.nameKey) : child.name}
-                                  </Link>
-                                </div>
-                              )
-                            })}
-                          </div>
-                        )}
-                      </div>
-                    )
-                  }
-
-                  return (
-                    <Link
-                      key={item.name}
-                      href={item.href}
-                      className={cn(
-                        "group flex items-center px-3 py-2 text-sm font-medium transition-colors mb-1",
-                        isActive ? activeStyle : inactiveStyle
-                      )}
-                    >
-                      <item.icon className={cn("h-5 w-5 mr-3", isActive ? "text-primary" : "text-gray-500")} />
-                      {item.nameKey ? t(item.nameKey) : item.name}
-                    </Link>
-                  )
+                          <item.icon className={cn("h-5 w-5 mr-3", isActive ? "text-primary" : "text-gray-500")} />
+                          {item.nameKey ? t(item.nameKey) : item.name}
+                        </Link>
+                      )
                     })}
                   </div>
                 )}
@@ -1168,7 +1167,6 @@ export function Sidebar({ className }: SidebarProps) {
             </div>
           )}
         </div>
-      </div>
 
       {/* User Profile */}
       <div className="p-4 relative mt-auto shrink-0" ref={userMenuRef}>

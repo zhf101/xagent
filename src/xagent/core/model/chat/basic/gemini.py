@@ -1,13 +1,43 @@
-"""Gemini LLM implementation using official Google Generative AI SDK."""
+"""Gemini LLM implementation using official Google Generative AI SDK.
+
+注意: google-genai是可选依赖,仅在需要Gemini支持时安装。
+如果只使用OpenAI格式的API,可以忽略此模块的导入错误。
+"""
 
 import json
 import logging
 import os
 import uuid
-from typing import Any, AsyncIterator, Dict, List, Optional, Union
+from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, List, Optional, Union
 
-from google import genai  # type: ignore[import-untyped]
-from google.genai import errors as genai_errors  # type: ignore[import-untyped]
+# 延迟导入google-genai,避免未安装时的ImportError
+# 只有在实际使用Gemini LLM时才会触发导入
+if TYPE_CHECKING:
+    from google import genai  # type: ignore[import-untyped]
+    from google.genai import errors as genai_errors  # type: ignore[import-untyped]
+
+def _get_genai_client():
+    """懒加载获取GenAI客户端,未安装google-genai时抛出友好提示"""
+    try:
+        from google import genai  # type: ignore[import-untyped]
+        return genai
+    except ImportError:
+        raise ImportError(
+            "google-genai package is not installed. "
+            "Install it with: pip install google-genai\n"
+            "Or if you only need OpenAI-compatible APIs, use OpenAILLM instead."
+        )
+
+def _get_genai_errors():
+    """懒加载获取GenAI错误模块"""
+    try:
+        from google.genai import errors as genai_errors  # type: ignore[import-untyped]
+        return genai_errors
+    except ImportError:
+        raise ImportError(
+            "google-genai package is not installed. "
+            "Install it with: pip install google-genai"
+        )
 
 from ....utils.security import redact_sensitive_text
 from ..exceptions import (
@@ -221,6 +251,9 @@ class GeminiLLM(BaseLLM):
             if not self.api_key:
                 raise RuntimeError("GEMINI_API_KEY or GOOGLE_API_KEY must be set")
 
+            # 获取genai模块
+            genai = _get_genai_client()
+
             try:
                 # Prepare HTTP options for custom base URL if configured
                 http_options = None
@@ -364,20 +397,22 @@ class GeminiLLM(BaseLLM):
         tool_choice: Optional[Union[str, Dict[str, Any]]],
     ) -> Dict[str, Any]:
         """Build Gemini SDK tool configuration from OpenAI-style tool options."""
-        from google.genai import types
+        # 延迟导入types,避免未安装google-genai时的ImportError
+        genai = _get_genai_client()
+        genai_types = genai.types
 
         gemini_tools_dict = self._convert_tools_to_gemini_format(tools)
         tool_config: Dict[str, Any] = {
-            "tools": [types.Tool(**gemini_tools_dict)],
-            "automatic_function_calling": types.AutomaticFunctionCallingConfig(
+            "tools": [genai_types.Tool(**gemini_tools_dict)],
+            "automatic_function_calling": genai_types.AutomaticFunctionCallingConfig(
                 disable=True
             ),
         }
 
         function_calling_config = None
         if tool_choice == "none":
-            function_calling_config = types.FunctionCallingConfig(
-                mode=types.FunctionCallingConfigMode.NONE
+            function_calling_config = genai_types.FunctionCallingConfig(
+                mode=genai_types.FunctionCallingConfigMode.NONE
             )
         elif tool_choice and tool_choice != "auto":
             allowed_function_names = None
@@ -387,13 +422,13 @@ class GeminiLLM(BaseLLM):
                     function_name = function_choice["name"]
                     allowed_function_names = [function_name]
 
-            function_calling_config = types.FunctionCallingConfig(
-                mode=types.FunctionCallingConfigMode.ANY,
+            function_calling_config = genai_types.FunctionCallingConfig(
+                mode=genai_types.FunctionCallingConfigMode.ANY,
                 allowed_function_names=allowed_function_names,
             )
 
         if function_calling_config is not None:
-            tool_config["tool_config"] = types.ToolConfig(
+            tool_config["tool_config"] = genai_types.ToolConfig(
                 function_calling_config=function_calling_config
             )
 
@@ -467,8 +502,9 @@ class GeminiLLM(BaseLLM):
             # Prepare config
             merged_config = config.copy() if config else {}
 
-            # Import types for config wrapping
-            from google.genai import types
+            # Import types for config wrapping (延迟导入,避免未安装时报错)
+            genai = _get_genai_client()
+            genai_types = genai.types
 
             # Add tools if available - wrap in types.Tool
             if tools:
@@ -476,7 +512,7 @@ class GeminiLLM(BaseLLM):
 
             # Add config if present
             if merged_config:
-                api_params["config"] = types.GenerateContentConfig(**merged_config)
+                api_params["config"] = genai_types.GenerateContentConfig(**merged_config)
 
             response = await self._client.aio.models.generate_content(**api_params)
 
@@ -560,7 +596,8 @@ class GeminiLLM(BaseLLM):
             if "timeout" in str(e).lower() or "network" in str(e).lower():
                 raise LLMRetryableError(str(e)) from e
 
-            # Check for Google SDK specific errors
+            # Check for Google SDK specific errors (延迟获取错误模块)
+            genai_errors = _get_genai_errors()
             if isinstance(e, genai_errors.ClientError):
                 # 429: Rate limit (RESOURCE_EXHAUSTED)
                 # 500, 502, 503: Server errors (retryable)
@@ -654,8 +691,9 @@ class GeminiLLM(BaseLLM):
             # Prepare config
             merged_config = config.copy() if config else {}
 
-            # Import types for config wrapping
-            from google.genai import types
+            # Import types for config wrapping (延迟导入,避免未安装时报错)
+            genai = _get_genai_client()
+            genai_types = genai.types
 
             # Add tools if available - wrap in types.Tool
             if tools:
@@ -663,7 +701,7 @@ class GeminiLLM(BaseLLM):
 
             # Add config if present
             if merged_config:
-                api_params["config"] = types.GenerateContentConfig(**merged_config)
+                api_params["config"] = genai_types.GenerateContentConfig(**merged_config)
 
             response_stream = await self._client.aio.models.generate_content_stream(
                 **api_params
@@ -831,7 +869,8 @@ class GeminiLLM(BaseLLM):
             if "timeout" in str(e).lower() or "network" in str(e).lower():
                 raise LLMRetryableError(str(e)) from e
 
-            # Check for Google SDK specific errors
+            # Check for Google SDK specific errors (延迟获取错误模块)
+            genai_errors = _get_genai_errors()
             if isinstance(e, genai_errors.ClientError):
                 # 429: Rate limit (RESOURCE_EXHAUSTED)
                 # 500, 502, 503: Server errors (retryable)
@@ -897,6 +936,9 @@ class GeminiLLM(BaseLLM):
             ... )
         """
         try:
+            # 获取genai模块(延迟导入)
+            genai = _get_genai_client()
+
             # Prepare HTTP options for custom base URL if configured
             http_options = None
             if base_url:

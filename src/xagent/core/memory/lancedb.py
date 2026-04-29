@@ -9,7 +9,7 @@ from ...providers.vector_store.lancedb import (
     LanceDBConnectionManager,
     LanceDBVectorStore,
 )
-from ..model.embedding import BaseEmbedding, DashScopeEmbedding
+from ..model.embedding import BaseEmbedding, OpenAIEmbedding
 from ..model.embedding.adapter import create_embedding_adapter
 from ..model.model import EmbeddingModelConfig
 from ..tools.core.RAG_tools.LanceDB.schema_manager import _safe_close_table
@@ -49,7 +49,7 @@ class LanceDBMemoryStore(MemoryStore):
             # Try to create a default embedding model only if embedding_kwargs are provided
             if embedding_kwargs:
                 try:
-                    self._embedding_model = DashScopeEmbedding(**embedding_kwargs)
+                    self._embedding_model = OpenAIEmbedding(**embedding_kwargs)
                 except Exception:
                     # If embedding model creation fails, set to None (will use fallback)
                     self._embedding_model = None

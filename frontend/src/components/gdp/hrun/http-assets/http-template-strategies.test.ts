@@ -76,6 +76,40 @@ describe("http-template-strategies", () => {
     })
   })
 
+  it("keeps business validation when response rendering strategy changes", () => {
+    const payload = createDefaultGdpHttpPayload()
+    payload.execution_profile.response_template_json = {
+      businessValidation: {
+        type: "json_path",
+        mode: "success_conditions",
+        success_conditions: [{ path: "code", value: 0 }],
+        default_failure_message: "接口返回未满足业务成功条件",
+        is_terminal: true,
+      },
+    }
+
+    const nextPayload = applyHttpTemplateStrategyState(payload, {
+      requestBodyStrategy: "json",
+      requestBodyTemplate: "",
+      successResponseStrategy: "append",
+      successResponseTemplate: "",
+      successResponsePrepend: "前缀",
+      successResponseAppend: "后缀",
+    })
+
+    expect(nextPayload.execution_profile.response_template_json).toEqual({
+      businessValidation: {
+        type: "json_path",
+        mode: "success_conditions",
+        success_conditions: [{ path: "code", value: 0 }],
+        default_failure_message: "接口返回未满足业务成功条件",
+        is_terminal: true,
+      },
+      prependBody: "前缀",
+      appendBody: "后缀",
+    })
+  })
+
   it("forces GET assets back to url params even if UI state still points at body mode", () => {
     const payload = createDefaultGdpHttpPayload()
     payload.execution_profile.method = "GET"

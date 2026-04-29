@@ -17,52 +17,7 @@ from ..models.tool_config import ToolConfig, UserToolConfig
 ToolFieldSpec = Dict[str, Any]
 
 
-TOOL_CREDENTIAL_SPECS: Dict[str, Dict[str, ToolFieldSpec]] = {
-    "exa_web_search": {
-        "api_key": {
-            "secret": True,
-            "env": ["EXA_API_KEY"],
-            "required": True,
-            "label": "API Key",
-        }
-    },
-    "zhipu_web_search": {
-        "api_key": {
-            "secret": True,
-            "env": ["ZHIPU_API_KEY", "BIGMODEL_API_KEY"],
-            "required": True,
-            "label": "API Key",
-        },
-        "base_url": {
-            "secret": False,
-            "env": ["ZHIPU_BASE_URL"],
-            "required": False,
-            "label": "Base URL",
-        },
-    },
-    "tavily_web_search": {
-        "api_key": {
-            "secret": True,
-            "env": ["TAVILY_API_KEY"],
-            "required": True,
-            "label": "API Key",
-        }
-    },
-    "web_search": {
-        "api_key": {
-            "secret": True,
-            "env": ["GOOGLE_API_KEY"],
-            "required": True,
-            "label": "Google API Key",
-        },
-        "cse_id": {
-            "secret": False,
-            "env": ["GOOGLE_CSE_ID"],
-            "required": True,
-            "label": "Google CSE ID",
-        },
-    },
-}
+TOOL_CREDENTIAL_SPECS: Dict[str, Dict[str, ToolFieldSpec]] = {}
 
 
 def list_configurable_tool_names() -> list[str]:

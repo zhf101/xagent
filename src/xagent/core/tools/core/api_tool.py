@@ -13,6 +13,8 @@ from urllib.parse import urlencode, urlparse
 
 import httpx
 
+from .response_validator import ResponseBusinessValidator
+
 logger = logging.getLogger(__name__)
 
 
@@ -36,6 +38,7 @@ class APIClientCore:
         self.default_timeout = default_timeout
         self.max_response_size = max_response_size
         self.default_retry_count = default_retry_count
+        self._business_validator = ResponseBusinessValidator()
 
     async def call_api(
         self,
@@ -50,6 +53,8 @@ class APIClientCore:
         timeout: Optional[int] = None,
         retry_count: Optional[int] = None,
         allow_redirects: bool = True,
+        business_validation: Optional[Dict[str, Any]] = None,
+        api_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Make an HTTP request to an API.
@@ -66,6 +71,8 @@ class APIClientCore:
             timeout: Request timeout in seconds
             retry_count: Number of retries on failure
             allow_redirects: Whether to follow redirects
+            business_validation: Optional business-level failure rule for parsed JSON response
+            api_name: Optional display name used in business failure messages
 
         Returns:
             Dictionary with success status, status_code, headers, body, and error
@@ -79,10 +86,15 @@ class APIClientCore:
         if not self._is_valid_url(url):
             return {
                 "success": False,
+                "protocol_success": False,
+                "business_success": None,
                 "status_code": 0,
                 "headers": {},
                 "body": None,
                 "error": f"Invalid URL: {url}",
+                "error_type": "invalid_url",
+                "terminal": True,
+                "can_retry": False,
             }
 
         # Prepare request
@@ -133,9 +145,30 @@ class APIClientCore:
                     proxy_url=proxy_url,
                     allow_redirects=allow_redirects,
                 )
-                logger.info(
-                    f"✅ API Call successful: {method} {url} -> {result['status_code']}"
+
+                # 只有网络异常和 5xx 属于“同一次请求条件下可能恢复”的协议层问题。
+                # 业务失败来自 2xx 响应体，说明上游已经明确拒绝/失败，不能在这里重试。
+                if self._is_retryable_http_failure(result) and attempt < retry_count:
+                    logger.warning(
+                        f"⚠️ API Call returned retryable HTTP {result['status_code']} "
+                        f"(attempt {attempt + 1}/{retry_count + 1})"
+                    )
+                    continue
+
+                result = self._apply_business_validation(
+                    result=result,
+                    business_validation=business_validation,
+                    api_name=api_name or url,
                 )
+                if result.get("success"):
+                    logger.info(
+                        f"✅ API Call successful: {method} {url} -> {result['status_code']}"
+                    )
+                else:
+                    logger.info(
+                        f"❌ API Call failed: {method} {url} -> {result.get('status_code')}, "
+                        f"error_type={result.get('error_type')}"
+                    )
                 return result
 
             except Exception as e:
@@ -152,10 +185,15 @@ class APIClientCore:
         # All retries failed
         return {
             "success": False,
+            "protocol_success": False,
+            "business_success": None,
             "status_code": 0,
             "headers": {},
             "body": None,
             "error": f"Request failed after {retry_count + 1} attempts: {str(last_error)}",
+            "error_type": "network_error",
+            "terminal": False,
+            "can_retry": True,
         }
 
     async def _make_request(
@@ -196,10 +234,15 @@ class APIClientCore:
                         )
                         return {
                             "success": False,
+                            "protocol_success": False,
+                            "business_success": None,
                             "status_code": response.status_code,
                             "headers": dict(response.headers),
                             "body": None,
                             "error": f"Response too large (exceeds {self.max_response_size} bytes), download aborted",
+                            "error_type": "response_too_large",
+                            "terminal": True,
+                            "can_retry": False,
                         }
                     content_chunks.append(chunk)
 
@@ -212,13 +255,86 @@ class APIClientCore:
 
                 return {
                     "success": 200 <= response.status_code < 300,
+                    "protocol_success": 200 <= response.status_code < 300,
+                    "business_success": None,
                     "status_code": response.status_code,
                     "headers": dict(response.headers),
                     "body": body,
                     "error": None
                     if 200 <= response.status_code < 300
                     else f"HTTP {response.status_code}",
+                    "error_type": None
+                    if 200 <= response.status_code < 300
+                    else "http_error",
+                    "terminal": False,
+                    "can_retry": 500 <= response.status_code < 600,
                 }
+
+    def _is_retryable_http_failure(self, result: Dict[str, Any]) -> bool:
+        """判断 HTTP 响应是否值得由客户端自动重试。"""
+
+        status_code = int(result.get("status_code") or 0)
+        return 500 <= status_code < 600
+
+    def _apply_business_validation(
+        self,
+        *,
+        result: Dict[str, Any],
+        business_validation: Optional[Dict[str, Any]],
+        api_name: str,
+    ) -> Dict[str, Any]:
+        """在协议成功后执行可配置业务失败判定。
+
+        这里故意只在 HTTP 2xx 时运行规则：非 2xx 的失败原因属于协议层，
+        应继续沿用 HTTP 错误/重试语义，避免把服务端错误误包装成业务失败。
+        """
+
+        enriched = dict(result)
+        protocol_success = bool(enriched.get("protocol_success", enriched.get("success")))
+        enriched.setdefault("protocol_success", protocol_success)
+        enriched.setdefault("business_success", None)
+        enriched.setdefault("terminal", False)
+        enriched.setdefault(
+            "can_retry",
+            self._is_retryable_http_failure(enriched) or int(enriched.get("status_code") or 0) == 0,
+        )
+
+        if not protocol_success:
+            enriched.setdefault("error_type", "http_error")
+            return enriched
+
+        validation_result = self._business_validator.validate(
+            enriched.get("body"),
+            business_validation,
+        )
+        if validation_result is None:
+            return enriched
+
+        if not validation_result.matched:
+            enriched["business_success"] = True
+            return enriched
+
+        reason = validation_result.message or "响应体命中业务失败规则"
+        status_code = int(enriched.get("status_code") or 0)
+        enriched.update(
+            {
+                "success": False,
+                "business_success": False,
+                "error_type": "business_error",
+                "terminal": bool(validation_result.is_terminal),
+                "can_retry": False,
+                "error": (
+                    "[API业务失败]\n"
+                    f"接口：{api_name}\n"
+                    f"状态：HTTP {status_code}（请求成功），业务执行失败\n"
+                    f"原因：{reason}\n"
+                    "结果：执行终止，无需重试"
+                ),
+            }
+        )
+        if validation_result.matched_condition is not None:
+            enriched["business_failure_condition"] = validation_result.matched_condition
+        return enriched
 
     def _is_valid_url(self, url: str) -> bool:
         """Validate URL format and scheme"""
@@ -349,6 +465,8 @@ async def call_api(
     api_key_param: str = "api_key",
     timeout: Optional[int] = None,
     retry_count: Optional[int] = None,
+    business_validation: Optional[Dict[str, Any]] = None,
+    api_name: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Make an HTTP request to an API.
@@ -364,6 +482,8 @@ async def call_api(
         api_key_param: Parameter name for API key when using 'api_key_query' auth
         timeout: Request timeout in seconds
         retry_count: Number of retries on failure
+        business_validation: Optional business-level failure rule for parsed JSON response
+        api_name: Optional display name used in business failure messages
 
     Returns:
         Dictionary with success status, status_code, headers, body, and error
@@ -399,4 +519,6 @@ async def call_api(
         api_key_param=api_key_param,
         timeout=timeout,
         retry_count=retry_count,
+        business_validation=business_validation,
+        api_name=api_name,
     )

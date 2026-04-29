@@ -43,6 +43,7 @@ export interface GdpExecutionProfile {
     body?: string
     prependBody?: string
     appendBody?: string
+    businessValidation?: GdpBusinessValidationRule
   }
   error_response_template?: string
   auth_json: {
@@ -54,6 +55,27 @@ export interface GdpExecutionProfile {
   }
   headers_json: { key: string; value: string }[]
   timeout_seconds: number
+}
+
+export type GdpBusinessValidationMode = "failure_conditions" | "success_conditions"
+
+export interface GdpBusinessCondition {
+  path: string
+  value?: string | number | boolean | null
+  eq?: string | number | boolean | null
+  ne?: string | number | boolean | null
+  exists?: boolean
+}
+
+export interface GdpBusinessValidationRule {
+  type: "json_path"
+  mode: GdpBusinessValidationMode
+  failure_conditions?: GdpBusinessCondition[]
+  success_conditions?: GdpBusinessCondition[]
+  message_path?: string
+  message_paths?: string[]
+  default_failure_message?: string
+  is_terminal?: boolean
 }
 
 export interface GdpHttpAssetPayload {

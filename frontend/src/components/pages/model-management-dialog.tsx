@@ -87,8 +87,6 @@ export function ModelManagementDialog({
   const getDefaultAbilitiesForCategory = (category: string): string[] => {
     if (category === 'llm') return ['chat']
     if (category === 'embedding') return ['embedding']
-    if (category === 'image') return ['generate']
-    if (category === 'speech') return ['asr']
     return []
   }
 
@@ -97,8 +95,6 @@ export function ModelManagementDialog({
     setTestConnectionError(null)
     setFetchedModels([])
   }
-
-  const providerAllowsEmptyApiKey = (providerId: string) => providerId === 'xinference'
 
   const getDefaultBaseUrlForProvider = (providerId: string, category: string) => {
     const provider = providers.find(p => p.id === providerId)
@@ -128,15 +124,7 @@ export function ModelManagementDialog({
       }
     }
 
-    // Determine default provider based on activeTab if no initialProviderId is given
-    let defaultProvider = initialProviderId || "openai";
-    if (!initialProviderId) {
-      if (activeTab === "image" || activeTab === "embedding") {
-        defaultProvider = "dashscope";
-      } else if (activeTab === "speech") {
-        defaultProvider = "xinference";
-      }
-    }
+    const defaultProvider = initialProviderId || "openai";
     return {
       model_id: "",
       category: activeTab,
@@ -164,21 +152,9 @@ export function ModelManagementDialog({
     { value: "embedding", label: t('models.abilities.embedding') }
   ], [t])
 
-  const imageAbilityOptions = useMemo(() => [
-    { value: "generate", label: t('models.abilities.generate') },
-    { value: "edit", label: t('models.abilities.edit') }
-  ], [t])
-
-  const speechAbilityOptions = useMemo(() => [
-    { value: "asr", label: t('models.abilities.asr') },
-    { value: "tts", label: t('models.abilities.tts') }
-  ], [t])
-
   const getAbilityOptionsForCategory = (category: string) => {
     if (category === 'llm') return abilityOptions
     if (category === 'embedding') return embeddingAbilityOptions
-    if (category === 'image') return imageAbilityOptions
-    if (category === 'speech') return speechAbilityOptions
     return []
   }
 
@@ -523,8 +499,6 @@ export function ModelManagementDialog({
                           options={[
                             { value: "llm", label: t('models.tabs.llm') },
                             { value: "embedding", label: t('models.tabs.embedding') },
-                            { value: "image", label: t('models.tabs.image') },
-                            { value: "speech", label: t('models.tabs.speech') }
                           ]}
                           className="w-[180px]"
                         />
@@ -645,8 +619,7 @@ export function ModelManagementDialog({
                             }
                           }}
                           disabled={
-                            (!providerAllowsEmptyApiKey(formData.model_provider) && !formData.api_key)
-                            || (providers.find(p => p.id === formData.model_provider)?.requires_base_url ? !formData.base_url : false)
+                            (providers.find(p => p.id === formData.model_provider)?.requires_base_url ? !formData.base_url : false)
                             || testConnectionStatus === 'testing'
                           }
                         >
@@ -732,10 +705,6 @@ export function ModelManagementDialog({
                               thinking_mode: <Box className="w-4 h-4 mr-1" />,
                               tool_calling: <Zap className="w-4 h-4 mr-1" />,
                               embedding: <Box className="w-4 h-4 mr-1" />,
-                              generate: <ImageIcon className="w-4 h-4 mr-1" />,
-                              edit: <Edit className="w-4 h-4 mr-1" />,
-                              asr: <Brain className="w-4 h-4 mr-1" />,
-                              tts: <Star className="w-4 h-4 mr-1" />,
                             }
                             return (
                               <Button
@@ -774,7 +743,7 @@ export function ModelManagementDialog({
                             // Initialize default logic based on whether they have one
                             // only do this once per session so we don't overwrite if they remove it
                             if (!hasInitializedDefaults) {
-                              const targetType = formData.category === 'llm' ? 'general' : formData.category === 'embedding' ? 'embedding' : formData.category === 'image' ? 'image' : formData.category === 'speech' ? 'asr' : null;
+                              const targetType = formData.category === 'llm' ? 'general' : formData.category === 'embedding' ? 'embedding' : null;
                               if (targetType) {
                                 const hasDefault = (defaultModels as any)[targetType];
                                 if (!hasDefault) {
@@ -818,14 +787,6 @@ export function ModelManagementDialog({
                             ...(formData.category === 'embedding' ? [
                               { value: "embedding", label: t('models.defaults.embedding') }
                             ] : []),
-                            ...(formData.category === 'image' ? [
-                              { value: "image", label: t('models.defaults.image') },
-                              ...(formData.abilities?.includes('edit') ? [{ value: "image_edit", label: t('models.defaults.image_edit') }] : [])
-                            ] : []),
-                            ...(formData.category === 'speech' ? [
-                              ...(formData.abilities?.includes('asr') ? [{ value: "asr", label: t('models.defaults.asr') }] : []),
-                              ...(formData.abilities?.includes('tts') ? [{ value: "tts", label: t('models.defaults.tts') }] : [])
-                            ] : [])
                           ]}
                           placeholder={t('models.form.defaultPlaceholder')}
                         />
@@ -834,8 +795,6 @@ export function ModelManagementDialog({
                           const relevantTypes = (() => {
                             if (formData.category === 'llm') return ['general', 'small_fast', 'visual', 'compact'];
                             if (formData.category === 'embedding') return ['embedding'];
-                            if (formData.category === 'image') return ['image', 'image_edit'];
-                            if (formData.category === 'speech') return ['asr', 'tts'];
                             return [];
                           })();
 
@@ -943,8 +902,6 @@ export function ModelManagementDialog({
                     options={[
                       { value: "llm", label: t('models.tabs.llm') },
                       { value: "embedding", label: t('models.tabs.embedding') },
-                      { value: "image", label: t('models.tabs.image') },
-                      { value: "speech", label: t('models.tabs.speech') }
                     ]}
                   />
                 </div>
@@ -1052,9 +1009,7 @@ export function ModelManagementDialog({
                   onValuesChange={(values) => setFormData({ ...formData, abilities: values })}
                   options={
                     formData.category === 'llm' ? abilityOptions :
-                      formData.category === 'embedding' ? embeddingAbilityOptions :
-                        formData.category === 'image' ? imageAbilityOptions :
-                          speechAbilityOptions
+                      embeddingAbilityOptions
                   }
                   placeholder={t('models.form.abilitiesPlaceholder')}
                 />
@@ -1108,14 +1063,6 @@ export function ModelManagementDialog({
                         ] : []),
                         ...(formData.category === 'embedding' ? [
                           { value: "embedding", label: t('models.defaults.embedding') }
-                        ] : []),
-                        ...(formData.category === 'image' ? [
-                          { value: "image", label: t('models.defaults.image') },
-                          ...(formData.abilities?.includes('edit') ? [{ value: "image_edit", label: t('models.defaults.image_edit') }] : [])
-                        ] : []),
-                        ...(formData.category === 'speech' ? [
-                          ...(formData.abilities?.includes('asr') ? [{ value: "asr", label: t('models.defaults.asr') }] : []),
-                          ...(formData.abilities?.includes('tts') ? [{ value: "tts", label: t('models.defaults.tts') }] : [])
                         ] : [])
                       ]}
                       placeholder={t('models.form.defaultPlaceholder')}

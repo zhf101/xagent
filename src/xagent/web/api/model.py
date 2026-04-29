@@ -12,7 +12,6 @@ from sqlalchemy.orm import Session
 from xagent.core.model.model import (
     ChatModelConfig,
     EmbeddingModelConfig,
-    ImageModelConfig,
     ModelConfig,
 )
 from xagent.core.model.providers import default_base_url_for_provider
@@ -39,6 +38,16 @@ logger = logging.getLogger(__name__)
 
 # Create router
 model_router = APIRouter(prefix="/api/models", tags=["models"])
+
+SUPPORTED_MODEL_PROVIDER = "openai"
+SUPPORTED_MODEL_CATEGORIES = {"llm", "embedding"}
+SUPPORTED_DEFAULT_CONFIG_TYPES = [
+    "general",
+    "small_fast",
+    "visual",
+    "compact",
+    "embedding",
+]
 
 
 def _decode_model_identifier(model_id: str) -> str:
@@ -179,11 +188,6 @@ def _is_default_config_type_compatible(model: Any, config_type: str) -> bool:
         "visual": "llm",
         "compact": "llm",
         "embedding": "embedding",
-        "image": "image",
-        "image_edit": "image",
-        "asr": "speech",
-        "tts": "speech",
-        "speech": "speech",
     }
 
     expected_category = category_by_config_type.get(config_type)
@@ -191,6 +195,31 @@ def _is_default_config_type_compatible(model: Any, config_type: str) -> bool:
         return False
     current_category = str(getattr(model, "category", ""))
     return current_category == expected_category
+
+
+def _ensure_supported_category(category: str) -> None:
+    normalized = category.lower().strip()
+    if normalized not in SUPPORTED_MODEL_CATEGORIES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Unsupported model category: {category}. "
+                "Only 'llm' and 'embedding' are enabled."
+            ),
+        )
+
+
+def _ensure_supported_provider(provider: str) -> None:
+    normalized = provider.lower().strip()
+    if normalized != SUPPORTED_MODEL_PROVIDER:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Unsupported provider: {provider}. "
+                "Only the 'openai' provider is enabled. "
+                "Use a custom base_url for other OpenAI-compatible gateways."
+            ),
+        )
 
 
 @model_router.post("/", response_model=ModelWithAccessInfo)
@@ -208,6 +237,9 @@ async def create_model(
     logger.info(f"  Provider: {model.model_provider}")
     logger.info(f"  Abilities: {model.abilities}")
     logger.info(f"  Model name: {model.model_name}")
+
+    _ensure_supported_category(model.category)
+    _ensure_supported_provider(model.model_provider)
 
     # Check if model_id already exists
     model_storage = CoreStorage(db, DBModel)
@@ -247,35 +279,6 @@ async def create_model(
             abilities=model.abilities,
             description=model.description,
             dimension=model.dimension,
-        )
-    elif model.category == "image":
-        config = ImageModelConfig(
-            id=model.model_id,
-            model_name=model.model_name,
-            model_provider=model.model_provider,
-            base_url=base_url,
-            api_key=model.api_key or "",
-            default_temperature=model.temperature,
-            timeout=180.0,
-            abilities=model.abilities,
-            description=model.description,
-        )
-    elif model.category == "speech":
-        from xagent.core.model.model import SpeechModelConfig
-
-        config = SpeechModelConfig(
-            id=model.model_id,
-            model_name=model.model_name,
-            model_provider=model.model_provider,
-            base_url=base_url,
-            api_key=model.api_key or "",
-            timeout=180.0,
-            abilities=model.abilities,
-            description=model.description,
-            language=model.language,
-            voice=model.voice,
-            format=model.format,
-            sample_rate=model.sample_rate,
         )
     else:
         raise HTTPException(status_code=400, detail="Invalid model category")
@@ -407,17 +410,7 @@ async def get_user_default_models(
 
     try:
         # Get all possible config types
-        all_config_types = [
-            "general",
-            "small_fast",
-            "visual",
-            "compact",
-            "embedding",
-            "image",
-            "image_edit",
-            "asr",
-            "tts",
-        ]
+        all_config_types = SUPPORTED_DEFAULT_CONFIG_TYPES
 
         # Get user's own defaults
         user_defaults_by_type: dict[str, UserDefaultModel] = {}
@@ -605,6 +598,16 @@ async def update_model(
     # Get the database model
     db_model = user_model.model
 
+    if model_update.category is not None:
+        _ensure_supported_category(model_update.category)
+    else:
+        _ensure_supported_category(str(db_model.category))
+
+    if model_update.model_provider is not None:
+        _ensure_supported_provider(model_update.model_provider)
+    else:
+        _ensure_supported_provider(str(db_model.model_provider))
+
     # Handle admin sharing updates
     if model_update.share_with_users is not None:
         # Only check admin permission when enabling sharing (share_with_users=True)
@@ -719,12 +722,13 @@ async def test_model_connection(
     """Test connection with provided model parameters before saving."""
     from xagent.core.model.chat.basic.adapter import create_base_llm
     from xagent.core.model.embedding.adapter import create_embedding_adapter
-    from xagent.core.model.image.adapter import create_image_model
-    from xagent.core.model.xinference_base import BaseXinferenceModel
 
     start_time = time.time()
     timeout_seconds = 10.0
     try:
+        _ensure_supported_category(request.category)
+        _ensure_supported_provider(request.model_provider)
+
         from xagent.core.model.providers import default_base_url_for_provider
 
         base_url = request.base_url or default_base_url_for_provider(
@@ -785,58 +789,6 @@ async def test_model_connection(
                 asyncio.to_thread(embedding_model.encode, "hello"),
                 timeout=timeout_seconds,
             )
-
-        elif request.category == "image":
-            image_config = ImageModelConfig(
-                id="test-model",
-                model_provider=request.model_provider,
-                model_name=request.model_name,
-                api_key=request.api_key,
-                base_url=base_url,
-                abilities=request.abilities or ["generate"],
-            )
-            create_image_model(image_config)
-            await asyncio.wait_for(
-                _validate_provider_model_listing(
-                    provider=request.model_provider,
-                    model_name=request.model_name,
-                    api_key=request.api_key,
-                    base_url=base_url,
-                    requested_abilities=request.abilities,
-                ),
-                timeout=timeout_seconds,
-            )
-
-        elif request.category == "speech":
-            if request.model_provider.lower().strip() != "xinference":
-                raise ValueError(
-                    f"Unsupported speech provider for testing: {request.model_provider}"
-                )
-
-            requested_abilities = request.abilities or ["asr"]
-            await asyncio.wait_for(
-                _validate_provider_model_listing(
-                    provider=request.model_provider,
-                    model_name=request.model_name,
-                    api_key=request.api_key,
-                    base_url=base_url,
-                    requested_abilities=requested_abilities,
-                ),
-                timeout=timeout_seconds,
-            )
-
-            probe_model = BaseXinferenceModel(
-                model=request.model_name,
-                model_uid=request.model_name,
-                base_url=base_url,
-                api_key=request.api_key or None,
-            )
-            try:
-                await asyncio.wait_for(
-                    probe_model._ensure_model_handle(), timeout=timeout_seconds
-                )
-            finally:
-                await probe_model.aclose()
 
         else:
             raise ValueError(f"Unsupported category for testing: {request.category}")
@@ -970,15 +922,9 @@ async def get_available_model_providers() -> dict:
         "model_providers": [
             {
                 "type": "openai",
-                "name": "OpenAI",
+                "name": "OpenAI Compatible",
                 "description": "OpenAI API compatible models",
                 "examples": ["gpt-4", "gpt-4o", "gpt-3.5-turbo"],
-            },
-            {
-                "type": "zhipu",
-                "name": "Zhipu AI",
-                "description": "Zhipu AI models",
-                "examples": ["glm-4", "glm-4-air", "glm-3-turbo"],
             },
         ]
     }
@@ -997,6 +943,7 @@ async def list_model_categories(
         .join(UserModel, DBModel.id == UserModel.model_id)
         .filter(UserModel.user_id == user.id)
         .filter(DBModel.is_active)
+        .filter(DBModel.category.in_(SUPPORTED_MODEL_CATEGORIES))
         .distinct()
         .all()
     )
@@ -1488,19 +1435,7 @@ async def set_user_default_model(
     if not model:
         raise HTTPException(status_code=404, detail="Model not found")
 
-    # For speech models, automatically determine config_type based on actual abilities
-    # This prevents ASR and TTS models from conflicting with each other
-    if model.category == "speech" and model.abilities:
-        if "asr" in model.abilities and "tts" not in model.abilities:
-            config_type = "asr"  # Only ASR ability
-        elif "tts" in model.abilities and "asr" not in model.abilities:
-            config_type = "tts"  # Only TTS ability
-        elif "asr" in model.abilities and "tts" in model.abilities:
-            config_type = "speech"  # Both abilities
-        else:
-            config_type = config.config_type  # Fallback to user-specified
-    else:
-        config_type = config.config_type
+    config_type = config.config_type
 
     if not _is_default_config_type_compatible(model, config_type):
         raise HTTPException(
@@ -1686,7 +1621,7 @@ async def get_public_summary(
 
     # Count by category
     category_counts = {}
-    for cat in ["llm", "embedding", "rerank", "image"]:
+    for cat in ["llm", "embedding", "rerank"]:
         count = (
             db.query(DBModel)
             .filter(DBModel.category == cat)
@@ -1737,17 +1672,12 @@ async def fetch_provider_models(
         fetch_models_from_provider,
     )
 
+    _ensure_supported_provider(provider)
+
     if provider.lower() not in PROVIDER_FETCHERS:
         raise HTTPException(
             status_code=400,
             detail=f"Unsupported provider: {provider}. Supported providers: {list(PROVIDER_FETCHERS.keys())}",
-        )
-
-    # For Azure OpenAI, base_url is required
-    if provider.lower() == "azure_openai" and not base_url:
-        raise HTTPException(
-            status_code=400,
-            detail="base_url is required for Azure OpenAI provider",
         )
 
     try:
@@ -1811,12 +1741,16 @@ async def fetch_multiple_providers_models(
             if model.base_url:
                 provider_base_urls[provider] = str(model.base_url)
 
+    requested_providers = [p.lower().strip() for p in providers]
+    for provider in requested_providers:
+        _ensure_supported_provider(provider)
+
     # Filter to requested providers
-    if providers:
+    if requested_providers:
         provider_keys = {
             k: v
             for k, v in provider_keys.items()
-            if k in [p.lower() for p in providers]
+            if k in requested_providers
         }
 
     results: dict[str, Any] = {}
@@ -1853,57 +1787,12 @@ async def fetch_multiple_providers_models(
 
 @model_router.get("/xinference/tts-models")
 async def list_xinference_tts_models(
-    base_url: str = Query(..., description="Xinference server base URL"),
-    api_key: Optional[str] = Query(None, description="Optional API key"),
+    base_url: str = Query(..., description="Unused"),
+    api_key: Optional[str] = Query(None, description="Unused"),
 ) -> dict:
-    """Get available TTS models from Xinference server.
-
-    Returns a list of TTS/audio models running on the Xinference server,
-    along with their model abilities that can be used for the 'abilities' field
-    when registering a model.
-
-    For TTS models, use abilities: ["tts"]
-    For ASR models, use abilities: ["asr"]
-    For models with both capabilities, use: ["tts", "asr"]
-    """
-    try:
-        from xagent.core.model.tts.xinference import XinferenceTTS
-
-        models = XinferenceTTS.list_available_models(base_url=base_url, api_key=api_key)
-
-        # Map model abilities to xagent abilities format
-        result_models = []
-        for model in models:
-            model_ability = model.get("model_ability", [])
-
-            # Determine xagent abilities based on model capabilities
-            abilities = []
-            if any(ability.startswith("text2audio") for ability in model_ability):
-                abilities.append("tts")
-            if any(ability.startswith("audio2text") for ability in model_ability):
-                abilities.append("asr")
-
-            result_models.append(
-                {
-                    "id": model["id"],
-                    "model_uid": model["model_uid"],
-                    "model_type": model["model_type"],
-                    "model_ability": model_ability,
-                    "description": model["description"],
-                    "abilities": abilities,  # Suggested abilities for xagent
-                    "category": "speech",
-                    "model_provider": "xinference",
-                }
-            )
-
-        return {
-            "models": result_models,
-            "count": len(result_models),
-        }
-
-    except Exception as e:
-        logger.error(f"Error fetching Xinference TTS models: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to fetch TTS models from Xinference: {str(e)}",
-        )
+    """Speech capability has been disabled on this branch."""
+    _ = base_url, api_key
+    raise HTTPException(
+        status_code=404,
+        detail="Speech/TTS model discovery has been disabled on this branch",
+    )

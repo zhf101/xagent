@@ -1,5 +1,77 @@
 """
-Sandbox management in application layer.
+沙箱(Sandbox)管理器 - 应用层沙箱实例管理
+
+【合并来源】main分支多个提交:
+- f6cdcd6 feat(sandbox): add docker-backed sandbox service (#274)
+- 3fad64f refactor(sandbox): switch sandbox code sync to mount and refactor sandbox tool exec (#223)
+- 208629a fix(sandbox): replace exec_run with get_archive for file existence check (#314)
+- 4513470 feat(sandbox): boxlite support linux aarch64 (#277)
+
+【沙箱是什么?】
+沙箱是一个隔离的执行环境,用于:
+- 安全执行不可信代码(Agent生成的Python脚本等)
+- 防止恶意代码访问主机文件系统
+- 限制CPU/内存使用,防止资源耗尽
+- 提供标准化的工具执行环境
+
+【为什么需要沙箱?】
+在AI Agent场景中,Agent会生成并执行代码。如果不隔离:
+- Agent可能生成rm -rf /等危险命令,破坏主机
+- Agent可能访问敏感文件(如API密钥)
+- Agent可能启动恶意进程
+
+合并前的问题:
+- 代码执行无隔离,直接在主机运行
+- 无法限制资源使用
+- 安全风险极高
+
+合并后的改进:
+- 支持2种实现: Docker容器、Boxlite轻量级沙箱
+- 自动资源限制(CPU、内存)
+- 文件系统隔离(只读挂载必要目录)
+- 支持代码挂载卷机制,实现安全的代码同步
+
+【架构设计】
+┌──────────────────────────────────────────────┐
+│         Agent Tool Execution                 │  ← Agent工具调用
+├──────────────────────────────────────────────┤
+│    Sandboxed Tool Wrapper                    │  ← 沙箱工具包装器
+├──────────────────────────────────────────────┤
+│    SandboxManager (本文件)                    │  ← 应用层管理器
+├──────────────────────────────────────────────┤
+│    SandboxService (sandbox/docker_sandbox.py)│ ← 服务层
+├──────────────────────────────────────────────┤
+│    Docker Engine / Boxlite                   │  ← 底层实现
+└──────────────────────────────────────────────┘
+
+【核心方法说明】
+1. get_or_create() - 获取或创建沙箱实例(带锁保护,防止并发创建)
+2. _cleanup_stale_sandboxes() - 清理过期沙箱(检测配置漂移)
+3. _warmup_sandbox() - 预热沙箱(预加载镜像,加速首次启动)
+
+【配置项说明】
+- SANDBOX_ENABLED: 是否启用沙箱(默认false)
+- SANDBOX_IMPLEMENTATION: 实现类型(docker/boxlite)
+- SANDBOX_IMAGE: Docker镜像名
+- SANDBOX_CPUS: CPU核心数限制
+- SANDBOX_MEMORY: 内存限制(MB)
+- SANDBOX_VOLUMES: 挂载卷配置(src:dst:mode)
+- SANDBOX_ENV: 环境变量配置
+
+【安全警告】
+⚠️ 绝对不要将主机Docker socket(/var/run/docker.sock)挂载到沙箱!
+   这等同于给沙箱root权限,攻击者可:
+   - 启动特权容器
+   - 挂载主机文件系统
+   - 读取主机密钥
+   - 完全逃逸沙箱
+
+【合并后关键改动】
+- 新增完整的沙箱管理体系(get_or_create/cleanup/warmup)
+- 支持配置漂移检测(配置变更时自动重建沙箱)
+- 改进代码同步机制(从exec_run改为mount,更高效安全)
+- 支持Linux aarch64架构(Boxlite)
+- 数据库持久化沙箱信息(SandboxInfo模型)
 """
 
 import asyncio
@@ -106,7 +178,7 @@ class SandboxManager:
             ensure_dir: When True, create the host directory
         """
         # Code mounts are always present (at least src/)
-        volumes: list[tuple[str, str, str]] = list(build_code_mount_volumes())
+        volumes: list[tuple[str, str, str]] = list(build_code_mount_volumes() or [])
 
         # Mount user workspace as read-write
         if lifecycle_type == "user":

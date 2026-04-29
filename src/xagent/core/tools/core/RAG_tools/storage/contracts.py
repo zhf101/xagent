@@ -1,7 +1,49 @@
-"""Storage contracts for KB control-plane and vector-plane operations.
+"""KB存储契约(接口定义) - Phase 1A存储解耦核心组件
 
-Phase 1A introduces these contracts to decouple API/business modules from
-backend-specific database semantics.
+【合并来源】main分支提交 98e68b3 - feat(kb): complete phase 1A storage decoupling
+
+【设计思想】
+本文件定义了KB存储层的抽象接口(Interface),是"依赖倒置原则(DIP)"的典型应用:
+- 上层业务代码(API/Service)只依赖这些抽象接口,不依赖具体实现
+- 具体实现(LanceDB/PostgreSQL等)实现这些接口
+- 未来如果需要切换存储后端,只需新增实现类,无需修改业务代码
+
+【为什么需要接口抽象?】
+旧架构的问题:
+```python
+# 旧代码直接依赖LanceDB
+from lancedb.db import DBConnection
+conn = get_connection_from_env()  # 硬编码LanceDB
+table = conn.open_table("documents")  # 无法替换
+```
+
+新架构的优势:
+```python
+# 新代码依赖抽象接口
+from .storage.contracts import VectorIndexStore
+store = get_vector_index_store()  # 可以是LanceDB/PostgreSQL/其他
+results = store.search(query)  # 业务代码不关心具体实现
+```
+
+【6个核心接口】
+1. VectorIndexStore    - 向量平面操作(embedding搜索、文档计数)
+2. MetadataStore       - 控制平面操作(collection元数据、用户权限)
+3. IngestionStatusStore - 摄入状态跟踪(PENDING/CHUNKED/SUCCESS等)
+4. PromptTemplateStore - 提示词模板CRUD
+5. MainPointerStore    - 主指针(用于版本管理)
+6. KBWriteCoordinator - 写入协调(多存储事务一致性)
+
+【字段白名单机制】
+_VALID_FILTER_FIELDS 定义了所有允许的过滤字段,防止:
+- SQL注入攻击(LanceDB过滤器注入)
+- 拼写错误导致静默失败
+- 未授权字段访问
+
+【合并后关键改动】
+- 新增完整的抽象接口体系,替代原有直接依赖LanceDB的代码
+- 引入字段白名单验证机制,增强安全性
+- 定义统一的数据结构(DocumentRecord, CollectionStats等)
+- 为未来支持pgvector等替代存储后端奠定基础
 """
 
 from __future__ import annotations

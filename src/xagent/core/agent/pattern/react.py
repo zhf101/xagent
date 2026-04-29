@@ -27,12 +27,12 @@ from ...memory.prompt_builder import build_memory_prompt_sections
 from ...memory.session_summary import upsert_session_summary
 from ...model.chat.basic.base import BaseLLM
 from ...model.chat.exceptions import LLMServiceUnavailableError
+from ..exceptions import PatternExecutionError
 from ...tools.adapters.vibe import Tool
 from ..context import AgentContext
 from ..exceptions import (
     LLMNotAvailableError,
     MaxIterationsError,
-    PatternExecutionError,
     ToolNotFoundError,
 )
 from ..trace import (
@@ -134,7 +134,8 @@ class ReActPattern(AgentPattern):
         self._pause_condition = asyncio.Condition()
         self._interrupt_event = (
             asyncio.Event()
-        )  # For immediate interruption (continuation)
+        )  # 用于立即中断（继续执行）
+        self._memory_task_semaphore = asyncio.Semaphore(5)  # 限制并发的后台记忆提取任务数
         self._context: Optional[AgentContext] = None
         self._conversation_history: List[Dict[str, str]] = []
         self._execution_context_messages: List[Dict[str, str]] = []
@@ -184,14 +185,46 @@ class ReActPattern(AgentPattern):
         设计边界：
         - 只对“模型服务不可达/超时”这类已经没有继续空转价值的问题直接失败。
         - 其他解析异常、工具异常仍保持现有 ReAct 自恢复行为，避免误改业务语义。
+        - 对 LLM 返回空响应/None 响应的场景提供用户可理解的提示。
         """
 
+        # Check for service unavailable / timeout errors (existing logic)
         matched_error = self._find_exception_in_chain(
             error, LLMServiceUnavailableError
         )
-        if matched_error is None:
-            return None
-        return str(matched_error)
+        if matched_error is not None:
+            return str(matched_error)
+
+        # Check for empty / None LLM response
+        if isinstance(error, PatternExecutionError):
+            msg = str(error)
+            if "LLM returned empty response" in msg:
+                return (
+                    "大模型返回了空响应，可能是模型服务暂时异常或请求参数触发安全拦截。"
+                    "建议稍后重试，或检查模型服务日志确认具体原因。"
+                )
+            if "LLM returned None response" in msg:
+                return (
+                    "大模型未返回任何响应，可能是模型服务连接异常或请求被中断。"
+                    "请检查模型服务状态后重试。"
+                )
+            if "did not invoke native tool calling" in msg:
+                return (
+                    "大模型未按预期调用工具，可能是模型不支持原生工具调用（function calling）"
+                    "或当前请求格式不被模型识别。建议检查模型是否支持工具调用能力。"
+                )
+            if "Failed to invoke tool via native calling" in msg:
+                return (
+                    "通过原生工具调用执行失败，可能是模型服务不支持该调用方式"
+                    "或工具参数格式存在问题。建议检查模型能力配置或简化任务重试。"
+                )
+            if "Final answer missing answer" in msg:
+                return (
+                    "大模型在最后一轮返回了空的最终答案，可能是任务过于复杂导致模型无法生成有效输出，"
+                    "或模型在工具调用链中丢失了答案内容。建议简化任务描述或减少工具调用步骤后重试。"
+                )
+
+        return None
 
     def _estimate_message_tokens(self, messages: List[Dict[str, str]]) -> int:
         """
@@ -820,105 +853,68 @@ class ReActPattern(AgentPattern):
                     },
                 )
 
-                # 检查execute_http_resource返回的HTTP API响应body中status是否不为1
-                if result["type"] == "observation" and result.get("tool_name") == "execute_http_resource":
-                    tool_result = result.get("result")
-                    if isinstance(tool_result, dict):
-                        response_info = tool_result.get("response")
-                        http_failed = False
-                        error_message = ""
+                terminal_failure_message = self._extract_terminal_tool_failure(result)
+                if terminal_failure_message:
+                    logger.info(
+                        "Tool returned terminal business failure, terminating ReAct loop. Error: %s",
+                        terminal_failure_message[:200],
+                    )
 
-                        # 从 response.body 中解析 status 字段
-                        if response_info:
-                            body_raw = None
-                            if isinstance(response_info, dict):
-                                body_raw = response_info.get("body")
-                            elif hasattr(response_info, "body"):
-                                body_raw = response_info.body
+                    final_output = f"API 业务失败，任务终止：{terminal_failure_message}"
 
-                            body_dict = None
-                            # body 可能是 JSON 字符串，需要解析
-                            if isinstance(body_raw, str) and body_raw.strip():
-                                try:
-                                    body_dict = json.loads(body_raw).get("data")
-                                except (json.JSONDecodeError, ValueError):
-                                    body_dict = None
-                            elif isinstance(body_raw, dict):
-                                body_dict = body_raw.get("data")
+                    await self._generate_and_store_react_memories(
+                        f"{task_description} (iteration {iteration + 1})",
+                        final_output,
+                        iteration + 1,
+                        messages,
+                    )
 
-                            # 解析 body 中的 status 字段
-                            if isinstance(body_dict, dict):
-                                status_value = body_dict.get("status")
-                                if status_value is not None and status_value != 1:
-                                    http_failed = True
-                                    error_message = f"HTTP API 返回 status={status_value}，期望 status=1"
-                                    # 尝试获取错误消息
-                                    msg_field = body_dict.get("message") or body_dict.get("msg") or body_dict.get("error") or body_dict.get("errorMsg")
-                                    if msg_field:
-                                        error_message += f"，错误信息：{msg_field}"
-
-                        if http_failed:
-                            logger.info(
-                                "execute_http_resource returned status != 1, terminating ReAct loop. Error: %s",
-                                error_message[:200] if error_message else "N/A",
-                            )
-
-                            # 生成 memories
-                            await self._generate_and_store_react_memories(
-                                f"{task_description} (iteration {iteration + 1})",
-                                error_message if error_message else "HTTP API status != 1",
-                                iteration + 1,
-                                messages,
-                            )
-
-                            # Trace task 完成，任务为失败
-                            if not self.is_sub_agent:
-                                await trace_ai_message(
-                                    self.tracer,
-                                    task_id,
-                                    message=f"HTTP API 执行失败，任务终止：{error_message}",
-                                    data={"content": f"HTTP API 执行失败，任务终止：{error_message}"},
-                                )
-                                await trace_task_completion(
-                                    self.tracer,
-                                    task_id,
-                                    result=f"HTTP API 执行失败，任务终止：{error_message}",
-                                    success=False,
-                                )
-                                await trace_task_end(
-                                    self.tracer,
-                                    task_id,
-                                    TraceCategory.REACT,
-                                    data={
-                                        "result": f"HTTP API 执行失败，任务终止：{error_message}",
-                                        "success": False,
-                                    },
-                                )
-
-                            final_result = {
+                    if not self.is_sub_agent:
+                        await trace_ai_message(
+                            self.tracer,
+                            task_id,
+                            message=final_output,
+                            data={"content": final_output},
+                        )
+                        await trace_task_completion(
+                            self.tracer,
+                            task_id,
+                            result=final_output,
+                            success=False,
+                        )
+                        await trace_task_end(
+                            self.tracer,
+                            task_id,
+                            TraceCategory.REACT,
+                            data={
+                                "result": final_output,
                                 "success": False,
-                                "output": f"HTTP API 执行失败，任务终止：{error_message}",
-                                "iterations": iteration + 1,
-                                "execution_history": messages,
-                                "pattern": "react",
-                            }
+                            },
+                        )
 
-                            # Update session summary
-                            current_context = self._context
-                            if (
-                                self.memory_store
-                                and current_context is not None
-                                and current_context.session_id
-                            ):
-                                await asyncio.to_thread(
-                                    upsert_session_summary,
-                                    self.memory_store,
-                                    current_context.session_id,
-                                    task_description,
-                                    final_result,
-                                )
+                    final_result = {
+                        "success": False,
+                        "output": final_output,
+                        "iterations": iteration + 1,
+                        "execution_history": messages,
+                        "pattern": "react",
+                    }
 
-                            return final_result
+                    current_context = self._context
+                    if (
+                        self.memory_store
+                        and current_context is not None
+                        and current_context.session_id
+                    ):
+                        await asyncio.to_thread(
+                            upsert_session_summary,
+                            self.memory_store,
+                            current_context.session_id,
+                            task_description,
+                            final_result,
+                        )
+
+                    return final_result
 
                 # Check if this is the final answer
                 if result["type"] == "final_answer":
@@ -2147,6 +2143,9 @@ Remember: Return ONLY ONE JSON object. No additional text, no multiple objects.
 
         except Exception as e:
             logger.error(f"Tool invocation via native call failed: {str(e)}")
+            # 如果已经是 PatternExecutionError，直接向上抛，避免双重包装
+            if isinstance(e, PatternExecutionError):
+                raise
             raise PatternExecutionError(
                 pattern_name="ReAct",
                 message=f"Failed to invoke tool via native calling: {str(e)}",
@@ -2286,6 +2285,48 @@ Remember: Return ONLY ONE JSON object. No additional text, no multiple objects.
             tool_name=tool_name,
             tool_args=repair_loads(function_info.get("arguments","{}")),
         )
+
+    def _extract_terminal_tool_failure(self, action_result: Dict[str, Any]) -> str | None:
+        """从工具结果中提取“必须终止代理循环”的业务失败。
+
+        这里不再解析 `status != 1` 这类具体业务字段，因为不同 API 的失败约定
+        可能是 `status=2`、`code!=0`、`success=false` 等。工具层已经把这些差异
+        归一成 `business_error` / `business_ok=False` / `terminal=True`，ReAct 只消费
+        统一语义，避免把接口私有协议泄漏进代理循环。
+        """
+
+        if action_result.get("type") != "observation":
+            return None
+
+        tool_result = action_result.get("result")
+        if not isinstance(tool_result, dict):
+            return None
+
+        # 直连 API 工具会直接在顶层返回 error_type/terminal/can_retry。
+        if tool_result.get("error_type") == "business_error":
+            if bool(tool_result.get("terminal", True)) or not bool(
+                tool_result.get("can_retry", False)
+            ):
+                return str(tool_result.get("error") or action_result.get("content") or "")
+
+        # GDP HTTP 资产运行时把业务失败放在 error.type，并在 details.resolution
+        # 里声明是否可重试。业务失败默认不可重试，应直接结束后续工具调用。
+        error_info = tool_result.get("error")
+        if isinstance(error_info, dict) and error_info.get("type") == "business_error":
+            details = error_info.get("details") if isinstance(error_info.get("details"), dict) else {}
+            resolution = (
+                details.get("resolution") if isinstance(details.get("resolution"), dict) else {}
+            )
+            if not bool(resolution.get("can_retry", False)):
+                return str(error_info.get("message") or action_result.get("content") or "")
+
+        response_info = tool_result.get("response")
+        if isinstance(response_info, dict) and response_info.get("business_ok") is False:
+            rendered_text = response_info.get("rendered_text")
+            if rendered_text:
+                return str(rendered_text)
+
+        return None
 
     async def _execute_action(
         self,

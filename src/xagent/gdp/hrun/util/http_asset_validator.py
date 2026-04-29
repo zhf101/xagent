@@ -400,12 +400,95 @@ class GdpHttpAssetValidator:
                     "response_template_json.successRule.errorPath 必须为非空字符串"
                 )
 
+        business_validation = response_template.get("businessValidation")
+        if business_validation is not None:
+            self._validate_business_validation_rule(business_validation)
+
         for field_name in ("body", "prependBody", "appendBody"):
             value = response_template.get(field_name)
             if value is not None and not isinstance(value, str):
                 raise GdpHttpAssetValidationError(
                     f"response_template_json.{field_name} 必须为字符串"
                 )
+
+    def _validate_business_validation_rule(self, rule: Any) -> None:
+        """校验业务成功/失败判定配置。
+
+        注册期只做结构校验，不模拟真实响应执行规则。这样可以在保存 HTTP 资产时
+        尽早拦住字段名写错、条件数组为空等明显问题，避免运行时才暴露给模型。
+        """
+
+        if not isinstance(rule, dict):
+            raise GdpHttpAssetValidationError(
+                "response_template_json.businessValidation 必须为对象"
+            )
+
+        rule_type = rule.get("type", "json_path")
+        if rule_type != "json_path":
+            raise GdpHttpAssetValidationError(
+                "response_template_json.businessValidation.type 仅支持 json_path"
+            )
+
+        mode = rule.get("mode", "failure_conditions")
+        if mode not in ("failure_conditions", "success_conditions"):
+            raise GdpHttpAssetValidationError(
+                "response_template_json.businessValidation.mode 必须为 failure_conditions 或 success_conditions"
+            )
+
+        condition_key = (
+            "success_conditions"
+            if mode == "success_conditions"
+            else "failure_conditions"
+        )
+        conditions = rule.get(condition_key)
+        if not isinstance(conditions, list) or not conditions:
+            raise GdpHttpAssetValidationError(
+                f"response_template_json.businessValidation.{condition_key} 必须为非空数组"
+            )
+
+        for index, condition in enumerate(conditions):
+            if not isinstance(condition, dict):
+                raise GdpHttpAssetValidationError(
+                    f"response_template_json.businessValidation.{condition_key}[{index}] 必须是对象"
+                )
+            path = condition.get("path")
+            if not isinstance(path, str) or not path.strip():
+                raise GdpHttpAssetValidationError(
+                    f"response_template_json.businessValidation.{condition_key}[{index}].path 必填"
+                )
+            has_operator = any(
+                key in condition for key in ("value", "eq", "ne", "exists")
+            )
+            if not has_operator:
+                raise GdpHttpAssetValidationError(
+                    f"response_template_json.businessValidation.{condition_key}[{index}] 至少需要 value、eq、ne 或 exists 之一"
+                )
+            if "exists" in condition and not isinstance(condition.get("exists"), bool):
+                raise GdpHttpAssetValidationError(
+                    f"response_template_json.businessValidation.{condition_key}[{index}].exists 必须为 boolean"
+                )
+
+        for key in ("message_path", "default_failure_message"):
+            value = rule.get(key)
+            if value is not None and (not isinstance(value, str) or not value.strip()):
+                raise GdpHttpAssetValidationError(
+                    f"response_template_json.businessValidation.{key} 必须为非空字符串"
+                )
+
+        message_paths = rule.get("message_paths")
+        if message_paths is not None:
+            if not isinstance(message_paths, list) or not all(
+                isinstance(item, str) and item.strip() for item in message_paths
+            ):
+                raise GdpHttpAssetValidationError(
+                    "response_template_json.businessValidation.message_paths 必须为非空字符串数组"
+                )
+
+        is_terminal = rule.get("is_terminal")
+        if is_terminal is not None and not isinstance(is_terminal, bool):
+            raise GdpHttpAssetValidationError(
+                "response_template_json.businessValidation.is_terminal 必须为 boolean"
+            )
 
     def _resolve_schema_for_path(
         self,
@@ -492,4 +575,3 @@ class GdpHttpAssetValidator:
         if len(prefix) >= len(target):
             return False
         return target[: len(prefix)] == prefix
-

@@ -1,8 +1,65 @@
 """
-MCP Server Management API Endpoints
+MCP(Model Context Protocol)服务器管理REST API
 
-Provides REST API endpoints for managing MCP server configurations
-in the web application.
+【合并来源】main分支多个提交:
+- c8642b8 feat(mcp): add MCP management page (#312)
+- d3679db feat(mcp): Support connecting to MCP applications (#298)
+- 885d029 feat(agent-builder): improve display of unconnected MCP apps from templates (#331)
+
+【MCP是什么?】
+MCP(Model Context Protocol)是Anthropic提出的模型上下文协议,用于:
+- 标准化AI Agent与外部工具/服务的连接方式
+- 类似OAuth的标准化协议,但是为AI工具调用设计
+- 允许Agent动态发现和使用外部工具,无需硬编码
+
+【为什么需要MCP支持?】
+合并前的架构问题:
+- 所有工具调用都是硬编码,新增工具需要修改Agent核心代码
+- 无法动态扩展工具集,限制了Agent的能力
+- 用户无法自定义工具连接,灵活性差
+
+合并后的改进:
+- 支持4种传输协议: stdio(本地进程)、SSE(服务器发送事件)、WebSocket、StreamableHTTP
+- 用户可通过UI界面添加/删除/配置MCP服务器
+- 支持OAuth认证集成(Google Drive、Gmail等)
+- 支持Admin管理公共MCP应用库
+
+【架构设计】
+┌──────────────────────────────────────────────┐
+│         Frontend (MCP Management Page)       │  ← 用户界面
+├──────────────────────────────────────────────┤
+│    REST API (本文件 - mcp.py)                 │  ← CRUD接口
+├──────────────────────────────────────────────┤
+│    Database Model (models/mcp.py)            │  ← MCPServer, UserMCPServer
+├──────────────────────────────────────────────┤
+│    MCP Manager (core/mcp/manager/db.py)      │  ← 数据库化管理器
+├──────────────────────────────────────────────┤
+│    Docker Manager (core/mcp/docker_manager.py)│ ← Docker容器生命周期
+├──────────────────────────────────────────────┤
+│    MCP Adapter (adapters/vibe/mcp_adapter.py) │ ← 工具→Agent适配
+└──────────────────────────────────────────────┘
+
+【核心端点说明】
+1. POST   /api/mcp/servers          - 创建MCP服务器
+2. GET    /api/mcp/servers          - 列出用户的MCP服务器
+3. GET    /api/mcp/servers/{id}     - 获取单个服务器详情
+4. PUT    /api/mcp/servers/{id}     - 更新服务器配置
+5. DELETE /api/mcp/servers/{id}     - 删除服务器
+6. POST   /api/mcp/servers/{id}/test - 测试连接
+7. POST   /api/mcp/servers/{id}/toggle - 切换激活状态
+
+【传输协议说明】
+- stdio: 本地进程模式,启动子进程通过stdin/stdout通信
+- sse: 服务器发送事件,适合服务器推送场景
+- websocket: 双向通信,适合实时交互
+- streamable_http: 流式HTTP,适合长连接场景
+
+【合并后关键改动】
+- 新增完整的MCP REST API管理接口
+- 数据库模型支持用户级MCP服务器隔离
+- 集成OAuth认证流(Google、LinkedIn等)
+- 支持自定义API工具与MCP的组合使用
+- 前端新增MCP管理页面,支持可视化配置
 """
 
 import json

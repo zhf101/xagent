@@ -28,9 +28,12 @@ import {
   GdpHttpResource,
   GdpToolContract,
   GdpExecutionProfile,
-  GdpToolAnnotations
+  GdpToolAnnotations,
+  GdpBusinessCondition,
+  GdpBusinessValidationMode,
+  GdpBusinessValidationRule
 } from "./gdp-types"
-import { Save, AlertCircle, Eye, ChevronRight, Tag as TagIcon, Settings2, FileCode, Server, Database, Code, ListTree } from "lucide-react"
+import { Save, AlertCircle, Eye, ChevronRight, Tag as TagIcon, Settings2, FileCode, Server, Database, Code, ListTree, Plus, Trash2, ShieldCheck } from "lucide-react"
 import { SchemaTreeEditor, SchemaNode } from "./schema-tree-editor"
 import { parseTreeFromSchemaAndRoutes } from "./schema-bridge"
 import {
@@ -77,6 +80,20 @@ interface EnvOption {
   status: string
 }
 
+type BusinessConditionOperator = "eq" | "ne" | "exists" | "not_exists"
+type BusinessValueType = "string" | "number" | "boolean" | "null"
+
+const DEFAULT_BUSINESS_VALIDATION: GdpBusinessValidationRule = {
+  type: "json_path",
+  mode: "success_conditions",
+  success_conditions: [
+    { path: "code", value: 0 },
+  ],
+  message_paths: ["message", "err_msg", "error", "data.message"],
+  default_failure_message: "接口返回未满足业务成功条件",
+  is_terminal: true,
+}
+
 const STEPS = [
   { id: "basic", title: "基础资源", desc: "资产标识与归属", icon: Database },
   { id: "model", title: "工具定义", desc: "面向模型描述", icon: FileCode },
@@ -84,6 +101,65 @@ const STEPS = [
   { id: "output", title: "出参定义", desc: "响应结构声明", icon: TagIcon },
   { id: "execution", title: "执行与响应", desc: "网络配置与模板", icon: Server },
 ]
+
+function getBusinessConditions(rule?: GdpBusinessValidationRule): GdpBusinessCondition[] {
+  if (!rule) return []
+  return rule.mode === "success_conditions"
+    ? rule.success_conditions || []
+    : rule.failure_conditions || []
+}
+
+function getConditionOperator(condition: GdpBusinessCondition): BusinessConditionOperator {
+  if ("exists" in condition) {
+    return condition.exists === false ? "not_exists" : "exists"
+  }
+  if ("ne" in condition) return "ne"
+  return "eq"
+}
+
+function getConditionRawValue(condition: GdpBusinessCondition): string | number | boolean | null {
+  if ("ne" in condition) return condition.ne ?? null
+  if ("eq" in condition) return condition.eq ?? null
+  return condition.value ?? null
+}
+
+function getConditionValueType(condition: GdpBusinessCondition): BusinessValueType {
+  const value = getConditionRawValue(condition)
+  if (value === null) return "null"
+  if (typeof value === "number") return "number"
+  if (typeof value === "boolean") return "boolean"
+  return "string"
+}
+
+function formatConditionValue(condition: GdpBusinessCondition): string {
+  const value = getConditionRawValue(condition)
+  if (value === null || value === undefined) return ""
+  return String(value)
+}
+
+function coerceBusinessValue(value: string, valueType: BusinessValueType): string | number | boolean | null {
+  if (valueType === "null") return null
+  if (valueType === "boolean") return value === "true"
+  if (valueType === "number") {
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? parsed : 0
+  }
+  return value
+}
+
+function buildCondition(
+  path: string,
+  operator: BusinessConditionOperator,
+  value: string,
+  valueType: BusinessValueType,
+): GdpBusinessCondition {
+  const normalizedPath = path.trim()
+  if (operator === "exists") return { path: normalizedPath, exists: true }
+  if (operator === "not_exists") return { path: normalizedPath, exists: false }
+  const parsedValue = coerceBusinessValue(value, valueType)
+  if (operator === "ne") return { path: normalizedPath, ne: parsedValue }
+  return { path: normalizedPath, value: parsedValue }
+}
 
 export function HttpConfigDrawer({ open, onOpenChange, onSaved, assetId }: HttpConfigDrawerProps) {
   const [payload, setPayload] = useState<GdpHttpAssetPayload>(createDefaultGdpHttpPayload())
@@ -146,6 +222,18 @@ export function HttpConfigDrawer({ open, onOpenChange, onSaved, assetId }: HttpC
             : `当前环境状态：${option.status}${option.description ? ` · ${option.description}` : ""}`,
       })),
     [envOptions]
+  )
+  const businessValidation =
+    payload.execution_profile.response_template_json?.businessValidation
+  const businessValidationMode: GdpBusinessValidationMode =
+    businessValidation?.mode || "success_conditions"
+  const businessConditions = useMemo(
+    () => getBusinessConditions(businessValidation),
+    [businessValidation]
+  )
+  const businessMessagePaths = useMemo(
+    () => (businessValidation?.message_paths || []).join("\n"),
+    [businessValidation?.message_paths]
   )
 
   const syncTemplateStrategyState = (nextPayload: GdpHttpAssetPayload) => {
@@ -356,6 +444,87 @@ export function HttpConfigDrawer({ open, onOpenChange, onSaved, assetId }: HttpC
   const updateAnnotations = (key: keyof GdpToolAnnotations, value: unknown) => setPayload(p => ({ ...p, tool_contract: { ...p.tool_contract, annotations_json: { ...p.tool_contract.annotations_json, [key]: value } } }))
   const updateProfile = (key: keyof GdpExecutionProfile, value: unknown) => setPayload(p => ({ ...p, execution_profile: { ...p.execution_profile, [key]: value } }))
   const updateAuth = (key: string, value: unknown) => setPayload(p => ({ ...p, execution_profile: { ...p.execution_profile, auth_json: { ...p.execution_profile.auth_json, [key]: value } } }))
+  const updateResponseTemplate = (updater: (template: GdpExecutionProfile["response_template_json"]) => GdpExecutionProfile["response_template_json"]) => {
+    setPayload(prev => ({
+      ...prev,
+      execution_profile: {
+        ...prev.execution_profile,
+        response_template_json: updater(prev.execution_profile.response_template_json || {}),
+      },
+    }))
+  }
+  const setBusinessValidation = (rule?: GdpBusinessValidationRule) => {
+    updateResponseTemplate(template => {
+      const nextTemplate = { ...template }
+      if (rule) {
+        nextTemplate.businessValidation = rule
+      } else {
+        delete nextTemplate.businessValidation
+      }
+      return nextTemplate
+    })
+  }
+  const ensureBusinessValidation = () => {
+    setBusinessValidation(DEFAULT_BUSINESS_VALIDATION)
+  }
+  const updateBusinessValidation = (patch: Partial<GdpBusinessValidationRule>) => {
+    const current = businessValidation || DEFAULT_BUSINESS_VALIDATION
+    setBusinessValidation({
+      ...current,
+      ...patch,
+      type: "json_path",
+    })
+  }
+  const updateBusinessValidationMode = (mode: GdpBusinessValidationMode) => {
+    const current = businessValidation || DEFAULT_BUSINESS_VALIDATION
+    const nextConditions = getBusinessConditions(current)
+    setBusinessValidation({
+      ...current,
+      mode,
+      failure_conditions: mode === "failure_conditions" ? nextConditions : undefined,
+      success_conditions: mode === "success_conditions" ? nextConditions : undefined,
+      type: "json_path",
+    })
+  }
+  const updateBusinessConditions = (conditions: GdpBusinessCondition[]) => {
+    const current = businessValidation || DEFAULT_BUSINESS_VALIDATION
+    const normalizedConditions = conditions.length > 0 ? conditions : [{ path: "code", value: 0 }]
+    setBusinessValidation({
+      ...current,
+      type: "json_path",
+      failure_conditions:
+        current.mode === "failure_conditions" ? normalizedConditions : undefined,
+      success_conditions:
+        current.mode === "success_conditions" ? normalizedConditions : undefined,
+    })
+  }
+  const updateBusinessCondition = (index: number, condition: GdpBusinessCondition) => {
+    updateBusinessConditions(
+      businessConditions.map((item, itemIndex) =>
+        itemIndex === index ? condition : item
+      )
+    )
+  }
+  const addBusinessCondition = () => {
+    updateBusinessConditions([
+      ...businessConditions,
+      businessValidationMode === "success_conditions"
+        ? { path: "code", value: 0 }
+        : { path: "success", value: false },
+    ])
+  }
+  const removeBusinessCondition = (index: number) => {
+    updateBusinessConditions(
+      businessConditions.filter((_, itemIndex) => itemIndex !== index)
+    )
+  }
+  const updateBusinessMessagePaths = (value: string) => {
+    const paths = value
+      .split("\n")
+      .map(item => item.trim())
+      .filter(Boolean)
+    updateBusinessValidation({ message_paths: paths })
+  }
   const annotationHints: Array<{ key: keyof GdpToolAnnotations; label: string; desc: string }> = [
     { key: "readOnlyHint", label: "只读查询", desc: "无修改操作" },
     { key: "destructiveHint", label: "高风险/破坏性", desc: "必须强确认" },
@@ -808,6 +977,235 @@ export function HttpConfigDrawer({ open, onOpenChange, onSaved, assetId }: HttpC
                                   placeholder="例如：请优先向用户解释关键字段。"
                                 />
                               </div>
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="p-8 border rounded-[2rem] bg-sky-500/5 border-sky-500/10 space-y-5">
+                          <div className="flex items-start justify-between gap-4">
+                            <div className="space-y-1">
+                              <div className="flex items-center gap-2">
+                                <ShieldCheck className="w-4 h-4 text-sky-600" />
+                                <Label className="text-xs font-black uppercase tracking-wider text-sky-700">业务结果判定</Label>
+                              </div>
+                              <p className="text-xs text-muted-foreground">
+                                HTTP 2xx 只代表请求成功；这里定义响应体必须满足什么条件才算业务成功。
+                              </p>
+                            </div>
+                            <div className="flex items-center gap-2 shrink-0">
+                              <span className="text-xs text-muted-foreground">启用</span>
+                              <Switch
+                                checked={Boolean(businessValidation)}
+                                onCheckedChange={checked => {
+                                  if (checked) {
+                                    ensureBusinessValidation()
+                                  } else {
+                                    setBusinessValidation(undefined)
+                                  }
+                                }}
+                              />
+                            </div>
+                          </div>
+
+                          {businessValidation ? (
+                            <div className="space-y-5">
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div className="space-y-2">
+                                  <Label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">判定方式</Label>
+                                  <SelectRadix
+                                    value={businessValidationMode}
+                                    onValueChange={value => updateBusinessValidationMode(value as GdpBusinessValidationMode)}
+                                  >
+                                    <SelectTrigger className="h-11 rounded-xl bg-white border-sky-500/20">
+                                      <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      <SelectItem value="success_conditions">必须满足成功条件</SelectItem>
+                                      <SelectItem value="failure_conditions">命中失败条件即失败</SelectItem>
+                                    </SelectContent>
+                                  </SelectRadix>
+                                  <p className="text-[10px] text-muted-foreground">
+                                    {businessValidationMode === "success_conditions"
+                                      ? "适合成功报文明确定义、失败情况很多的接口。"
+                                      : "适合错误码固定、失败状态清晰的接口。"}
+                                  </p>
+                                </div>
+                                <div className="space-y-2">
+                                  <Label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">终端失败</Label>
+                                  <div className="h-11 px-4 rounded-xl bg-white border border-sky-500/20 flex items-center justify-between">
+                                    <span className="text-sm text-foreground">业务失败后停止后续调用</span>
+                                    <Switch
+                                      checked={businessValidation.is_terminal !== false}
+                                      onCheckedChange={checked => updateBusinessValidation({ is_terminal: checked })}
+                                    />
+                                  </div>
+                                  <p className="text-[10px] text-muted-foreground">
+                                    业务失败不是网络抖动，默认不重试，直接让代理结束并说明原因。
+                                  </p>
+                                </div>
+                              </div>
+
+                              <div className="space-y-3">
+                                <div className="flex items-center justify-between gap-3">
+                                  <Label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
+                                    {businessValidationMode === "success_conditions"
+                                      ? "成功条件（必须全部满足）"
+                                      : "失败条件（命中任意一条即失败）"}
+                                  </Label>
+                                  <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={addBusinessCondition}
+                                    className="h-8 rounded-full gap-1.5 text-xs"
+                                  >
+                                    <Plus className="w-3.5 h-3.5" />
+                                    添加条件
+                                  </Button>
+                                </div>
+
+                                <div className="space-y-2">
+                                  {businessConditions.map((condition, index) => {
+                                    const operator = getConditionOperator(condition)
+                                    const valueType = getConditionValueType(condition)
+                                    const value = formatConditionValue(condition)
+
+                                    return (
+                                      <div key={index} className="grid grid-cols-12 gap-2 items-center rounded-2xl border border-sky-500/10 bg-white/80 p-3">
+                                        <Input
+                                          value={condition.path}
+                                          onChange={event => updateBusinessCondition(index, { ...condition, path: event.target.value })}
+                                          placeholder="data.status"
+                                          className="col-span-12 md:col-span-4 h-10 rounded-xl font-mono text-xs"
+                                        />
+                                        <SelectRadix
+                                          value={operator}
+                                          onValueChange={nextOperator => {
+                                            updateBusinessCondition(
+                                              index,
+                                              buildCondition(condition.path, nextOperator as BusinessConditionOperator, value || "0", valueType)
+                                            )
+                                          }}
+                                        >
+                                          <SelectTrigger className="col-span-6 md:col-span-2 h-10 rounded-xl">
+                                            <SelectValue />
+                                          </SelectTrigger>
+                                          <SelectContent>
+                                            <SelectItem value="eq">等于</SelectItem>
+                                            <SelectItem value="ne">不等于</SelectItem>
+                                            <SelectItem value="exists">存在</SelectItem>
+                                            <SelectItem value="not_exists">不存在</SelectItem>
+                                          </SelectContent>
+                                        </SelectRadix>
+
+                                        {operator === "exists" || operator === "not_exists" ? (
+                                          <div className="col-span-5 md:col-span-5 h-10 px-3 rounded-xl bg-muted/40 text-xs text-muted-foreground flex items-center">
+                                            无需填写值
+                                          </div>
+                                        ) : (
+                                          <>
+                                            <SelectRadix
+                                              value={valueType}
+                                              onValueChange={nextType => {
+                                                updateBusinessCondition(
+                                                  index,
+                                                  buildCondition(condition.path, operator, value, nextType as BusinessValueType)
+                                                )
+                                              }}
+                                            >
+                                              <SelectTrigger className="col-span-5 md:col-span-2 h-10 rounded-xl">
+                                                <SelectValue />
+                                              </SelectTrigger>
+                                              <SelectContent>
+                                                <SelectItem value="string">字符串</SelectItem>
+                                                <SelectItem value="number">数字</SelectItem>
+                                                <SelectItem value="boolean">布尔</SelectItem>
+                                                <SelectItem value="null">null</SelectItem>
+                                              </SelectContent>
+                                            </SelectRadix>
+                                            {valueType === "boolean" ? (
+                                              <SelectRadix
+                                                value={value || "true"}
+                                                onValueChange={nextValue => {
+                                                  updateBusinessCondition(
+                                                    index,
+                                                    buildCondition(condition.path, operator, nextValue, "boolean")
+                                                  )
+                                                }}
+                                              >
+                                                <SelectTrigger className="col-span-7 md:col-span-3 h-10 rounded-xl">
+                                                  <SelectValue />
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                  <SelectItem value="true">true</SelectItem>
+                                                  <SelectItem value="false">false</SelectItem>
+                                                </SelectContent>
+                                              </SelectRadix>
+                                            ) : valueType === "null" ? (
+                                              <div className="col-span-7 md:col-span-3 h-10 px-3 rounded-xl bg-muted/40 text-xs text-muted-foreground flex items-center">
+                                                null
+                                              </div>
+                                            ) : (
+                                              <Input
+                                                value={value}
+                                                onChange={event => updateBusinessCondition(
+                                                  index,
+                                                  buildCondition(condition.path, operator, event.target.value, valueType)
+                                                )}
+                                                placeholder={valueType === "number" ? "0" : "ok"}
+                                                className="col-span-7 md:col-span-3 h-10 rounded-xl font-mono text-xs"
+                                              />
+                                            )}
+                                          </>
+                                        )}
+
+                                        <Button
+                                          type="button"
+                                          variant="ghost"
+                                          size="icon"
+                                          disabled={businessConditions.length <= 1}
+                                          onClick={() => removeBusinessCondition(index)}
+                                          className="col-span-1 h-10 w-10 rounded-xl text-muted-foreground hover:text-rose-600"
+                                          title="删除条件"
+                                        >
+                                          <Trash2 className="w-4 h-4" />
+                                        </Button>
+                                      </div>
+                                    )
+                                  })}
+                                </div>
+                              </div>
+
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div className="space-y-2">
+                                  <Label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">失败原因路径</Label>
+                                  <Textarea
+                                    value={businessMessagePaths}
+                                    onChange={event => updateBusinessMessagePaths(event.target.value)}
+                                    className="min-h-[110px] font-mono text-xs rounded-2xl p-4 bg-white border-sky-500/20"
+                                    placeholder={"message\nerr_msg\nerror\ndata.message"}
+                                  />
+                                  <p className="text-[10px] text-muted-foreground">
+                                    每行一个 JSON 路径，命中业务失败时按顺序提取用户可读原因。
+                                  </p>
+                                </div>
+                                <div className="space-y-2">
+                                  <Label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">默认失败提示</Label>
+                                  <Textarea
+                                    value={businessValidation.default_failure_message || ""}
+                                    onChange={event => updateBusinessValidation({ default_failure_message: event.target.value })}
+                                    className="min-h-[110px] text-xs rounded-2xl p-4 bg-white border-sky-500/20"
+                                    placeholder="接口返回未满足业务成功条件"
+                                  />
+                                  <p className="text-[10px] text-muted-foreground">
+                                    当响应体没有 message/error 字段时，用这句话解释业务失败。
+                                  </p>
+                                </div>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="rounded-2xl border border-dashed border-sky-500/20 bg-white/60 p-5 text-sm text-muted-foreground">
+                              未启用时，运行时只按 HTTP 状态码判断请求是否成功。建议对会改变业务状态的接口启用此校验。
                             </div>
                           )}
                         </div>

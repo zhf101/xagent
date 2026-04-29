@@ -1,10 +1,47 @@
-"""Unified factory for all KB storage contracts.
+"""知识库(KB)统一存储工厂 - Phase 1A存储解耦核心组件
 
-Phase 1A Part 2: StorageFactory manages singleton instances of all stores
-with lazy initialization and thread-safe access.
+【合并来源】main分支提交 98e68b3 - feat(kb): complete phase 1A storage decoupling
 
-Backward compatibility: Convenience functions (get_vector_index_store, etc.)
-are provided for existing code.
+【设计思想】
+在合并前的旧架构中,所有KB相关数据(向量索引、元数据、摄入状态等)都直接耦合在
+LanceDB的单表中,导致:
+1. 数据模型混乱 - 不同类型数据混在同一张表
+2. 扩展困难 - 新增存储类型需要修改大量代码
+3. 测试复杂 - 无法单独测试某个存储层
+4. 性能瓶颈 - 所有操作都依赖LanceDB,无法替换为其他存储引擎
+
+Phase 1A存储解耦的核心目标是:
+- 将KB的6种存储职责完全分离(向量索引、元数据、摄入状态、提示词模板、主指针、写入协调)
+- 定义清晰的抽象接口(Contracts),允许未来替换存储后端(如从LanceDB切换到PostgreSQL)
+- 提供统一的工厂类管理所有存储实例的单例,保证全局一致性
+- 保持向后兼容 - 旧代码仍可通过便捷函数访问
+
+【架构分层】
+┌─────────────────────────────────────────────┐
+│         KB API Layer (kb.py)                │  ← REST API入口
+├─────────────────────────────────────────────┤
+│    Service Layer (kb_collection_service)    │  ← 业务逻辑层
+├─────────────────────────────────────────────┤
+│      StorageFactory (本文件)                 │  ← 单例工厂,统一获取存储实例
+├─────────────────────────────────────────────┤
+│    Contracts Interface (contracts.py)       │  ← 抽象接口定义
+├─────────────────────────────────────────────┤
+│  LanceDB Implementation (lancedb_stores.py) │  ← 具体实现
+└─────────────────────────────────────────────┘
+
+【6大存储契约说明】
+1. VectorIndexStore  - 向量索引存储(文档chunk的embedding)
+2. MetadataStore     - 元数据存储(collection配置、用户权限)
+3. IngestionStatusStore - 摄入状态跟踪(文档处理进度)
+4. PromptTemplateStore  - 提示词模板存储
+5. MainPointerStore   - 主指针存储(用于蓝绿部署/版本切换)
+6. KBWriteCoordinator - 写入协调器(保证多存储间的事务一致性)
+
+【合并后改动】
+- 新增StorageFactory单例模式,使用双重检查锁保证线程安全
+- 所有存储实例延迟初始化,避免启动时创建不必要的连接
+- 提供便捷函数(get_vector_index_store等)保持向后兼容
+- 旧代码无需修改,新代码推荐使用StorageFactory
 """
 
 from __future__ import annotations

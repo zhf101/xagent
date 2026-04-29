@@ -865,15 +865,7 @@ def get_document_stats(
                     embedding_breakdown[table_name] = count
 
     except Exception as exc:  # noqa: BLE001 - convert to structured failure
-<<<<<<< HEAD
-        logger.error(
-            "Failed to initialise vector-store compatibility tables: %s",
-            exc,
-            exc_info=True,
-        )
-=======
         logger.error("Failed to get document stats: %s", exc, exc_info=True)
->>>>>>> origin/main
         return DocumentStatsResult(
             status="error",
             data=None,
@@ -983,15 +975,7 @@ def list_documents(
             }
 
     except Exception as exc:  # noqa: BLE001
-<<<<<<< HEAD
-        logger.error(
-            "Failed to initialise vector-store compatibility tables: %s",
-            exc,
-            exc_info=True,
-        )
-=======
         logger.error("Failed to list documents: %s", exc, exc_info=True)
->>>>>>> origin/main
         return DocumentListResult(
             status="error",
             documents=[],

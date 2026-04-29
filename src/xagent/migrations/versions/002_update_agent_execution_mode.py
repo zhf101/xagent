@@ -1,7 +1,7 @@
 """update_agent_execution_mode_to_new_values
 
 Revision ID: 002_update_agent_execution_mode
-Revises: 001_rename_vibe_mode_to_execution_mode
+Revises: 001_rename_vibe_mode
 Create Date: 2026-04-20 12:30:00.000000
 
 """
@@ -13,7 +13,7 @@ from sqlalchemy.engine.reflection import Inspector
 
 # revision identifiers, used by Alembic.
 revision: str = "002_update_agent_execution_mode"
-down_revision: Union[str, None] = "001_rename_vibe_mode_to_execution_mode"
+down_revision: Union[str, None] = "001_rename_vibe_mode"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

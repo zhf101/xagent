@@ -76,6 +76,10 @@ class ToolRegistry:
                 workspace_file_tool,
             )
 
+            # Import GDP tool modules to register scenario-specific tools
+            import xagent.gdp.hrun.adapter.gdp_http_tools  # noqa: F401 - registers query_http_resource, execute_http_resource
+            import xagent.gdp.vanna.adapter.vanna_sql_tools  # noqa: F401 - registers query_vanna_sql_asset, execute_vanna_sql_asset
+
             cls._modules_imported = True
             logger.info("Tool modules imported and registered")
         except Exception as e:

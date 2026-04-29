@@ -16,7 +16,6 @@ from .api.agents import router as agents_router
 from .api.auth import auth_router
 from .api.channel import router as channel_router
 from .api.chat import chat_router
-from .api.cloud_storage import cloud_router
 from .api.custom_api import custom_api_router
 from .api.files import file_router
 from .api.kb import kb_router
@@ -27,11 +26,12 @@ from .api.monitor import monitor_router
 from .api.progress_ws import progress_ws_router
 from .api.skills import router as skills_router
 from .api.system import system_router
+from .api.system_registry import router as system_registry_router
 from .api.templates import router as templates_router
-from .api.text2sql import text2sql_router
 from .api.tools import tools_router
 from .api.websocket import ws_router
 from .api.widget import widget_router
+from xagent.gdp.hrun.api.http_assets import router as gdp_http_assets_router
 from .dynamic_memory_store import get_memory_store
 from .logging_config import setup_logging
 from .models.database import init_db
@@ -147,7 +147,6 @@ memory_router = MemoryManagementRouter(get_memory_store).get_router()
 # API routers
 app.include_router(auth_router)
 app.include_router(chat_router)
-app.include_router(cloud_router)
 app.include_router(file_router)
 app.include_router(kb_router)
 app.include_router(model_router)
@@ -157,16 +156,17 @@ app.include_router(progress_ws_router)
 app.include_router(memory_router)
 app.include_router(mcp_router)
 app.include_router(custom_api_router)
-app.include_router(text2sql_router)
 app.include_router(tools_router)
 app.include_router(admin_users_router)
 app.include_router(admin_mcp_router)
 app.include_router(skills_router)
 app.include_router(system_router)
+app.include_router(system_registry_router)
 app.include_router(templates_router)
 app.include_router(agents_router)
 app.include_router(channel_router, prefix="/api/channels", tags=["Channels"])
 app.include_router(widget_router)
+app.include_router(gdp_http_assets_router)
 
 
 # initial database and skill manager

@@ -3,6 +3,15 @@ from typing import Any, List, Optional, Set
 
 from pydantic import BaseModel, field_validator
 
+SUPPORTED_MODEL_CATEGORIES: Set[str] = {"llm", "embedding"}
+SUPPORTED_DEFAULT_CONFIG_TYPES: Set[str] = {
+    "general",
+    "small_fast",
+    "visual",
+    "compact",
+    "embedding",
+}
+
 
 def _validate_abilities_for_category(abilities: List[str], category: str) -> List[str]:
     """
@@ -10,7 +19,7 @@ def _validate_abilities_for_category(abilities: List[str], category: str) -> Lis
 
     Args:
         abilities: List of abilities to validate
-        category: Model category (e.g., 'image', 'embedding', 'speech', 'llm')
+        category: Model category (currently only 'llm' and 'embedding')
 
     Returns:
         The validated abilities list
@@ -18,20 +27,7 @@ def _validate_abilities_for_category(abilities: List[str], category: str) -> Lis
     Raises:
         ValueError: If abilities are invalid for the category or empty
     """
-    if category == "image":
-        # Image models can only have "generate" and "edit" abilities
-        valid_image_abilities: Set[str] = {"generate", "edit"}
-        invalid_abilities = set(abilities) - valid_image_abilities
-
-        if invalid_abilities:
-            raise ValueError(
-                f"Invalid abilities for image model: {invalid_abilities}. "
-                f"Valid abilities are: {valid_image_abilities}"
-            )
-
-        if not abilities:
-            raise ValueError("Image model must have at least one ability")
-    elif category == "embedding":
+    if category == "embedding":
         # Embedding models can only have "embedding" ability
         valid_embedding_abilities: Set[str] = {"embedding"}
         invalid_abilities = set(abilities) - valid_embedding_abilities
@@ -44,20 +40,6 @@ def _validate_abilities_for_category(abilities: List[str], category: str) -> Lis
 
         if not abilities:
             raise ValueError("Embedding model must have at least one ability")
-    elif category == "speech":
-        # Speech models can have "asr", "tts" abilities
-        valid_speech_abilities: Set[str] = {"asr", "tts"}
-        invalid_abilities = set(abilities) - valid_speech_abilities
-
-        if invalid_abilities:
-            raise ValueError(
-                f"Invalid abilities for speech model: {invalid_abilities}. "
-                f"Valid abilities are: {valid_speech_abilities}"
-            )
-
-        if not abilities:
-            raise ValueError("Speech model must have at least one ability")
-
     return abilities
 
 
@@ -87,6 +69,15 @@ class ModelCreate(BaseModel):
         """Strip whitespace from string fields"""
         if isinstance(v, str):
             return v.strip()
+        return v
+
+    @field_validator("category")
+    @classmethod
+    def validate_category(cls, v: str) -> str:
+        if v not in SUPPORTED_MODEL_CATEGORIES:
+            raise ValueError(
+                f"Unsupported category: {v}. Valid categories are: {SUPPORTED_MODEL_CATEGORIES}"
+            )
         return v
 
     @field_validator("abilities")
@@ -127,6 +118,17 @@ class ModelUpdate(BaseModel):
         """Strip whitespace from string fields"""
         if isinstance(v, str):
             return v.strip()
+        return v
+
+    @field_validator("category")
+    @classmethod
+    def validate_category(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        if v not in SUPPORTED_MODEL_CATEGORIES:
+            raise ValueError(
+                f"Unsupported category: {v}. Valid categories are: {SUPPORTED_MODEL_CATEGORIES}"
+            )
         return v
 
     @field_validator("abilities")
@@ -213,26 +215,14 @@ class UserDefaultModelCreate(BaseModel):
     """User default model configuration creation schema"""
 
     model_id: int
-    config_type: str  # 'general', 'small_fast', 'visual', 'compact', 'embedding', 'image', 'image_edit', 'asr', 'tts', 'speech'
+    config_type: str  # 'general', 'small_fast', 'visual', 'compact', 'embedding'
 
     @field_validator("config_type")
     @classmethod
     def validate_config_type(cls, v: str) -> str:
-        valid_types = {
-            "general",
-            "small_fast",
-            "visual",
-            "compact",
-            "embedding",
-            "image",
-            "image_edit",
-            "asr",
-            "tts",
-            "speech",
-        }
-        if v not in valid_types:
+        if v not in SUPPORTED_DEFAULT_CONFIG_TYPES:
             raise ValueError(
-                f"Invalid config_type: {v}. Valid types are: {valid_types}"
+                f"Invalid config_type: {v}. Valid types are: {SUPPORTED_DEFAULT_CONFIG_TYPES}"
             )
         return v
 
