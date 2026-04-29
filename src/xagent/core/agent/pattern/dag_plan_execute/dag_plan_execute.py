@@ -309,7 +309,7 @@ class DAGPlanExecutePattern(AgentPattern):
         self._continuation_requested = False
         self._execution_interrupted = False
 
-        # For process mode, append examples to the task for LLM reference
+        # For execution modes with examples, append examples to the task for LLM reference
         if context and hasattr(context, "state"):
             vibe_mode = context.state.get("vibe_mode")
             if vibe_mode == "process":

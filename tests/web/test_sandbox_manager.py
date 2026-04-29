@@ -9,6 +9,7 @@ import pytest
 from xagent.web.sandbox_manager import (
     SandboxManager,
     _create_boxlite_service,
+    _create_docker_service,
     _create_sandbox_service,
     get_sandbox_manager,
 )
@@ -35,29 +36,45 @@ class TestCreateSandboxService:
             result = _create_sandbox_service()
         assert result is None
 
-    def test_boxlite_default(self):
-        """Test default implementation is boxlite."""
+    def test_docker_default(self):
+        """Test default implementation is docker."""
         with (
             patch.dict("os.environ", {"SANDBOX_ENABLED": "true"}, clear=False),
-            patch("xagent.web.sandbox_manager._create_boxlite_service") as mock_create,
+            patch("xagent.web.sandbox_manager._create_docker_service") as mock_create,
         ):
+            os.environ.pop("SANDBOX_IMPLEMENTATION", None)
             mock_create.return_value = MagicMock()
             result = _create_sandbox_service()
         assert result is not None
         mock_create.assert_called_once()
 
-    def test_unknown_implementation_falls_back_to_boxlite(self):
-        """Test unknown implementation falls back to boxlite."""
+    def test_unknown_implementation_falls_back_to_docker(self):
+        """Test unknown implementation falls back to docker."""
         with (
             patch.dict(
                 "os.environ",
                 {"SANDBOX_ENABLED": "true", "SANDBOX_IMPLEMENTATION": "unknown"},
                 clear=False,
             ),
-            patch("xagent.web.sandbox_manager._create_boxlite_service") as mock_create,
+            patch("xagent.web.sandbox_manager._create_docker_service") as mock_create,
         ):
             mock_create.return_value = MagicMock()
             _create_sandbox_service()
+        mock_create.assert_called_once()
+
+    def test_docker_selected(self):
+        """Test docker implementation selection."""
+        with (
+            patch.dict(
+                "os.environ",
+                {"SANDBOX_ENABLED": "true", "SANDBOX_IMPLEMENTATION": "docker"},
+                clear=False,
+            ),
+            patch("xagent.web.sandbox_manager._create_docker_service") as mock_create,
+        ):
+            mock_create.return_value = MagicMock()
+            result = _create_sandbox_service()
+        assert result is not None
         mock_create.assert_called_once()
 
 
@@ -167,6 +184,36 @@ class TestCreateBoxliteService:
             patch("xagent.sandbox.MemBoxliteStore", return_value=MagicMock()),
         ):
             result = _create_boxlite_service()
+
+        assert result is None
+
+
+class TestCreateDockerService:
+    """Test _create_docker_service function."""
+
+    def test_uses_db_store(self):
+        """Test Docker sandbox service is created with persistent store."""
+        with (
+            patch("xagent.web.sandbox_store.DBDockerStore") as mock_store_cls,
+            patch(
+                "xagent.sandbox.DockerSandboxService", return_value=MagicMock()
+            ) as mock_service_cls,
+        ):
+            _create_docker_service()
+
+        mock_store_cls.assert_called_once_with()
+        assert mock_service_cls.call_args[1]["store"] is mock_store_cls.return_value
+
+    def test_creation_failure_returns_none(self):
+        """Test that DockerSandboxService construction failure returns None."""
+        with (
+            patch("xagent.web.sandbox_store.DBDockerStore", return_value=MagicMock()),
+            patch(
+                "xagent.sandbox.DockerSandboxService",
+                side_effect=RuntimeError("docker not available"),
+            ),
+        ):
+            result = _create_docker_service()
 
         assert result is None
 

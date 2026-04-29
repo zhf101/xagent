@@ -19,7 +19,11 @@ except ImportError:
 
 from xagent.sandbox import DEFAULT_SANDBOX_IMAGE
 from xagent.sandbox.base import SandboxConfig, SandboxTemplate
-from xagent.sandbox.boxlite_sandbox import BoxliteSandboxService, MemBoxliteStore
+from xagent.sandbox.boxlite_sandbox import (
+    BoxliteSandbox,
+    BoxliteSandboxService,
+    MemBoxliteStore,
+)
 
 
 @pytest.fixture(scope="module")
@@ -51,15 +55,33 @@ requires_boxlite = pytest.mark.skipif(
 )
 
 
+@pytest.fixture(scope="module")
+def boxlite_service():
+    """Provide a shared Boxlite sandbox service for integration-style tests."""
+    return BoxliteSandboxService(MemBoxliteStore())
+
+
+class TestBoxliteSandboxRunCodeValidation:
+    """Test lightweight run_code validation paths."""
+
+    @pytest.mark.asyncio
+    async def test_run_code_rejects_unsupported_code_type(self):
+        """Unsupported code types should fail explicitly."""
+        sandbox = object.__new__(BoxliteSandbox)
+
+        with pytest.raises(ValueError, match="Unsupported code type: ruby"):
+            await sandbox.run_code("puts 'hi'", code_type="ruby")  # type: ignore[arg-type]
+
+
 @requires_boxlite
 class TestBoxliteSandboxService:
     """Test BoxliteSandboxService service layer functionality"""
 
     @pytest.mark.asyncio(loop_scope="module")
-    async def test_create_and_delete_sandbox(self):
+    async def test_create_and_delete_sandbox(self, boxlite_service):
         """Test creating and deleting sandbox"""
         name = "test_create_and_delete_sandbox"
-        service = BoxliteSandboxService(MemBoxliteStore())
+        service = boxlite_service
 
         # Cleanup
         try:
@@ -170,10 +192,10 @@ class TestBoxliteSandboxService:
                 pass
 
     @pytest.mark.asyncio(loop_scope="module")
-    async def test_get_or_create_reuse(self):
+    async def test_get_or_create_reuse(self, boxlite_service):
         """Test get_or_create reuse logic"""
         name = "test_get_or_create_reuse"
-        service = BoxliteSandboxService(MemBoxliteStore())
+        service = boxlite_service
 
         try:
             await service.delete(name)
@@ -215,10 +237,10 @@ class TestBoxliteSandboxService:
                 pass
 
     @pytest.mark.asyncio(loop_scope="module")
-    async def test_list_sandboxes(self):
+    async def test_list_sandboxes(self, boxlite_service):
         """Test listing sandboxes"""
         sandbox_names = ["test-list-1", "test-list-2"]
-        service = BoxliteSandboxService(MemBoxliteStore())
+        service = boxlite_service
 
         # Cleanup
         for name in sandbox_names:
@@ -263,10 +285,10 @@ class TestBoxliteSandboxService:
                     pass
 
     @pytest.mark.asyncio(loop_scope="module")
-    async def test_concurrent_get_or_create(self):
+    async def test_concurrent_get_or_create(self, boxlite_service):
         """Test if concurrent get_or_create with same name causes conflicts"""
         name = "test_concurrent_get_or_create"
-        service = BoxliteSandboxService(MemBoxliteStore())
+        service = boxlite_service
 
         try:
             await service.delete(name)
@@ -315,10 +337,10 @@ class TestBoxliteSandboxService:
                 pass
 
     @pytest.mark.asyncio(loop_scope="module")
-    async def test_concurrent_sandbox_exec(self):
+    async def test_concurrent_sandbox_exec(self, boxlite_service):
         """Test if concurrent execution on same sandbox instance causes conflicts"""
         name = "test_concurrent_sandbox_exec"
-        service = BoxliteSandboxService(MemBoxliteStore())
+        service = boxlite_service
 
         try:
             await service.delete(name)
@@ -362,10 +384,10 @@ class TestBoxliteSandboxService:
                 pass
 
     @pytest.mark.asyncio(loop_scope="module")
-    async def test_concurrent_sandboxs_exec(self):
+    async def test_concurrent_sandboxs_exec(self, boxlite_service):
         """Test if concurrent execution on different sandbox instances (same underlying box) causes conflicts"""
         name = "test_concurrent_sandboxs_exec"
-        service = BoxliteSandboxService(MemBoxliteStore())
+        service = boxlite_service
 
         try:
             await service.delete(name)
@@ -429,10 +451,10 @@ class TestBoxliteSandbox:
     """Test BoxliteSandbox instance functionality"""
 
     @pytest.mark.asyncio(loop_scope="module")
-    async def test_exec_command(self):
+    async def test_exec_command(self, boxlite_service):
         """Test executing commands"""
         name = "test_exec_command"
-        service = BoxliteSandboxService(MemBoxliteStore())
+        service = boxlite_service
 
         try:
             await service.delete(name)
@@ -470,10 +492,10 @@ class TestBoxliteSandbox:
                 pass
 
     @pytest.mark.asyncio(loop_scope="module")
-    async def test_run_python_code(self):
+    async def test_run_python_code(self, boxlite_service):
         """Test running Python code"""
         name = "test_run_python_code"
-        service = BoxliteSandboxService(MemBoxliteStore())
+        service = boxlite_service
 
         try:
             await service.delete(name)
@@ -520,10 +542,10 @@ class TestBoxliteSandbox:
                 pass
 
     @pytest.mark.asyncio(loop_scope="module")
-    async def test_run_node_code(self):
+    async def test_run_node_code(self, boxlite_service):
         """Test running Node.js code"""
         name = "test_run_node_code"
-        service = BoxliteSandboxService(MemBoxliteStore())
+        service = boxlite_service
 
         try:
             await service.delete(name)
@@ -568,10 +590,10 @@ class TestBoxliteSandbox:
                 pass
 
     @pytest.mark.asyncio(loop_scope="module")
-    async def test_file_read_write(self):
+    async def test_file_read_write(self, boxlite_service):
         """Test file read and write operations"""
         name = "test_file_read_write"
-        service = BoxliteSandboxService(MemBoxliteStore())
+        service = boxlite_service
 
         try:
             await service.delete(name)
@@ -624,10 +646,10 @@ class TestBoxliteSandbox:
                 pass
 
     @pytest.mark.asyncio(loop_scope="module")
-    async def test_upload_download(self):
+    async def test_upload_download(self, boxlite_service):
         """Test file upload and download"""
         name = "test_upload_download"
-        service = BoxliteSandboxService(MemBoxliteStore())
+        service = boxlite_service
 
         try:
             await service.delete(name)
@@ -705,10 +727,10 @@ class TestBoxliteSandbox:
                 pass
 
     @pytest.mark.asyncio(loop_scope="module")
-    async def test_upload_download_with_volume(self):
+    async def test_upload_download_with_volume(self, boxlite_service):
         """Test upload/download compatibility with volume mounts"""
         name = "test_upload_download_with_volume"
-        service = BoxliteSandboxService(MemBoxliteStore())
+        service = boxlite_service
 
         try:
             await service.delete(name)

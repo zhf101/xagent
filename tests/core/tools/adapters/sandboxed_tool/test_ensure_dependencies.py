@@ -6,10 +6,16 @@ All sandbox interactions are mocked.
 
 import asyncio
 from dataclasses import dataclass
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from tests.core.tools.adapters.sandboxed_tool.conftest import (
+    FakeBaseTool,
+)
+from xagent.core.tools.adapters.vibe.sandboxed_tool.sandbox_config import (
+    sandbox_config,
+)
 from xagent.core.tools.adapters.vibe.sandboxed_tool.sandboxed_tool_wrapper import (
     SandboxedToolWrapper,
 )
@@ -32,11 +38,13 @@ def _make_sandbox(name: str = "sandbox-1") -> MagicMock:
     return sb
 
 
-def _make_tool(name: str = "python_executor") -> MagicMock:
-    """Create a mock AbstractBaseTool."""
-    tool = MagicMock()
-    tool.name = name
-    return tool
+@sandbox_config()
+class _DefaultTool(FakeBaseTool):
+    """Fake tool with no extra runtime packages."""
+
+    @property
+    def name(self) -> str:
+        return "default_tool"
 
 
 @pytest.fixture(autouse=True)
@@ -50,19 +58,6 @@ def _clear_class_state():
     SandboxedToolWrapper._sandbox_deps_locks = {}
 
 
-_FAKE_CONFIG_PATH = (
-    "src.xagent.core.tools.adapters.vibe.sandboxed_tool"
-    ".sandboxed_tool_wrapper.get_sandbox_tool_config"
-)
-
-
-def _fake_config(packages: list[str] | None = None):
-    cfg = MagicMock()
-    cfg.packages = packages or ["numpy"]
-    cfg.env_vars = []
-    return cfg
-
-
 class TestEnsureDependencies:
     """Test _ensure_dependencies with mocked sandbox."""
 
@@ -70,9 +65,7 @@ class TestEnsureDependencies:
     async def test_first_call_installs(self):
         """First call should write requirements and run pip install."""
         sandbox = _make_sandbox("sb-install")
-
-        with patch(_FAKE_CONFIG_PATH, return_value=_fake_config(["numpy"])):
-            wrapper = SandboxedToolWrapper(_make_tool(), sandbox)
+        wrapper = SandboxedToolWrapper(_DefaultTool(), sandbox)
 
         await wrapper._ensure_dependencies()
 
@@ -84,9 +77,7 @@ class TestEnsureDependencies:
     async def test_second_call_skips(self):
         """Second call on same sandbox should skip installation."""
         sandbox = _make_sandbox("sb-skip")
-
-        with patch(_FAKE_CONFIG_PATH, return_value=_fake_config()):
-            wrapper = SandboxedToolWrapper(_make_tool(), sandbox)
+        wrapper = SandboxedToolWrapper(_DefaultTool(), sandbox)
 
         await wrapper._ensure_dependencies()
         sandbox.write_file.reset_mock()
@@ -101,10 +92,8 @@ class TestEnsureDependencies:
     async def test_two_wrappers_same_sandbox_install_once(self):
         """Two wrappers sharing the same sandbox should only install once."""
         sandbox = _make_sandbox("sb-shared")
-
-        with patch(_FAKE_CONFIG_PATH, return_value=_fake_config()):
-            w1 = SandboxedToolWrapper(_make_tool("tool_a"), sandbox)
-            w2 = SandboxedToolWrapper(_make_tool("tool_b"), sandbox)
+        w1 = SandboxedToolWrapper(_DefaultTool(), sandbox)
+        w2 = SandboxedToolWrapper(_DefaultTool(), sandbox)
 
         await w1._ensure_dependencies()
         sandbox.exec.reset_mock()
@@ -120,10 +109,8 @@ class TestEnsureDependencies:
         """Different sandboxes should install independently."""
         sb1 = _make_sandbox("sb-a")
         sb2 = _make_sandbox("sb-b")
-
-        with patch(_FAKE_CONFIG_PATH, return_value=_fake_config()):
-            w1 = SandboxedToolWrapper(_make_tool(), sb1)
-            w2 = SandboxedToolWrapper(_make_tool(), sb2)
+        w1 = SandboxedToolWrapper(_DefaultTool(), sb1)
+        w2 = SandboxedToolWrapper(_DefaultTool(), sb2)
 
         await w1._ensure_dependencies()
         await w2._ensure_dependencies()
@@ -138,9 +125,7 @@ class TestEnsureDependencies:
         sandbox.exec = AsyncMock(
             return_value=FakeExecResult(exit_code=1, stderr="pip error")
         )
-
-        with patch(_FAKE_CONFIG_PATH, return_value=_fake_config()):
-            wrapper = SandboxedToolWrapper(_make_tool(), sandbox)
+        wrapper = SandboxedToolWrapper(_DefaultTool(), sandbox)
 
         with pytest.raises(RuntimeError, match="Dependency installation failed"):
             await wrapper._ensure_dependencies()
@@ -151,9 +136,7 @@ class TestEnsureDependencies:
     async def test_no_extra_packages_still_installs_base(self):
         """Even with no extra packages, base deps (pydantic) should be installed."""
         sandbox = _make_sandbox("sb-base")
-
-        with patch(_FAKE_CONFIG_PATH, return_value=_fake_config(packages=[])):
-            wrapper = SandboxedToolWrapper(_make_tool(), sandbox)
+        wrapper = SandboxedToolWrapper(_DefaultTool(), sandbox)
 
         await wrapper._ensure_dependencies()
 
@@ -174,10 +157,8 @@ class TestEnsureDependencies:
 
         sandbox = _make_sandbox("sb-concurrent")
         sandbox.exec = slow_exec
-
-        with patch(_FAKE_CONFIG_PATH, return_value=_fake_config()):
-            w1 = SandboxedToolWrapper(_make_tool("t1"), sandbox)
-            w2 = SandboxedToolWrapper(_make_tool("t2"), sandbox)
+        w1 = SandboxedToolWrapper(_DefaultTool(), sandbox)
+        w2 = SandboxedToolWrapper(_DefaultTool(), sandbox)
 
         await asyncio.gather(
             w1._ensure_dependencies(),

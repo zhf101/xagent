@@ -45,3 +45,21 @@ class SandboxInfo(Base):  # type: ignore[no-any-unimported]
 
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+
+class SandboxSnapshot(Base):  # type: ignore[no-any-unimported]
+    """Database model for persisted sandbox snapshots."""
+
+    __tablename__ = "sandbox_snapshot"
+    __table_args__ = (
+        UniqueConstraint(
+            "snapshot_id", "sandbox_type", name="uix_snapshot_id_sandbox_type"
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    sandbox_type = Column(String(50), nullable=False, index=True)
+    snapshot_id = Column(String(255), nullable=False, index=True)
+    metadata_json = Column("metadata", Text, nullable=False)
+    created_at = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())

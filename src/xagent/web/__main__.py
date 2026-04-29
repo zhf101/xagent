@@ -15,8 +15,12 @@ from pathlib import Path
 from typing import cast
 
 import uvicorn
+from dotenv import load_dotenv
 
 from .logging_config import LogLevel, setup_logging
+
+# Load environment variables from .env file
+load_dotenv()
 
 
 JWT_ENV_KEYS = (
@@ -117,10 +121,9 @@ def main() -> None:
     """Main function"""
     args = parse_args()
 
-    # 日志需要在导入 app 前先初始化；
-    # `.env` 则已经在 `xagent.config` 模块导入阶段统一加载，不再在入口脚本重复处理。
-    log_level = "debug" if args.debug else args.log_level
-    setup_logging(level=cast(LogLevel, log_level) if log_level else None)
+    # Configure logging BEFORE importing app
+    log_level = "DEBUG" if args.debug else (args.log_level or "").upper()
+    setup_logging(level=cast(LogLevel, log_level) if log_level else None, force=True)
 
     logger = logging.getLogger(__name__)
     warn_if_example_jwt_config(logger)
@@ -146,7 +149,7 @@ def main() -> None:
             host=args.host,
             port=args.port,
             reload=args.reload,
-            log_level=log_level,
+            log_level=log_level.lower() if log_level else None,
         )
     except KeyboardInterrupt:
         logger.info("⏹️  Service stopped")

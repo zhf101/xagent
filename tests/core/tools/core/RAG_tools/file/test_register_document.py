@@ -70,6 +70,42 @@ class TestRegisterDocument:
         )
         assert record["file_id"] == "file-123"
 
+    def test_register_document_preserves_none_file_id(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Registrations without file_id should persist None (not empty string)."""
+        db_dir = tmp_path / "lancedb"
+        monkeypatch.setenv("LANCEDB_DIR", str(db_dir))
+
+        test_file = tmp_path / "test_no_file_id.txt"
+        test_file.write_text("Test content without file_id")
+
+        response = register_document(
+            collection="test_collection",
+            source_path=str(test_file),
+            file_id=None,
+        )
+
+        conn = get_connection_from_env()
+        table = conn.open_table("documents")
+        record = (
+            table.search()
+            .where(
+                f"collection = 'test_collection' AND doc_id = '{response['doc_id']}'"
+            )
+            .to_pandas()
+            .iloc[0]
+        )
+        # Should be None, not empty string (new registrations preserve None)
+        # Use pd.isna to handle both None and pandas NA values
+        import pandas as pd
+
+        assert record["file_id"] != "", "file_id must not be empty string for new rows"
+        assert record["file_id"] is None or pd.isna(record["file_id"]), (
+            f"file_id should be None or NA, got {record['file_id']!r} "
+            f"(type: {type(record['file_id']).__name__})"
+        )
+
     def test_register_document_auto_file_type_detection(
         self, tmp_path: Path, monkeypatch
     ) -> None:
@@ -247,10 +283,10 @@ class TestRegisterDocument:
             register_document(collection="test_collection", source_path=str(test_file))
 
     @patch(
-        "xagent.core.tools.core.RAG_tools.file.register_document.get_connection_from_env"
+        "xagent.core.tools.core.RAG_tools.file.register_document.get_vector_index_store"
     )
     def test_register_document_configuration_error(
-        self, mock_get_db, tmp_path: Path
+        self, mock_get_store, tmp_path: Path
     ) -> None:
         """Test handling configuration errors."""
         # Setup test file
@@ -258,7 +294,11 @@ class TestRegisterDocument:
         test_file.write_text("Test content")
 
         # Mock database connection to raise configuration error
-        mock_get_db.side_effect = ConfigurationError("LANCEDB_DIR not configured")
+        mock_store = MagicMock()
+        mock_store.count_rows_or_zero.side_effect = ConfigurationError(
+            "LANCEDB_DIR not configured"
+        )
+        mock_get_store.return_value = mock_store
 
         # Should propagate ConfigurationError
         with pytest.raises(ConfigurationError):
@@ -285,10 +325,10 @@ class TestRegisterDocument:
             register_document(collection=collection, source_path=str(unsupported_file))
 
     @patch(
-        "xagent.core.tools.core.RAG_tools.file.register_document.get_connection_from_env"
+        "xagent.core.tools.core.RAG_tools.file.register_document.get_vector_index_store"
     )
     def test_register_document_database_operation_error(
-        self, mock_get_db, tmp_path: Path, monkeypatch
+        self, mock_get_store, tmp_path: Path, monkeypatch
     ) -> None:
         """Test handling database operation errors."""
         # Setup environment variable
@@ -299,15 +339,10 @@ class TestRegisterDocument:
         test_file = tmp_path / "db_error_test.txt"
         test_file.write_text("Test content")
 
-        # Mock database connection to succeed, but table operations to fail
-        mock_db = MagicMock()
-        mock_get_db.return_value = mock_db
-
-        # Mock ensure_documents_table to succeed
-        mock_db.ensure_documents_table = MagicMock()
-
-        # Mock open_table to raise an error
-        mock_db.open_table.side_effect = Exception("Table access failed")
+        # Mock vector store to raise an error
+        mock_store = MagicMock()
+        mock_store.count_rows_or_zero.side_effect = Exception("Table access failed")
+        mock_get_store.return_value = mock_store
 
         # Should propagate DatabaseOperationError
         with pytest.raises(DatabaseOperationError, match="Table access failed"):

@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from ...config import get_uploads_dir
 from ...core.agent.service import AgentService
 from ...core.memory.in_memory import InMemoryMemoryStore
+from ...core.utils.type_check import ensure_list
 from ..auth_dependencies import get_current_user
 from ..models.agent import Agent, AgentStatus
 from ..models.database import get_db
@@ -37,7 +38,7 @@ class AgentCreateRequest(BaseModel):
     description: Optional[str] = Field(None, description="Agent description")
     instructions: Optional[str] = Field(None, description="System instructions/prompt")
     execution_mode: Optional[str] = Field(
-        "react", description="Execution mode: simple, react, or graph"
+        "balanced", description="Execution mode: flash, balanced, or think"
     )
     models: Optional[dict] = Field(
         None, description="Model config: {general, small_fast, visual, compact}"
@@ -64,7 +65,7 @@ class AgentUpdateRequest(BaseModel):
     description: Optional[str] = None
     instructions: Optional[str] = None
     execution_mode: Optional[str] = Field(
-        None, description="Execution mode: simple, react, or graph"
+        None, description="Execution mode: flash, balanced, or think"
     )
     models: Optional[dict] = None
     knowledge_bases: Optional[List[str]] = None
@@ -74,6 +75,8 @@ class AgentUpdateRequest(BaseModel):
         None, description="Suggested prompt examples for users"
     )
     logo_base64: Optional[str] = None
+    widget_enabled: Optional[bool] = None
+    allowed_domains: Optional[List[str]] = None
 
 
 class AgentResponse(BaseModel):
@@ -95,6 +98,8 @@ class AgentResponse(BaseModel):
     published_at: Optional[str]
     created_at: str
     updated_at: str
+    widget_enabled: bool
+    allowed_domains: List[str]
 
 
 class AgentListItem(BaseModel):
@@ -107,6 +112,8 @@ class AgentListItem(BaseModel):
     status: str
     created_at: str
     updated_at: str
+    widget_enabled: bool
+    allowed_domains: List[str]
 
 
 class PublishResponse(BaseModel):
@@ -155,9 +162,18 @@ def enhance_system_prompt_with_kb(
     """Append knowledge-base priority instructions when KBs are configured."""
     if not knowledge_bases:
         return system_prompt
+
+    kb_list = ", ".join(knowledge_bases)
+    kb_prompt = (
+        f"\n\nAvailable knowledge bases: {kb_list}. "
+        "These knowledge bases are already selected. "
+        "Do not call list_knowledge_bases to discover them; "
+        "use knowledge_search directly for answers."
+    )
+
     if system_prompt:
-        return system_prompt + KB_PRIORITY_PROMPT
-    return KB_PRIORITY_PROMPT.lstrip("\n")
+        return system_prompt + kb_prompt
+    return kb_prompt.lstrip("\n")
 
 
 def enhance_system_prompt_for_data_production(
@@ -256,15 +272,17 @@ def _agent_to_response(agent: Agent, db: Session) -> AgentResponse:
         instructions=agent.instructions,
         execution_mode=agent.execution_mode or "graph",
         models=agent.models,
-        knowledge_bases=agent.knowledge_bases or [],
-        skills=agent.skills or [],
-        tool_categories=agent.tool_categories or [],
-        suggested_prompts=agent.suggested_prompts or [],
+        knowledge_bases=ensure_list(agent.knowledge_bases) or [],
+        skills=ensure_list(agent.skills) or [],
+        tool_categories=ensure_list(agent.tool_categories) or [],
+        suggested_prompts=ensure_list(agent.suggested_prompts) or [],
         logo_url=agent.logo_url,
         status=agent.status.value,
         published_at=agent.published_at.isoformat() if agent.published_at else None,
         created_at=agent.created_at.isoformat(),
         updated_at=agent.updated_at.isoformat(),
+        widget_enabled=agent.widget_enabled,
+        allowed_domains=ensure_list(agent.allowed_domains) or [],
     )
 
 
@@ -369,6 +387,8 @@ async def create_agent(
             tool_categories=agent_data.tool_categories,
             suggested_prompts=agent_data.suggested_prompts,
             status=AgentStatus.DRAFT,
+            widget_enabled=True,
+            allowed_domains=[],
         )
 
         db.add(agent)
@@ -419,6 +439,8 @@ async def list_agents(
                 updated_at=agent.updated_at.isoformat()
                 if agent.updated_at
                 else agent.created_at.isoformat(),
+                widget_enabled=agent.widget_enabled,
+                allowed_domains=agent.allowed_domains or [],
             )
             for agent in agents
         ]
@@ -519,6 +541,10 @@ async def update_agent(
             agent.execution_mode = agent_data.execution_mode  # type: ignore[assignment]
         if agent_data.suggested_prompts is not None:
             agent.suggested_prompts = agent_data.suggested_prompts  # type: ignore[assignment]
+        if agent_data.widget_enabled is not None:
+            agent.widget_enabled = agent_data.widget_enabled  # type: ignore[assignment]
+        if agent_data.allowed_domains is not None:
+            agent.allowed_domains = agent_data.allowed_domains  # type: ignore[assignment]
 
         # Handle logo
         if agent_data.logo_base64 is not None:
@@ -710,7 +736,7 @@ class AgentPreviewRequest(BaseModel):
 
     instructions: Optional[str] = Field(None, description="System instructions/prompt")
     execution_mode: Optional[str] = Field(
-        "react", description="Execution mode: simple, react, or graph"
+        "balanced", description="Execution mode: flash, balanced, or think"
     )
     models: Optional[dict] = Field(
         None, description="Model config: {general, small_fast, visual, compact}"
@@ -822,18 +848,20 @@ async def preview_agent(
             workspace_base_dir=str(get_uploads_dir() / "preview"),
         )
 
-        # Determine execution mode (default to "graph")
-        execution_mode = request.execution_mode or "graph"
+        # Determine execution mode (default to "think")
+        execution_mode = request.execution_mode or "think"
 
         # Map execution mode to use_dag_pattern
-        # simple: reserved (use react for now)
-        # react: ReAct pattern
-        # graph: DAG/Graph plan-execute pattern
-        if execution_mode == "graph":
+        # flash: SingleCall pattern (quick tasks)
+        # balanced: ReAct pattern (everyday tasks)
+        # think: DAG/Graph plan-execute pattern (complex tasks)
+        if execution_mode == "think":
             use_dag_pattern = True
-        elif execution_mode == "react":
+        elif execution_mode == "balanced":
             use_dag_pattern = False
-        else:  # simple mode - not implemented yet, fallback to react
+        elif execution_mode == "flash":
+            use_dag_pattern = False  # SingleCall doesn't use DAG
+        else:  # fallback to balanced (react)
             use_dag_pattern = False
 
         # Create agent service (no tracer - no database logging for preview)

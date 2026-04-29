@@ -7,7 +7,7 @@
 import enum
 from datetime import datetime
 
-from sqlalchemy import JSON, Column, DateTime
+from sqlalchemy import JSON, Boolean, Column, DateTime
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy import ForeignKey, Integer, String, Text
 from sqlalchemy.orm import relationship
@@ -26,9 +26,9 @@ class AgentStatus(enum.Enum):
 class ExecutionMode(enum.Enum):
     """Agent 执行模式枚举。"""
 
-    SIMPLE = "simple"  # Reserved: single LLM call (not implemented yet)
-    REACT = "react"  # ReAct pattern for reasoning and acting
-    GRAPH = "graph"  # DAG/Graph plan-execute pattern for complex tasks
+    FLASH = "flash"  # Simple, quick tasks (single_call pattern)
+    BALANCED = "balanced"  # Most everyday tasks (react pattern)
+    THINK = "think"  # Complex, multi-step tasks (dag_plan_execute pattern)
 
 
 class Agent(Base):  # type: ignore
@@ -52,8 +52,8 @@ class Agent(Base):  # type: ignore
 
     # Configuration
     execution_mode = Column(
-        String(20), nullable=False, default="react"
-    )  # Execution mode: simple, react, graph
+        String(20), nullable=False, default="balanced"
+    )  # Execution mode: flash, balanced, think
     models = Column(
         JSON, nullable=True
     )  # Model config: {general: id, small_fast: id, visual: id, compact: id}
@@ -68,6 +68,12 @@ class Agent(Base):  # type: ignore
 
     # Visual
     logo_url = Column(String(500), nullable=True)
+
+    # Widget Config
+    widget_enabled = Column(Boolean, default=True, nullable=False)
+    allowed_domains = Column(
+        JSON, nullable=True, default=list
+    )  # List of allowed domains for the widget
 
     # Status
     status: AgentStatus = Column(

@@ -22,6 +22,8 @@ from openai.types.chat.chat_completion_message_tool_call import (
 
 from xagent.core.model import ChatModelConfig, EmbeddingModelConfig, RerankModelConfig
 from xagent.core.observability.langfuse_tracer import init_tracer, reset_tracer
+from xagent.core.tools.core.RAG_tools.storage import reset_kb_write_coordinator
+from xagent.providers.vector_store.lancedb import clear_connection_cache
 
 # YAML entrypoint has been removed, commenting out these imports
 # from xagent.entrypoint.yaml.parser import MigrationManager
@@ -80,6 +82,13 @@ def pytest_collection_modifyitems(config, items):
 # ==========================================
 
 
+def _security_test_subdir(tmp_path: Path, name: str) -> str:
+    """Create ``tmp_path / name`` and return its path as a string."""
+    subdir = tmp_path / name
+    subdir.mkdir()
+    return str(subdir)
+
+
 @pytest.fixture
 def temp_dir():
     """Provide a temporary directory for tests."""
@@ -87,28 +96,51 @@ def temp_dir():
         yield temp_dir
 
 
-@pytest.fixture
-def test_workspace_dir(tmp_path):
-    """Create test workspace directory for security testing."""
-    workspace_dir = tmp_path / "test_workspace"
-    workspace_dir.mkdir()
-    return str(workspace_dir)
+@pytest.fixture(autouse=True, scope="function")
+def isolate_lancedb_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Isolate LanceDB and reset KB storage singletons for every test.
+
+    By default, ``LANCEDB_DIR`` is set to a fresh directory under ``tmp_path``
+    for each test. This avoids stale LanceDB schemas from a developer ``.env``
+    or a fixed path, and matches CI-style ephemeral storage. Parallel workers
+    (pytest-xdist) each use their own process-local ``tmp_path``.
+
+    If the environment sets ``XAGENT_PYTEST_RESPECT_LANCEDB_DIR=1``, the
+    existing ``LANCEDB_DIR`` from the environment is left unchanged (for CI or
+    local workflows that intentionally pin a path).
+
+    Clears the LanceDB connection cache and resets the process-wide KB write
+    coordinator before and after each test.
+    """
+    respect_env = os.environ.get("XAGENT_PYTEST_RESPECT_LANCEDB_DIR") == "1"
+    if not respect_env:
+        lancedb_dir = tmp_path / "lancedb"
+        lancedb_dir.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("LANCEDB_DIR", str(lancedb_dir))
+
+    clear_connection_cache()
+    reset_kb_write_coordinator()
+    yield
+    reset_kb_write_coordinator()
+    clear_connection_cache()
 
 
 @pytest.fixture
-def test_access_dir(tmp_path):
-    """Create test access directory for security testing."""
-    access_dir = tmp_path / "test_access_restriction"
-    access_dir.mkdir()
-    return str(access_dir)
+def test_workspace_dir(tmp_path: Path) -> str:
+    """Directory used as workspace root in ``test_service_security``."""
+    return _security_test_subdir(tmp_path, "test_workspace")
 
 
 @pytest.fixture
-def test_security_dir(tmp_path):
-    """Create test security directory for security testing."""
-    security_dir = tmp_path / "test_security"
-    security_dir.mkdir()
-    return str(security_dir)
+def test_access_dir(tmp_path: Path) -> str:
+    """Directory used for access-restriction scenarios in security tests."""
+    return _security_test_subdir(tmp_path, "test_access_restriction")
+
+
+@pytest.fixture
+def test_security_dir(tmp_path: Path) -> str:
+    """Directory used for outside-access rejection scenarios in security tests."""
+    return _security_test_subdir(tmp_path, "test_security")
 
 
 @pytest.fixture(autouse=True, scope="function")

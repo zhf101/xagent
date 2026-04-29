@@ -5,6 +5,9 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from xagent.core.tools.adapters.vibe.sandboxed_tool.sandboxed_tool_wrapper import (
+    build_code_mount_volumes,
+)
 from xagent.sandbox.base import SandboxConfig, SandboxInfo, SandboxTemplate
 from xagent.web.sandbox_manager import SandboxManager
 
@@ -137,12 +140,14 @@ async def test_cleanup_stops_when_config_matches(
     user_dir.mkdir(parents=True)
     resolved = str(user_dir.resolve())
 
+    # Build expected volumes: code mounts (ro) + user workspace (rw)
+    code_volumes = build_code_mount_volumes()
     sb = _make_sb_info(
         "user::6",
         image="img:v1",
         cpus=1,
         memory=512,
-        volumes=[(resolved, resolved, "rw")],
+        volumes=code_volumes + [(resolved, resolved, "rw")],
     )
 
     mock_box = AsyncMock()

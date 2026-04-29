@@ -8,7 +8,7 @@ import unicodedata
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, cast
+from typing import Any, Dict, List, Optional, Union, cast
 from urllib.parse import unquote
 
 from fastapi import (
@@ -23,6 +23,7 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
 from ...config import get_external_upload_dirs, get_uploads_dir
+from ...core.agent.trace import TraceEvent, TraceHandler
 from ..auth_dependencies import get_user_from_websocket_token
 from ..models.database import get_db
 from ..models.task import Task
@@ -33,6 +34,14 @@ from ..user_isolated_memory import UserContext
 from ..utils.db_timezone import safe_timestamp_to_unix
 
 logger = logging.getLogger(__name__)
+
+# Execution mode to pattern mapping
+# flash -> single_call, balanced -> react, think -> dag_plan_execute
+EXECUTION_MODE_TO_PATTERN = {
+    "flash": "single_call",
+    "balanced": "react",
+    "think": "dag_plan_execute",
+}
 
 
 def _resolve_task_llm_ids(
@@ -127,7 +136,7 @@ def build_unique_target_path(target_dir: Any, filename: str) -> Any:
 
 def create_stream_event(
     event_type: str,
-    task_id: int,
+    task_id: Union[int, str],
     data: Dict[str, Any],
     timestamp: Optional[Any] = None,
 ) -> Dict[str, Any]:
@@ -847,6 +856,103 @@ class BackgroundTaskManager:
 background_task_manager = BackgroundTaskManager()
 
 
+class SharedWebSocketTracer(TraceHandler):
+    """Shared WebSocket tracer that sends events directly to WebSocket with proper JSON serialization."""
+
+    def __init__(self, ws: WebSocket, task_id: str, is_preview: bool = False):
+        self.ws = ws
+        self.task_id = task_id
+        self.is_preview = is_preview
+        self._closed = False
+
+    def _serialize_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Recursively serialize data to ensure JSON compatibility."""
+        import json
+        from datetime import datetime, timezone
+
+        def clean_string(value: str) -> str:
+            if not isinstance(value, str):
+                return value
+            cleaned = value.replace("\x00", "").replace("\u0000", "")
+            cleaned = "".join(
+                char for char in cleaned if ord(char) >= 32 or char in "\n\r\t"
+            )
+            return cleaned
+
+        def serialize_value(value: Any) -> Any:
+            if hasattr(value, "model_dump"):
+                return serialize_value(value.model_dump())
+            elif hasattr(value, "dict"):
+                return serialize_value(value.dict())
+            elif isinstance(value, datetime):
+                if value.tzinfo is None:
+                    value = value.replace(tzinfo=timezone.utc)
+                return value.timestamp()
+            elif isinstance(value, str):
+                return clean_string(value)
+            elif isinstance(value, dict):
+                return {k: serialize_value(v) for k, v in value.items()}
+            elif isinstance(value, (list, tuple)):
+                return [serialize_value(item) for item in value]
+            elif isinstance(value, bytes):
+                try:
+                    return clean_string(value.decode("utf-8"))
+                except UnicodeDecodeError:
+                    return f"<bytes: {len(value)}>"
+            else:
+                return value
+
+        try:
+            cleaned_data = cast(Dict[str, Any], serialize_value(data))
+            json.dumps(cleaned_data)
+            return cleaned_data
+        except Exception as e:
+            logger.warning(f"Failed to serialize data for JSON: {e}")
+            return {"_serialization_error": str(e)}
+
+    async def handle_event(self, event: TraceEvent) -> None:
+        """Convert and send trace event to WebSocket."""
+        # Skip if WebSocket is already closed
+        if self._closed:
+            return
+
+        try:
+            from .ws_trace_handlers import get_event_type_mapping
+
+            # Convert trace event to stream format
+            event_type_str = get_event_type_mapping(event)
+            serialized_data = self._serialize_data(event.data)
+
+            stream_event = create_stream_event(
+                event_type_str,
+                0 if self.is_preview else self.task_id,
+                serialized_data,
+                event.timestamp,
+            )
+
+            if event.step_id:
+                stream_event["step_id"] = event.step_id
+            if event.parent_id:
+                stream_event["parent_id"] = event.parent_id
+            if self.is_preview:
+                stream_event["is_preview"] = True
+
+            await self.ws.send_text(json.dumps(stream_event))
+
+        except (RuntimeError, ConnectionError) as e:
+            error_msg = str(e)
+            if (
+                "close" in error_msg.lower()
+                or "response already completed" in error_msg.lower()
+            ):
+                self._closed = True
+                logger.debug(f"WebSocket connection closed: {e}")
+            else:
+                logger.warning(f"WebSocket error in tracer: {e}")
+        except Exception as e:
+            logger.warning(f"Failed to send trace event: {e}")
+
+
 # WebSocket router
 ws_router = APIRouter()
 
@@ -1094,6 +1200,7 @@ async def handle_chat_message(
     """Handle chat message"""
     try:
         user_message = message_data.get("message", "")
+
         context = message_data.get("context", {})
         files = message_data.get("files", [])
         user = message_data.get("user")
@@ -1158,9 +1265,13 @@ async def handle_chat_message(
                         logger.info(
                             f"Task {task_id} not found (may have been deleted). Creating new task."
                         )
+                        task_title = f"Chat: {user_message}"
+                        if len(task_title) > 50:
+                            task_title = task_title[:50] + "..."
+
                         task = Task(
                             user_id=int(user.id),  # Use authenticated user ID
-                            title=f"Chat: {user_message[:50]}...",
+                            title=task_title,
                             description=user_message,
                             status=TaskStatus.PENDING,  # Use PENDING instead of RUNNING
                         )
@@ -1204,7 +1315,7 @@ async def handle_chat_message(
                                 .first()
                             )
                             if agent:
-                                is_dag = agent.execution_mode == "graph"
+                                is_dag = agent.execution_mode == "think"
 
                         (
                             model_id,
@@ -1229,7 +1340,7 @@ async def handle_chat_message(
                                 "small_fast_model_name": task.small_fast_model_name,
                                 "visual_model_name": task.visual_model_name,
                                 "compact_model_name": task.compact_model_name,
-                                "vibe_mode": task.vibe_mode,
+                                "execution_mode": task.execution_mode,
                                 "agent_id": task.agent_id,
                                 "is_dag": is_dag,
                                 "created_at": safe_timestamp_to_unix(task.created_at)
@@ -1358,7 +1469,7 @@ async def handle_chat_message(
                                 "small_fast_model_name": task.small_fast_model_name,
                                 "visual_model_name": task.visual_model_name,
                                 "compact_model_name": task.compact_model_name,
-                                "vibe_mode": task.vibe_mode,
+                                "execution_mode": task.execution_mode,
                                 "created_at": safe_timestamp_to_unix(task.created_at)
                                 if task.created_at
                                 else None,
@@ -1440,7 +1551,7 @@ async def handle_chat_message(
                                 .first()
                             )
                             if agent:
-                                is_dag = agent.execution_mode == "graph"
+                                is_dag = agent.execution_mode == "think"
 
                         (
                             model_id,
@@ -1465,7 +1576,7 @@ async def handle_chat_message(
                                 "small_fast_model_name": task.small_fast_model_name,
                                 "visual_model_name": task.visual_model_name,
                                 "compact_model_name": task.compact_model_name,
-                                "vibe_mode": task.vibe_mode,
+                                "execution_mode": task.execution_mode,
                                 "agent_id": task.agent_id,
                                 "is_dag": is_dag,
                                 "created_at": safe_timestamp_to_unix(task.created_at)
@@ -1481,8 +1592,8 @@ async def handle_chat_message(
                         logger.info(f"task_info event sent for existing task {task_id}")
 
                     # Build context with vibe mode information if available
-                    if hasattr(task, "vibe_mode") and task.vibe_mode:
-                        context["vibe_mode"] = task.vibe_mode
+                    if hasattr(task, "execution_mode") and task.execution_mode:
+                        context["execution_mode"] = task.execution_mode
                     if (
                         hasattr(task, "process_description")
                         and task.process_description
@@ -1496,7 +1607,7 @@ async def handle_chat_message(
                     force_fresh_execution = was_completed_or_failed
                     if force_fresh_execution:
                         logger.info(
-                            f"✅ Confirmed: Task {task_id} was completed/failed, forcing fresh execution"
+                            f"Confirmed: Task {task_id} was completed/failed, forcing fresh execution"
                         )
 
                     # Create background task execution, don't block WebSocket message loop
@@ -1635,7 +1746,7 @@ async def handle_execute_task(
                     "small_fast_model_name": task.small_fast_model_name,
                     "visual_model_name": task.visual_model_name,
                     "compact_model_name": task.compact_model_name,
-                    "vibe_mode": task.vibe_mode,
+                    "execution_mode": task.execution_mode,
                     "created_at": safe_timestamp_to_unix(task.created_at)
                     if task.created_at
                     else None,
@@ -1670,8 +1781,8 @@ async def handle_execute_task(
             with UserContext(user.id):
                 # Build context with vibe mode information if available
                 task_context = {}
-                if hasattr(task, "vibe_mode") and task.vibe_mode:
-                    task_context["vibe_mode"] = task.vibe_mode
+                if hasattr(task, "execution_mode") and task.execution_mode:
+                    task_context["execution_mode"] = task.execution_mode
                 if hasattr(task, "process_description") and task.process_description:
                     task_context["process_description"] = task.process_description
                 if hasattr(task, "examples") and task.examples:
@@ -1801,7 +1912,7 @@ async def send_historical_data_as_stream(
             if task.agent_id:
                 agent = db.query(Agent).filter(Agent.id == task.agent_id).first()
                 if agent:
-                    is_dag = agent.execution_mode == "graph"
+                    is_dag = agent.execution_mode == "think"
 
             (
                 model_id,
@@ -1827,7 +1938,7 @@ async def send_historical_data_as_stream(
                     "small_fast_model_name": task.small_fast_model_name,
                     "visual_model_name": task.visual_model_name,
                     "compact_model_name": task.compact_model_name,
-                    "vibe_mode": task.vibe_mode,
+                    "execution_mode": task.execution_mode,
                     "agent_id": task.agent_id,
                     "is_dag": is_dag,
                     "created_at": safe_timestamp_to_unix(task.created_at)
@@ -2343,6 +2454,311 @@ async def handle_resume_task(
         raise
 
 
+@ws_router.websocket("/ws/build/chat")
+async def websocket_builder_chat_endpoint(
+    websocket: WebSocket,
+    token: Optional[str] = Query(None, description="Authentication token"),
+) -> None:
+    """WebSocket endpoint for AI Agent Builder Assistant chat."""
+    user = await get_authenticated_user(websocket, token)
+    if not user:
+        await websocket.close(code=4001, reason="Authentication required")
+        return
+
+    await websocket.accept()
+    logger.info(f"Builder chat WebSocket connection established for user {user.id}")
+
+    try:
+        while True:
+            data = await websocket.receive_text()
+            logger.info(f"📨 Received builder chat message: {data[:200]}")
+
+            message_data = json.loads(data)
+
+            # Run in background to not block receiving
+            if (
+                hasattr(websocket.state, "chat_task")
+                and websocket.state.chat_task
+                and not websocket.state.chat_task.done()
+            ):
+                websocket.state.chat_task.cancel()
+
+            websocket.state.chat_task = asyncio.create_task(
+                handle_builder_chat(websocket, message_data, user)
+            )
+
+    except WebSocketDisconnect:
+        logger.info(f"Builder chat WebSocket disconnected for user {user.id}")
+    except (ConnectionError, RuntimeError) as e:
+        logger.error(f"Connection error in builder chat WebSocket: {e}")
+    except Exception as e:
+        logger.error(f"Unexpected error in builder chat WebSocket: {e}")
+
+
+async def handle_builder_chat(
+    websocket: WebSocket,
+    message_data: dict,
+    user: User,
+) -> None:
+    """Handle individual builder chat requests via WebSocket using an in-memory ReAct agent.
+
+    This creates an agent that only has access to the 'create_agent' tool, allowing
+    dynamic agent creation during the conversation.
+
+    Sends messages in the format expected by the frontend:
+    - message_delta: Streaming text chunks
+    - message_end: Final message with optional config_updates
+    - error: Error messages
+
+    Performance optimizations:
+    - Reuses AgentService across messages (only creates on first message)
+    - Pre-creates CreateAgentTool directly without full tool loading
+    - Caches LLM configuration in websocket state
+    """
+    import uuid
+
+    from ...core.agent.service import AgentService
+    from ...core.memory.in_memory import InMemoryMemoryStore
+    from ..models.database import get_db
+    from ..services.llm_utils import UserAwareModelStorage
+
+    db_gen = get_db()
+    db = next(db_gen)
+
+    # Generate task_id for builder chat (reuse if exists)
+    if not hasattr(websocket.state, "builder_task_id"):
+        websocket.state.builder_task_id = f"builder_chat_{uuid.uuid4().hex[:8]}"
+    builder_task_id = websocket.state.builder_task_id
+
+    from ...core.agent.trace import Tracer
+
+    builder_tracer = Tracer()
+    builder_tracer.add_handler(
+        SharedWebSocketTracer(websocket, builder_task_id, is_preview=False)
+    )
+
+    try:
+        user_message = message_data.get("message", "")
+        if (
+            not user_message
+            and "messages" in message_data
+            and isinstance(message_data["messages"], list)
+            and len(message_data["messages"]) > 0
+        ):
+            last_msg = message_data["messages"][-1]
+            if isinstance(last_msg, dict) and last_msg.get("role") == "user":
+                user_message = last_msg.get("content", "")
+        # Build current_config back from top-level keys
+        current_config = {
+            "id": message_data.get("id"),
+            "name": message_data.get("name", ""),
+            "description": message_data.get("description", ""),
+            "instructions": message_data.get("instructions", ""),
+            "model": message_data.get("models", {}).get("general"),
+            "tool_categories": message_data.get("tool_categories", []),
+            "skills": message_data.get("selectedSkills", []),
+            "knowledge_bases": message_data.get("selectedKbs", []),
+            "execution_mode": message_data.get("executionMode", "balanced"),
+        }
+
+        # Build system prompt with context
+        system_prompt = f"""You are an expert AI Agent Builder Assistant.
+Your job is to help users create and configure custom AI agents.
+
+Current Agent Configuration:
+{current_config}
+
+When the user describes what they want to build, use the create_agent or update_agent tool to help them.
+The agent will be updated immediately and can be used right away.
+
+Important instructions:
+1. Always create/update agents with clear, descriptive names and detailed descriptions
+2. The description should explain WHEN to use this agent (e.g., "Use this agent for data analysis tasks involving CSV files")
+3. Include appropriate tool_categories and skills based on the user's requirements
+4. After creating or updating an agent, present it to the user in a clear format with the markdown link
+5. When updating an agent, if you need to modify tools, skills, or knowledge bases, you MUST provide the FULL updated list in your tool call (combining the existing ones from Current Agent Configuration with any new ones the user requested). If you do not include the existing ones, they will be removed!
+6. If the user asks to build an agent that requires a knowledge base (e.g., answering questions from a specific website, document, or domain), ALWAYS check if a relevant knowledge base exists using `list_knowledge_bases`.
+   - If a relevant knowledge base DOES NOT exist, you MUST determine if the user has ALREADY provided a specific URL (e.g., www.example.com).
+   - If the user HAS provided a URL: Do NOT ask the user again! Instead, immediately use the `create_knowledge_base_from_url` tool to import the website, and then proceed to create or update the agent with the new knowledge base.
+   - If the user HAS NOT provided a URL or file: You MUST STOP and ask the user for clarification using the `ask_user_question` tool. Use the "action_cards" interaction type ONLY for high-level actions like "Import Website" and "Upload File". If you know the user's intended website URL but it hasn't been crawled yet, you MUST pass that URL into the "default_value" field of the interaction. For selecting from a list of existing items (like existing knowledge bases), you MUST use the "select_one" interaction type instead.
+   - Do NOT proceed to create or update the agent until the knowledge base is ready.
+
+You have access to the following tools:
+- create_agent: Create a new agent with specific capabilities
+- update_agent: Update an existing agent with specific capabilities
+- list_available_skills: Query the list of skills you can assign to an agent
+- list_tool_categories: Query the list of tool categories you can assign to an agent
+- list_knowledge_bases: Query the list of knowledge bases you can associate with an agent
+- ask_user_question: Ask the user a question with a clarification form when you need their input or decision (e.g., about creating a knowledge base)
+- create_knowledge_base_from_url: Create a knowledge base by crawling a given website URL (use this automatically if the user provided a URL)
+
+Use the create_agent tool whenever the user wants to build a new agent and there is no agent ID in the current configuration. If a System Note says a knowledge base was created, use create_agent to build the agent and attach the knowledge base.
+Use the update_agent tool whenever the user wants to modify their current agent configuration and an agent ID is available in the current configuration.
+If the user wants to add skills, tool categories, or knowledge bases but you are unsure which ones exist, use the list_* tools to find out before calling create_agent or update_agent.
+"""
+
+        # Get LLM configuration
+        model_name = current_config.get("model")
+        resolver = UserAwareModelStorage(db)
+        llm = None
+
+        if model_name:
+            llm = resolver.get_llm_by_name_with_access(
+                model_name,
+                user_id=user.id,  # type: ignore[arg-type]
+            )
+
+        if not llm:
+            default_llm, fast_llm, vision_llm, compact_llm = (
+                resolver.get_configured_defaults(
+                    user_id=user.id  # type: ignore[arg-type]
+                )
+            )
+            llm = default_llm
+
+        if not llm:
+            await websocket.send_text(
+                json.dumps(
+                    {"type": "error", "message": "No LLM configured for builder chat"}
+                )
+            )
+            return
+
+        # Create or reuse agent service (only create once)
+        if not hasattr(websocket.state, "builder_agent_service"):
+            # Create or get memory for builder chat
+            if not hasattr(websocket.state, "builder_memory"):
+                websocket.state.builder_memory = InMemoryMemoryStore()
+            memory = websocket.state.builder_memory
+
+            from ...core.tools.adapters.vibe.agent_tool import (
+                CreateAgentTool,
+                ListAvailableSkillsTool,
+                ListToolCategoriesTool,
+                UpdateAgentTool,
+            )
+            from ...core.tools.adapters.vibe.ask_user_tool import AskUserQuestionTool
+            from ...core.tools.adapters.vibe.document_search import (
+                ListKnowledgeBasesTool,
+            )
+            from ...core.tools.adapters.vibe.web_ingestion_tool import (
+                CreateKnowledgeBaseFromUrlTool,
+            )
+
+            # Create only the necessary tools directly (much faster than loading all tools)
+            create_agent_tool = CreateAgentTool(
+                db=db,
+                user_id=int(user.id),
+                task_id=builder_task_id,
+                workspace_base_dir=str(get_uploads_dir() / "builder_chat"),
+            )
+            update_agent_tool = UpdateAgentTool(
+                db=db,
+                user_id=int(user.id),
+                task_id=builder_task_id,
+                workspace_base_dir=str(get_uploads_dir() / "builder_chat"),
+            )
+            list_skills_tool = ListAvailableSkillsTool()
+            list_tool_categories_tool = ListToolCategoriesTool()
+            list_kbs_tool = ListKnowledgeBasesTool(
+                user_id=int(user.id), is_admin=bool(user.is_admin)
+            )
+            ask_user_question_tool = AskUserQuestionTool()
+            create_kb_url_tool = CreateKnowledgeBaseFromUrlTool(
+                user_id=int(user.id), is_admin=bool(user.is_admin)
+            )
+
+            # Build allowed external directories
+            allowed_external_dirs = []
+            if user and user.id:
+                user_upload_dir = get_uploads_dir() / f"user_{user.id}"
+                allowed_external_dirs.append(str(user_upload_dir))
+            allowed_external_dirs.extend([str(d) for d in get_external_upload_dirs()])
+
+            # Create agent service with pre-built tool (no WebToolConfig needed)
+            agent_service = AgentService(
+                name="builder_chat_agent",
+                llm=llm,
+                fast_llm=None,  # No fast llm for builder chat
+                vision_llm=None,
+                compact_llm=None,
+                memory=memory,
+                tools=[
+                    create_agent_tool,
+                    update_agent_tool,
+                    list_skills_tool,
+                    list_tool_categories_tool,
+                    list_kbs_tool,
+                    ask_user_question_tool,
+                    create_kb_url_tool,
+                ],
+                use_dag_pattern=False,  # Use ReAct pattern
+                id=builder_task_id,
+                enable_workspace=True,
+                workspace_base_dir=str(get_uploads_dir() / "builder_chat"),
+                allowed_external_dirs=allowed_external_dirs,
+                task_id=builder_task_id,
+                tracer=builder_tracer,  # Using common websocket tracer
+            )
+
+            # Save agent service to websocket state for reuse
+            websocket.state.builder_agent_service = agent_service
+            logger.info(
+                f"Created new builder chat agent service with task_id: {builder_task_id}"
+            )
+        else:
+            agent_service = websocket.state.builder_agent_service
+            # Update tracer to the new connection
+            agent_service.tracer = builder_tracer
+            if hasattr(agent_service, "agent") and hasattr(
+                agent_service.agent, "patterns"
+            ):
+                for pattern in agent_service.agent.patterns:
+                    if hasattr(pattern, "tracer"):
+                        pattern.tracer = builder_tracer
+            logger.info(
+                f"Reusing existing builder chat agent service with task_id: {builder_task_id}"
+            )
+
+        # Execute task with the agent
+        if user_message:
+            # Build execution context with system prompt
+            execution_context: dict[str, Any] = {
+                "system_prompt": system_prompt,
+            }
+
+            # Execute task with the agent
+            with UserContext(int(user.id)):
+                result = await agent_service.execute_task(
+                    task=user_message,
+                    context=execution_context,
+                    task_id=builder_task_id,
+                )
+
+            # Send task_completed event to match the preview flow behavior
+            # which relies on Trace events but might need a final completion indicator
+            try:
+                await websocket.send_text(
+                    json.dumps(
+                        {
+                            "type": "task_completed",
+                            "task_id": builder_task_id,
+                            "result": result.get("output", ""),
+                            "success": result.get("success", True),
+                            "timestamp": datetime.now(timezone.utc).timestamp(),
+                        }
+                    )
+                )
+            except Exception as e:
+                logger.warning(f"Failed to send task_completed: {e}")
+
+    except Exception as e:
+        logger.error(f"Error handling builder chat: {e}", exc_info=True)
+        await websocket.send_text(json.dumps({"type": "error", "message": str(e)}))
+    finally:
+        db.close()
+
+
 @ws_router.websocket("/ws/build/preview")
 async def websocket_build_preview_endpoint(
     websocket: WebSocket,
@@ -2477,7 +2893,7 @@ async def handle_build_preview_execution(
     from sqlalchemy.orm import Session
 
     from ...core.agent.service import AgentService
-    from ...core.agent.trace import TraceEvent, TraceHandler, Tracer
+    from ...core.agent.trace import Tracer
     from ...core.memory.in_memory import InMemoryMemoryStore
     from ..models.database import get_db
     from ..models.model import Model as DBModel
@@ -2506,43 +2922,11 @@ async def handle_build_preview_execution(
     # Generate temporary task_id
     preview_task_id = f"build_preview_{uuid.uuid4().hex[:8]}"
 
-    # Create simple WebSocket tracer
-    class WebSocketTracer(TraceHandler):
-        """Simple tracer that sends events directly to WebSocket."""
-
-        def __init__(self, ws: WebSocket, task_id: str):
-            self.ws = ws
-            self.task_id = task_id
-
-        async def handle_event(self, event: TraceEvent) -> None:
-            """Convert and send trace event to WebSocket."""
-            try:
-                from .ws_trace_handlers import get_event_type_mapping
-
-                # Convert trace event to stream format
-                event_type_str = get_event_type_mapping(event)
-
-                stream_event = create_stream_event(
-                    event_type_str,
-                    0,  # task_id not used for preview
-                    event.data,
-                    event.timestamp,
-                )
-
-                if event.step_id:
-                    stream_event["step_id"] = event.step_id
-                if event.parent_id:
-                    stream_event["parent_id"] = event.parent_id
-                stream_event["is_preview"] = True
-
-                await self.ws.send_text(json.dumps(stream_event))
-
-            except Exception as e:
-                logger.warning(f"Failed to send preview trace event: {e}")
-
     # Create Tracer instance with WebSocket handler
     preview_tracer = Tracer()
-    preview_tracer.add_handler(WebSocketTracer(websocket, preview_task_id))
+    preview_tracer.add_handler(
+        SharedWebSocketTracer(websocket, preview_task_id, is_preview=True)
+    )
 
     # Get database session
     db_gen = get_db()
@@ -2626,6 +3010,9 @@ async def handle_build_preview_execution(
             # Get all tools and filter by category using metadata
             from ...core.tools.adapters.vibe.factory import ToolFactory
 
+            has_mcp = bool(
+                tool_categories and any(tc.startswith("mcp:") for tc in tool_categories)
+            )
             temp_config = WebToolConfig(
                 db=db,
                 request=MinimalRequest(int(user.id)),
@@ -2633,7 +3020,7 @@ async def handle_build_preview_execution(
                 user_id=int(user.id),
                 is_admin=bool(user.is_admin),
                 workspace_config=None,
-                include_mcp_tools=True,
+                include_mcp_tools=has_mcp,
                 task_id=None,
                 browser_tools_enabled=True,
             )
@@ -2643,14 +3030,66 @@ async def handle_build_preview_execution(
                 all_tools = await ToolFactory.create_all_tools(temp_config)
                 allowed_tools = []
 
+                # Check if we also need custom APIs
+                has_custom_api = bool(
+                    tool_categories
+                    and any(tc.startswith("mcp:") for tc in tool_categories)
+                )
+                if has_custom_api:
+                    # Manually add custom APIs since temp_config might not load them properly
+                    # if they depend on include_mcp_tools
+                    from ...core.tools.adapters.vibe.custom_api_factory import (
+                        create_db_custom_api_tools,
+                    )
+
+                    custom_tools = await create_db_custom_api_tools(temp_config)
+                    all_tools.extend(custom_tools)
+
                 for tool in all_tools:
                     if hasattr(tool, "metadata") and hasattr(tool.metadata, "category"):
                         category = str(tool.metadata.category.value)
+                        tool_name = getattr(tool, "name", None)
+                        if not tool_name:
+                            continue
+
                         if category in tool_categories:
-                            # Tool protocol doesn't guarantee name attribute, use getattr
-                            tool_name = getattr(tool, "name", None)
-                            if tool_name:
-                                allowed_tools.append(tool_name)
+                            allowed_tools.append(tool_name)
+                        elif category == "mcp":
+                            for tc in tool_categories:
+                                if tc.startswith("mcp:"):
+                                    server_name = (
+                                        tc.split(":", 1)[1]
+                                        .replace(" ", "_")
+                                        .replace("-", "_")
+                                    )
+                                    logger.info(
+                                        f"Checking MCP tool: '{tool_name}' vs 'mcp_{server_name}_'"
+                                    )
+                                    # Use case-insensitive matching for MCP server prefix
+                                    if tool_name.lower().startswith(
+                                        f"mcp_{server_name.lower()}_"
+                                    ):
+                                        allowed_tools.append(tool_name)
+                                        break
+                        elif category == "other":
+                            # Check if this is a custom API that was requested as an MCP tool
+                            for tc in tool_categories:
+                                if tc.startswith("mcp:"):
+                                    server_name = (
+                                        tc.split(":", 1)[1]
+                                        .replace(" ", "_")
+                                        .replace("-", "_")
+                                    )
+                                    logger.info(
+                                        f"Checking Custom API tool: '{tool_name}' vs 'api_{server_name}_call'"
+                                    )
+                                    # Custom APIs are now prefixed with api_ and suffixed with _call
+                                    if (
+                                        tool_name.lower()
+                                        == f"api_{server_name.lower()}_call"
+                                    ):
+                                        allowed_tools.append(tool_name)
+                                        break
 
                 return allowed_tools
 
@@ -2671,6 +3110,9 @@ async def handle_build_preview_execution(
             task_id=preview_task_id,
             workspace_base_dir=str(get_uploads_dir() / "build_preview"),
             vision_model=vision_llm,  # Pass vision model for tool creation
+            include_mcp_tools=bool(
+                tool_categories and any(tc.startswith("mcp:") for tc in tool_categories)
+            ),
         )
 
         # Create sandbox for preview task
@@ -2705,17 +3147,11 @@ async def handle_build_preview_execution(
                     f"Preview is for published agent {preview_agent.id} ({preview_agent.name}), will exclude from agent tools"
                 )
 
-        # Determine execution mode (default to "graph")
-        # Map execution mode to use_dag_pattern
-        # simple: reserved (use react for now)
-        # react: ReAct pattern
-        # graph: DAG/Graph plan-execute pattern
-        if execution_mode == "graph":
-            use_dag_pattern = True
-        elif execution_mode == "react":
-            use_dag_pattern = False
-        else:  # simple mode - not implemented yet, fallback to react
-            use_dag_pattern = False
+        # Determine execution mode and map to pattern
+        # flash -> single_call (quick tasks)
+        # balanced -> react (everyday tasks)
+        # think -> dag_plan_execute (complex tasks)
+        pattern = EXECUTION_MODE_TO_PATTERN.get(execution_mode, "react")
 
         # Build allowed external directories
         allowed_external_dirs = []
@@ -2723,6 +3159,8 @@ async def handle_build_preview_execution(
             user_upload_dir = get_uploads_dir() / f"user_{user.id}"
             allowed_external_dirs.append(str(user_upload_dir))
         allowed_external_dirs.extend([str(d) for d in get_external_upload_dirs()])
+
+        logger.info(f"Preview execution_mode={execution_mode} -> pattern={pattern}")
 
         # Create agent service (using WebSocket tracer)
         if not hasattr(websocket.state, "preview_memory"):
@@ -2740,7 +3178,7 @@ async def handle_build_preview_execution(
             compact_llm=compact_llm,
             memory=memory,
             tool_config=tool_config,
-            use_dag_pattern=use_dag_pattern,
+            pattern=pattern,  # Use pattern instead of use_dag_pattern
             id=preview_task_id,
             enable_workspace=True,
             workspace_base_dir=str(get_uploads_dir() / "build_preview"),
@@ -2873,10 +3311,7 @@ async def handle_build_preview_execution(
                 return
 
         # Execute task
-        from .agents import (
-            enhance_system_prompt_for_data_production,
-            enhance_system_prompt_with_kb,
-        )
+        from .agents import enhance_system_prompt_with_kb
 
         execution_context = {}
         if instructions:
@@ -2890,9 +3325,6 @@ async def handle_build_preview_execution(
         # Emphasize KB priority when knowledge bases are configured
         execution_context["system_prompt"] = enhance_system_prompt_with_kb(
             execution_context.get("system_prompt"), knowledge_bases
-        )
-        execution_context["system_prompt"] = enhance_system_prompt_for_data_production(
-            execution_context.get("system_prompt")
         )
         if uploaded_files:
             execution_context["uploaded_files"] = uploaded_files

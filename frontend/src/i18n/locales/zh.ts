@@ -26,6 +26,9 @@ const zh = {
     noOptions: "暂无选项",
     rename: "重命名",
     clear: "清除",
+    or: "或",
+    add: "添加",
+    customPlaceholder: "自定义...",
     errors: {
       unknown: "未知错误",
     },
@@ -42,6 +45,7 @@ const zh = {
     knowledgeBase: "知识库",
     knowledgeBaseDetail: "知识库详情",
     userManagement: "用户管理",
+    adminMcp: "公共 MCP",
     login: "登录",
     register: "注册",
     agentStore: "Agent Store",
@@ -276,6 +280,25 @@ Build when you need.`
       },
     },
   },
+  widgetChat: {
+    title: "AI 助手",
+    status: {
+      initializing: "正在初始化...",
+      connecting: "连接中...",
+      online: "在线"
+    },
+    messages: {
+      welcome: "你好！今天我能为您做些什么？",
+      error_init: "初始化聊天失败，请稍后再试。",
+      error_prefix: "错误："
+    },
+    input: {
+      placeholder: "输入您的消息..."
+    },
+    footer: {
+      powered_by: "由 {appName} 提供"
+    }
+  },
   channels: {
     page_title: "渠道管理",
     page_description: "管理您的沟通渠道和机器人。",
@@ -302,6 +325,8 @@ Build when you need.`
       platform: "平台",
       telegram_bot: "Telegram 机器人",
       feishu_bot: "飞书机器人",
+      name: "渠道名称",
+      name_placeholder: "例如：我的客服",
       bot_token: "Bot Token",
       app_id: "App ID",
       app_secret: "App Secret",
@@ -441,8 +466,10 @@ Build when you need.`
         paused: "已暂停",
       },
       mode: {
-        task: "任务",
-        process: "流程",
+        flash: "快速",
+        balanced: "平衡",
+        think: "深度",
+        unknown: "未知",
       },
     },
   },
@@ -583,7 +610,7 @@ Build when you need.`
       all: "全部工具",
       webSearch: "网页搜索",
       databaseConnections: "数据库连接",
-      mcp: "MCP 服务",
+      connectors: "连接器",
     },
     policy: {
       enabled: "已启用",
@@ -709,12 +736,50 @@ Build when you need.`
     mcp: {
       title: "MCP 服务器管理",
       description: "管理您的 Model Context Protocol (MCP) 服务器配置",
-      addServer: "添加服务器",
-      badge: "MCP 服务器",
+      addConnector: "添加连接器",
+      badge: "连接器",
       dialog: {
         addTitle: "添加 MCP 服务器",
         editTitle: "编辑 MCP 服务器",
         description: "配置 MCP 服务器连接参数",
+        connector: "连接器",
+        browseLibrary: "应用",
+        customMcp: "自定义 MCP",
+        customApi: "自定义 API",
+        addCustomApi: "添加自定义 API",
+        editCustomApi: "编辑自定义 API",
+        customApiDescription: "使用自定义 API 连接器集成任何支持密钥或令牌授权的外部服务。",
+        customApiName: "名称",
+        customApiNamePlaceholder: "我的自定义 API",
+        customApiNote: "备注 (可选)",
+        customApiNotePlaceholder: "提供 API 文档或说明，以告知助手如何及何时使用此 API",
+        customApiSecrets: "密钥 (环境变量)",
+        customApiSecretName: "密钥名称",
+        customApiSecretValue: "值",
+        customApiSecretValuePlaceholder: "密钥值，例如 sk-example-1234",
+        customApiAddSecret: "添加密钥",
+        location: "位置",
+        remote: "远程",
+        local: "本地",
+        status: "状态",
+        verified: "已验证",
+        categories: "分类",
+        all: "全部",
+        searchPlaceholder: "搜索 MCP...",
+        serversFound: "找到 {count} 个MCP应用",
+        noServersFound: "未找到 MCP 应用",
+        selected: "已选 {count} 个",
+        connect: "连接",
+        configure: "配置",
+        disconnect: "断开连接",
+        disconnectSuccess: "已成功断开 {name} 的连接",
+        disconnectFailed: "断开 {name} 的连接失败",
+        errorDisconnecting: "断开 {name} 连接时出错",
+        deleteService: "删除服务",
+        deleteSuccess: "已成功删除 {name}",
+        deleteFailed: "删除 {name} 失败",
+        fetchFailed: "获取 MCP 应用失败",
+        fetchError: "获取 MCP 应用时发生错误",
       },
       form: {
         nameLabel: "服务器名称 *",
@@ -739,7 +804,7 @@ Build when you need.`
       },
       empty: {
         title: "暂无 MCP 服务器配置",
-        description: "点击\"添加服务器\"开始配置",
+        description: "点击\"添加连接器\"开始配置",
       },
       list: {
         defaultBadge: "默认",
@@ -747,10 +812,15 @@ Build when you need.`
       },
       alerts: {
         nameRequired: "服务器名称不能为空",
+        nameInvalidFormat: "名称只能包含大小写英文字母、数字、连字符(-)和下划线(_)",
         saveFailed: "保存失败",
         deleteFailed: "删除失败",
         toggleFailed: "切换状态失败",
+        atLeastOneSecret: "至少需要一个有效的密钥",
       },
+      mcpUnavailable: "暂不可用",
+      notConnected: "未连接，请点击连接器进行配置",
+      notSupported: "平台暂未支持该应用",
       delete: {
         confirm: "确定要删除服务器 \"{name}\" 吗？",
       },
@@ -867,6 +937,7 @@ Build when you need.`
       errors: {
         loadFailed: "文件加载失败",
         docxRenderFailed: "DOCX 预览渲染失败",
+        excelRenderFailed: "Excel 预览渲染失败",
         cors: "CORS 错误：无法访问文件。这可能是浏览器缓存问题，请尝试刷新页面。",
         networkErrorWithMsg: "网络错误：{msg}",
       },
@@ -1071,6 +1142,9 @@ Build when you need.`
     categoryTitles: {
       all: "全部",
       featured: "推荐模板",
+      sales: "销售",
+      marketing: "营销",
+      support: "支持",
       healthcare_fitness: "医疗与健康",
       general_productivity: "通用与效率",
       customer_service: "客户服务",
@@ -1377,6 +1451,8 @@ Build when you need.`
       owner: "我的模型",
       shared: "共享",
       inactive: "未激活",
+      connectToUse: "连接以使用此提供商的模型。",
+      usedBy: "模型数量 {count}",
       fields: {
         provider: "提供商",
         name: "名称",
@@ -1395,6 +1471,7 @@ Build when you need.`
         edit: "编辑",
         setDefault: "设为默认",
         connect: "连接",
+        manage: "管理",
       },
       status: {
         connected: "已连接",
@@ -1422,11 +1499,28 @@ Build when you need.`
       noModelsConfigured: "暂无配置的模型。",
       availableModels: "可用模型",
       refreshModels: "刷新模型",
-      setDefaultConfirm: {
-        title: "设为默认模型",
-        description: "检测到当前未设置{type}，是否将 {model} 设为默认模型？",
-        confirm: "是的，设为默认",
-        cancel: "不，仅创建",
+      connect: {
+        title: "连接 AI 模型",
+        description: "添加一个新的 AI 提供商到您的工作区",
+        step1: "选择提供商",
+        step2: "API 密钥",
+        step3: "测试与激活",
+        step4: "设置",
+        searchPlaceholder: "搜索提供商... 例如 OpenAI",
+        next: "下一步",
+        apiKeyTitle: "您的 {provider} API 密钥",
+        apiKeyPlaceholder: "sk-...",
+        apiKeyHint: "转到提供商设置 → API 密钥 → 创建新的密钥 → 粘贴到上方。",
+        advancedSettings: "高级设置",
+        testConnection: "测试模型连接",
+        testSuccess: "连接成功！模型工作正常。",
+        selectModelWarning: "请选择一个模型",
+        activate: "激活",
+        defaultModels: "默认模型",
+        defaultModelsDesc: "选择此模型应充当哪些默认角色。",
+        currentDefaults: "当前默认模型",
+        sharing: "共享",
+        sharingDesc: "让工作区中的所有人都可以使用此模型。"
       },
     },
     form: {
@@ -1451,7 +1545,9 @@ Build when you need.`
       abilitiesPlaceholder: "选择能力...",
       update: "更新模型",
       create: "创建模型",
-      enterModelName: "请输入模型名称",
+      enterModelName: "手动输入模型名称...",
+      customModel: "自定义...",
+      addCustom: "添加",
     },
     abilities: {
       chat: "对话",
@@ -1525,11 +1621,14 @@ Build when you need.`
       webIngestFailed: "网站导入失败",
       deleteFailed: "删除知识库失败: {name}",
       deleteFailedGeneric: "删除知识库失败",
+      batchDeleteFailed: "批量删除失败",
       unsupportedFileType: "部分文件格式不支持，已跳过",
       failedAtStep: "失败步骤: {step}",
     },
     actions: {
       deleteConfirm: "确定要删除知识库 {name} 吗？此操作无法撤销。",
+      deleteConfirmWithName: "确定要删除知识库「{name}」吗？此操作不可撤销。",
+      batchDeleteConfirm: "确定要删除选中的 {count} 个知识库吗？此操作不可撤销。",
     },
     loading: {
       loadingKB: "正在加载知识库...",
@@ -1538,6 +1637,8 @@ Build when you need.`
       title: "知识库管理",
       description: "管理文档集合和搜索索引",
       new: "新建知识库",
+      totalCount: "共 {total} 个",
+      matchCount: "匹配 {matched} / 共 {total} 个",
     },
     training: {
       searchPlaceholder: "搜索标题、内容或表名...",
@@ -1634,14 +1735,29 @@ Build when you need.`
     search: {
       placeholder: "搜索知识库...",
     },
+    manage: {
+      enter: "管理",
+      exit: "取消管理",
+      selectAll: "全选",
+      deselectAll: "取消全选",
+      deleteSelected: "删除所选 ({count})",
+    },
+    messages: {
+      deleteSuccess: "知识库已删除",
+      batchDeleteSuccess: "已删除 {count} 个知识库",
+      batchDeleteFailedCount: "{count} 个删除失败",
+    },
     card: {
       documentsLabel: "文档",
       chunksLabel: "文本块",
       embeddingsLabel: "向量",
       parsesLabel: "解析",
       noDescription: "暂无描述",
+      ownerLabel: "归属用户: {owners}",
+      ownerFallbackLabel: "归属用户（名称加载失败，显示ID）: {owners}",
       actions: {
         viewDetail: "查看详情",
+        delete: "删除知识库",
       },
       status: {
         active: "活跃",
@@ -1687,6 +1803,10 @@ Build when you need.`
           accountLabel: "账户 {id}",
           accountProviderLabel: "{email} - {provider}",
           success: "连接成功",
+          deleteAccount: "删除账户",
+          deleteConfirm: "确定要删除账户 {email} 吗？此操作无法撤销。",
+          deleteSuccess: "账户删除成功",
+          deleteFailed: "删除账户失败",
         },
         error: {
           fetchFailed: "加载文件失败",
@@ -1949,6 +2069,16 @@ Build when you need.`
         edit: "编辑",
         deleteConfirm: "确定要删除这个 Agent 吗？",
       },
+      createModal: {
+        title: "你想如何创建 Agent？",
+        describeTitle: "通过描述创建",
+        describeDesc: "告诉我们你的需求 —— {appName} 将为你预填配置",
+        placeholder: "例如：一个可以回答产品问题、处理退款请求并将复杂问题升级给人工客服的客服 Agent...",
+        buildBtn: "生成 Agent",
+        manualTitle: "手动创建",
+        manualDesc: "打开空白表单，从头开始配置每个字段",
+        manualBtn: "前往创建面板",
+      },
       chat: {
         welcome: "你好！我是 {name}。{description}\n\n你可以直接开始对话，或者选择下方的建议提示词。",
         inputPlaceholder: "输入你的消息...",
@@ -1990,6 +2120,8 @@ Build when you need.`
         unpublishFailed: "取消发布 Agent 失败",
         kbToolsNotEnabled: "选择了知识库但未启用知识库工具，请在工具类别中勾选「知识库」工具后再保存。",
         unknown: "发生未知错误",
+        notFound: "Agent 不存在",
+        notFoundDesc: "该 Agent 不存在或已被删除",
       },
       kbToolWarning: {
         title: "需要启用知识库工具",
@@ -2025,13 +2157,17 @@ Build when you need.`
       },
       executionMode: {
         label: "执行模式",
-        react: {
-          title: "标准模式（推荐）",
-          description: "快速响应，灵活处理。适合大多数日常任务。",
+        flash: {
+          title: "闪电模式",
+          description: "简单快速的任务",
         },
-        graph: {
-          title: "规划模式",
-          description: "系统化拆解，步步为营。适合复杂的多步骤任务。",
+        balanced: {
+          title: "平衡模式",
+          description: "日常任务",
+        },
+        think: {
+          title: "深度思考模式",
+          description: "复杂多步骤任务",
         },
       },
       model: {
@@ -2115,6 +2251,15 @@ Build when you need.`
         placeholder: "示例提示词 {index}",
         add: "+ 添加提示词",
         delete: "删除",
+      },
+      chat: {
+        title: "{appName} 助手",
+        subtitle: "通过对话配置你的 Agent",
+        initialMessage: "你好！我是 {appName} 助手。请描述你想创建什么样的 Agent，我会帮你进行配置。",
+        defaultReply: "我已经根据你的要求更新了配置。",
+        errorCommunicate: "与 {appName} 助手通信失败。",
+        errorConnection: "连接错误，请重试。",
+        errorInit: "初始化连接失败。",
       },
       actions: {
         save: "保存配置",
@@ -2290,19 +2435,25 @@ Build when you need.`
     },
     vibeMode: {
       tabs: {
-        task: "Task 模式",
-        process: "Process 模式",
+        flash: "快速模式",
+        flashSubtitle: "简单、快速任务",
+        balanced: "平衡模式",
+        balancedSubtitle: "日常任务",
+        think: "深度模式",
+        thinkSubtitle: "复杂、多步骤任务",
       },
       descriptions: {
-        task: {
-          title: "Task 模式",
-          text: "一次性任务模式，快速完成特定目标。适合探索和实验。",
-          examplesTitle: "使用举例：",
-          examplesText: "完成PPT编写、生成海报、制作网站等",
+        flash: {
+          title: "快速模式",
+          text: "简单的快速任务，直接调用工具，无需复杂推理。",
         },
-        process: {
-          title: "Process 模式",
-          text: "可复用的Agent流程，适合后续Build和Deploy。需要定义流程描述和输入输出样例。",
+        balanced: {
+          title: "平衡模式",
+          text: "大多数日常任务，通过逐步推理和工具执行获得最佳效果。",
+        },
+        think: {
+          title: "深度模式",
+          text: "复杂的多步骤任务，需要规划、分析和协调多个工具。",
           examplesTitle: "使用举例：",
           examplesText: "描述客服机器人流程、审计助手等",
           examples: {
@@ -2505,6 +2656,7 @@ Build when you need.`
           unknown: "未知操作",
         },
         actions: {
+          dag_execution: "DAG 执行开始",
           dag_step_start: "步骤开始",
           dag_step_end: "步骤完成",
           dag_step_failed: "步骤失败",
@@ -2517,6 +2669,7 @@ Build when you need.`
           tool_execution_end: "工具调用完成",
           tool_execution_failed: "工具调用失败",
           tool_using: "使用工具",
+          ai_message: "AI 消息",
           trace_error: "步骤错误（日志记录）",
           react_task_start: "ReAct模式任务开始",
           react_task_end: "ReAct模式任务完成",
@@ -2814,6 +2967,141 @@ Build when you need.`
     bashPrefix: "Bash命令:",
     searchPrefix: "搜索:"
   },
+  deploy_agent: {
+    title: "部署 Agent",
+    tabs: {
+      options: "部署选项",
+      api: "API",
+      logs: "日志"
+    },
+    options: {
+      embed: {
+        title: "嵌入 Widget",
+        desc: "通过单个 script 标签将聊天组件添加到任何网站",
+        action: "获取代码"
+      },
+      rest_api: {
+        title: "REST API",
+        desc: "从后端或应用以编程方式调用 Agent",
+        action: "查看接口"
+      },
+      shareable_link: {
+        title: "分享链接",
+        desc: "生成一个任何人都可以打开并与此 Agent 聊天的公开 URL",
+        action: "生成链接"
+      },
+      webhook: {
+        title: "Webhook",
+        desc: "通过外部系统的 webhook 事件触发 Agent 运行",
+        action: "配置"
+      }
+    },
+    api_coming_soon: "REST API 文档即将推出...",
+    logs_coming_soon: "部署日志即将推出...",
+    back_to_options: "返回部署选项",
+    access_control: {
+      widget_enabled: "开启 Widget",
+      widget_enabled_desc: "允许外部访问此 Widget 组件。",
+      allowed_domains: "允许的域名",
+      allowed_domains_desc: "限制 Widget 只能在特定的域名上被访问。使用 * 代表所有域名。",
+      domain_placeholder: "例如 example.com",
+      add_btn: "添加",
+      no_domains: "尚未配置域名。除非添加 *，否则 Widget 将拦截所有外部请求。"
+    },
+    embed_snippet: {
+      title: "引入代码",
+      desc: "复制此 script 标签并将其粘贴到网站的 <body> 标签中。",
+      copy_btn: "复制代码"
+    },
+    messages: {
+      update_success: "Widget 配置已更新",
+      update_failed: "Widget 配置更新失败",
+      copied: "已复制到剪贴板"
+    }
+  },
+  adminMcp: {
+    pageTitle: "公共 MCP 配置",
+    pageDescription: "管理 OAuth 供应商和依赖它们的公共 MCP 应用。",
+    addProvider: "添加 OAuth 供应商",
+    addApp: "添加公共 MCP 应用",
+    adminRequired: "需要管理员权限",
+    providers: {
+      title: "OAuth 供应商",
+      description: "应用使用的身份来源",
+      add: "添加供应商",
+      edit: "编辑供应商",
+      new: "新供应商",
+      deleteConfirm: "确定要删除此供应商吗？",
+      deleteSuccess: "供应商已删除",
+      deleteFailed: "删除供应商失败",
+      saveSuccess: "供应商已保存",
+      saveFailed: "保存供应商失败",
+      noData: "未配置供应商",
+      linkedApps: "{count} 个关联应用",
+      linkedAppsPlural: "{count} 个关联应用",
+      form: {
+        selectLabel: "选择供应商",
+        selectPlaceholder: "选择供应商",
+        noOAuth: "不需要 OAuth (stdio/sse)",
+        orCreateNew: "或创建一个新的供应商配置",
+        addNew: "添加新供应商",
+        providerId: "供应商 ID (例如 google)",
+        displayName: "显示名称",
+        clientId: "客户端 ID (Client ID)",
+        clientSecret: "客户端密钥 (Client Secret)",
+        authUrl: "授权 URL (Auth URL)",
+        tokenUrl: "令牌 URL (Token URL)",
+        redirectUri: "重定向 URI (可选)",
+        redirectUriPlaceholder: "留空以使用环境变量默认值",
+        userinfoUrl: "用户信息 URL (可选)",
+        userIdPath: "用户 ID 路径 (例如 sub)",
+        emailPath: "邮箱路径 (Email Path)",
+        defaultScopes: "默认权限范围 (逗号分隔)"
+      }
+    },
+    apps: {
+      title: "公共 MCP 应用",
+      description: "工作区中注册的应用",
+      searchPlaceholder: "搜索应用...",
+      deleteConfirm: "确定要删除此应用吗？",
+      deleteSuccess: "应用已删除",
+      deleteFailed: "删除应用失败",
+      saveSuccess: "应用已保存",
+      saveFailed: "保存应用失败",
+      noData: "未配置应用",
+      columns: {
+        appId: "应用 ID",
+        provider: "供应商",
+        transport: "传输协议"
+      },
+      form: {
+        appId: "应用 ID (例如 gmail)",
+        displayName: "显示名称",
+        description: "描述",
+        iconUrl: "图标 URL",
+        category: "分类",
+        transport: "传输协议",
+        oauthScopes: "OAuth 权限范围 (逗号分隔)",
+        launchConfig: "启动配置 (JSON)",
+        invalidJson: "launch_config 中存在无效的 JSON"
+      }
+    },
+    modal: {
+      step1: "第一步：OAuth 供应商",
+      step1Desc: "选择一个现有的供应商或配置一个新的。",
+      step2: "第二步：MCP 应用详情",
+      step2Desc: "配置应用程序参数。",
+      step3: "第三步：测试与完成",
+      step3Desc: "应用创建成功。您现在可以测试它。",
+      next: "下一步",
+      back: "返回",
+      saveProvider: "保存供应商",
+      saveApp: "保存应用",
+      finish: "完成",
+      successTitle: "配置已保存！",
+      successDesc: "该 MCP 应用程序已添加到公共注册表中。用户现在可以从他们的工具菜单中看到并连接到这个应用。"
+    }
+  }
 } as const
 
 export default zh

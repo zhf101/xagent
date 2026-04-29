@@ -1,7 +1,8 @@
 "use client"
 
 import React, { useState, useEffect, useRef, useMemo } from "react"
-import { ResizableSplitLayout } from "@/components/layout/resizable-split-layout"
+import { ResizableThreeColumnLayout } from "@/components/layout/resizable-three-column-layout"
+import { AgentBuilderChat } from "./agent-builder-chat"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { Button } from "@/components/ui/button"
@@ -12,9 +13,11 @@ import { ChatInput } from "@/components/chat/ChatInput"
 import { ChatMessage } from "@/components/chat/ChatMessage"
 import { apiRequest } from "@/lib/api-wrapper"
 import { getApiUrl, getWsUrl } from "@/lib/utils"
-import { PlusCircle, MessageSquare, Upload, Download, Settings2, Check, Zap, BookOpen, ChevronLeft, Sparkles, Loader2, XCircle, Trash2 } from "lucide-react"
+import { PlusCircle, MessageSquare, Upload, Download, Settings2, Check, Zap, BookOpen, ChevronLeft, Gauge, Sparkles, Loader2, X, XCircle, Trash2, Bot, Brain } from "lucide-react"
+import { ConnectMcpDialog } from "@/components/mcp/connect-mcp-dialog"
 import { useI18n } from "@/contexts/i18n-context"
 import { useAuth } from "@/contexts/auth-context"
+import { useMcpApps } from "@/contexts/mcp-apps-context"
 import { FileAttachment } from "@/components/file/file-attachment"
 import { createFileChipHTML } from "@/components/chat/FileChip"
 import { MultiSelect } from "@/components/ui/multi-select"
@@ -36,19 +39,7 @@ import {
 import { useRouter, useSearchParams } from "next/navigation"
 import { KnowledgeBaseCreationDialog } from "@/components/kb/knowledge-base-creation-dialog"
 import { toast } from "sonner"
-import { FileIcon } from "lucide-react"
 import { cn } from "@/lib/utils"
-
-interface FileItem {
-  file_id: string;
-  filename: string;
-  file_size: number;
-  modified_time: number;
-  file_type?: string;
-  relative_path?: string;
-  task_id?: number;
-  user_id?: number;
-}
 
 interface KnowledgeBase {
   name: string
@@ -113,16 +104,19 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
   const MAX_INSTRUCTIONS_LENGTH = 8192;
   const { t, locale } = useI18n()
   const { token } = useAuth()
+  const { apps: officialApps, getAppIcon } = useMcpApps()
   const router = useRouter()
   const searchParams = useSearchParams()
   const templateId = searchParams.get("template")
-  const isEditMode = !!agentId
+  const initialPrompt = searchParams.get("prompt")
+  const [localAgentId, setLocalAgentId] = useState<string | undefined>(agentId)
+  const isEditMode = !!localAgentId
 
   // Config State
   const [name, setName] = useState("")
   const [description, setDescription] = useState("")
   const [instructions, setInstructions] = useState("")
-  const [executionMode, setExecutionMode] = useState("react") // "simple", "react", "graph"
+  const [executionMode, setExecutionMode] = useState("balanced") // "flash", "balanced", "think"
   const [suggestedPrompts, setSuggestedPrompts] = useState<string[]>([])
   const [modelConfig, setModelConfig] = useState<AgentModelConfig>({
     general: null,
@@ -133,6 +127,7 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
   const [selectedKbs, setSelectedKbs] = useState<string[]>([])
   const [selectedSkills, setSelectedSkills] = useState<string[]>([])
   const [selectedToolCategories, setSelectedToolCategories] = useState<string[]>([])
+  const [selectedMcpServers, setSelectedMcpServers] = useState<string[]>([])
   const [logoFile, setLogoFile] = useState<File | null>(null)
   const [logoUrl, setLogoUrl] = useState<string | null>(null)  // Existing logo URL
   const [isCreating, setIsCreating] = useState(false)
@@ -142,6 +137,7 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
   const [isKbModalOpen, setIsKbModalOpen] = useState(false)
   const [isModelConfigOpen, setIsModelConfigOpen] = useState(false)
   const [configSynced, setConfigSynced] = useState(false)
+  const [notFound, setNotFound] = useState(false)
   const isFirstRender = useRef(true)
 
   useEffect(() => {
@@ -163,6 +159,8 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
   const [kbs, setKbs] = useState<KnowledgeBase[]>([])
   const [skills, setSkills] = useState<Skill[]>([])
   const [tools, setTools] = useState<Tool[]>([])
+  const [mcpServers, setMcpServers] = useState<any[]>([])
+  const [isConnectMcpOpen, setIsConnectMcpOpen] = useState(false)
 
   // File picker state for Instructions
   const instructionsRef = useRef<HTMLDivElement>(null)
@@ -471,12 +469,13 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const [kbRes, skillsRes, toolsRes, modelsRes, userDefaultsRes] = await Promise.all([
+        const [kbRes, skillsRes, toolsRes, modelsRes, userDefaultsRes, mcpRes] = await Promise.all([
           apiRequest(`${getApiUrl()}/api/kb/collections`),
           apiRequest(`${getApiUrl()}/api/skills/`),
           apiRequest(`${getApiUrl()}/api/tools/available`),
           apiRequest(`${getApiUrl()}/api/models/?category=llm`),
-          apiRequest(`${getApiUrl()}/api/models/user-default`)
+          apiRequest(`${getApiUrl()}/api/models/user-default`),
+          apiRequest(`${getApiUrl()}/api/mcp/servers`)
         ])
 
         if (kbRes.ok) {
@@ -496,6 +495,11 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
           const toolsData = await toolsRes.json()
           // Filter only enabled tools
           setTools((toolsData.tools || []).filter((t: Tool) => t.enabled))
+        }
+
+        if (mcpRes.ok) {
+          const mcpData = await mcpRes.json()
+          setMcpServers(mcpData || [])
         }
 
         let availableModels: Model[] = []
@@ -557,23 +561,27 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
 
   // Load agent data in edit mode
   useEffect(() => {
-    if (!isEditMode || !agentId) return
+    if (!isEditMode || !localAgentId) return
 
     const loadAgent = async () => {
       try {
         setLoadingAgent(true)
-        const response = await apiRequest(`${getApiUrl()}/api/agents/${agentId}`)
+        const response = await apiRequest(`${getApiUrl()}/api/agents/${localAgentId}`)
         if (response.ok) {
           const agent = await response.json()
           setOriginalData(agent)
           setName(agent.name || "")
           setDescription(agent.description || "")
           setInstructions(agent.instructions || "")
-          setExecutionMode(agent.execution_mode || "graph")
+          setExecutionMode(agent.execution_mode || "balanced")
           setSuggestedPrompts(agent.suggested_prompts || [])
           setSelectedKbs(agent.knowledge_bases || [])
           setSelectedSkills(agent.skills || [])
-          setSelectedToolCategories(agent.tool_categories || [])
+
+          const rawToolCategories = agent.tool_categories || []
+          setSelectedToolCategories(rawToolCategories.filter((c: string) => !c.startsWith('mcp:')))
+          setSelectedMcpServers(rawToolCategories.filter((c: string) => c.startsWith('mcp:')).map((c: string) => c.replace('mcp:', '')))
+
           setLogoUrl(agent.logo_url || null)
 
           // Load models
@@ -585,6 +593,8 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
               compact: agent.models.compact || null,
             })
           }
+        } else if (response.status === 404) {
+          setNotFound(true)
         }
       } catch (error) {
         console.error("Failed to load agent:", error)
@@ -594,7 +604,7 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
     }
 
     loadAgent()
-  }, [isEditMode, agentId])
+  }, [isEditMode, localAgentId])
 
   // Load template data when template parameter is present
   useEffect(() => {
@@ -611,8 +621,35 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
           setName(template.name || "")
           setDescription(template.description || "")
           setInstructions(template.agent_config?.instructions || "")
+          setExecutionMode(template.agent_config?.execution_mode || "balanced")
           setSelectedSkills(template.agent_config?.skills || [])
-          setSelectedToolCategories(template.agent_config?.tool_categories || [])
+
+          // Separate regular tools from MCP servers
+          const allCategories = template.agent_config?.tool_categories || []
+          setSelectedToolCategories(allCategories.filter((c: string) => !c.startsWith('mcp:')))
+
+          const explicitlyConfiguredMcps = allCategories
+            .filter((c: string) => c.startsWith('mcp:'))
+            .map((c: string) => c.replace('mcp:', ''))
+
+          let connectedMcpApps: string[] = [...explicitlyConfiguredMcps]
+
+          // Use the template's 'connections' to figure out which MCP apps to select
+          if (template.connections && Array.isArray(template.connections)) {
+            template.connections.forEach((conn: any) => {
+              const connName = typeof conn === 'string' ? conn : conn.name;
+              if (!connName) return;
+
+              // Find the actual server object to use its exact name, to avoid case mismatches
+              const server = mcpServers.find(s => s.name.toLowerCase() === connName.toLowerCase() || s.app_id?.toLowerCase() === connName.toLowerCase().replace(/\s+/g, '-'))
+              const finalName = server ? server.name : connName;
+              if (!connectedMcpApps.includes(finalName)) {
+                connectedMcpApps.push(finalName)
+              }
+            });
+          }
+
+          setSelectedMcpServers(connectedMcpApps)
         }
       } catch (error) {
         console.error("Failed to load template:", error)
@@ -625,13 +662,13 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
   }, [templateId, isEditMode, locale])
 
   // Convert kbs to MultiSelect options
-  const kbOptions = kbs.map((kb) => ({
+  const kbOptions = (Array.isArray(kbs) ? kbs : []).map((kb) => ({
     value: kb.name,
     label: kb.name,
   }))
 
   // Convert skills to MultiSelect options
-  const skillOptions = skills.map((skill) => ({
+  const skillOptions = (Array.isArray(skills) ? skills : []).map((skill) => ({
     value: skill.name,
     label: skill.name,
     description: skill.description || skill.when_to_use || undefined,
@@ -639,7 +676,7 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
 
   const modelOptions = [
     { value: "", label: "--" },
-    ...models.map((model) => ({
+    ...(Array.isArray(models) ? models : []).map((model) => ({
       value: model.id.toString(),
       label: model.model_name,
     }))
@@ -647,11 +684,11 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
 
   // Group tools by category for category selection
   const toolCategories = Array.from(
-    new Set(tools.map(t => t.category))
+    new Set((Array.isArray(tools) ? tools : []).map(t => t.category).filter(c => c !== 'mcp'))
   ).sort()
 
   const toolCategoryOptions = toolCategories.map(category => {
-    const toolsInCategory = tools.filter(t => t.category === category)
+    const toolsInCategory = (Array.isArray(tools) ? tools : []).filter(t => t.category === category)
     const categoryDesc = getCategoryDescription(category)
     return {
       value: category,
@@ -816,16 +853,22 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
         backendMessage = `Uploaded files: ${processedFiles.map(f => f.name).join(', ')}`
       }
 
+      // Add selected MCP servers back into tool_categories
+      const finalToolCategories = [...selectedToolCategories];
+      selectedMcpServers.forEach(server => {
+        finalToolCategories.push(`mcp:${server}`);
+      });
+
       // Send preview request via WebSocket
       wsRef.current.send(JSON.stringify({
         type: "preview",
-        agent_id: agentId && typeof agentId === 'string' ? parseInt(agentId) : null,  // Exclude this agent from agent tools if published
+        agent_id: localAgentId && typeof localAgentId === 'string' ? parseInt(localAgentId) : null,  // Exclude this agent from agent tools if published
         instructions,
         execution_mode: executionMode,
         models: modelConfig,
         knowledge_bases: selectedKbs,
         skills: selectedSkills,
-        tool_categories: selectedToolCategories,
+        tool_categories: finalToolCategories,
         message: backendMessage,
         files: processedFiles
       }))
@@ -884,7 +927,17 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
     if (normalizePrompts(suggestedPrompts) !== normalizePrompts(originalData.suggested_prompts)) return true
     if (normalize(selectedKbs) !== normalize(originalData.knowledge_bases)) return true
     if (normalize(selectedSkills) !== normalize(originalData.skills)) return true
-    if (normalize(selectedToolCategories) !== normalize(originalData.tool_categories)) return true
+
+    // Check MCP servers by extracting them from originalData.tool_categories
+    const originalMcpServers = (originalData.tool_categories || [])
+      .filter((c: string) => c.startsWith('mcp:'))
+      .map((c: string) => c.replace('mcp:', ''))
+    if (normalize(selectedMcpServers) !== normalize(originalMcpServers)) return true
+
+    // Check non-MCP tool categories
+    const nonMcpCategories = selectedToolCategories.filter(c => !c.startsWith('mcp:'))
+    const originalNonMcpCategories = (originalData.tool_categories || []).filter((c: string) => !c.startsWith('mcp:'))
+    if (normalize(nonMcpCategories) !== normalize(originalNonMcpCategories)) return true
 
     // Compare models
     const origModels = originalData.models || {}
@@ -894,7 +947,7 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
     if ((modelConfig.compact || null) !== (origModels.compact || null)) return true
 
     return false
-  }, [name, description, instructions, executionMode, logoFile, suggestedPrompts, selectedKbs, selectedSkills, selectedToolCategories, modelConfig, originalData])
+  }, [name, description, instructions, executionMode, logoFile, suggestedPrompts, selectedKbs, selectedSkills, selectedToolCategories, selectedMcpServers, modelConfig, originalData])
 
   const handleCreate = async () => {
     // Validation
@@ -916,8 +969,12 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
     let finalToolCategories = [...selectedToolCategories]
     if (selectedKbs.length > 0 && !finalToolCategories.includes("knowledge")) {
       finalToolCategories.push("knowledge")
-      setSelectedToolCategories(finalToolCategories)
     }
+
+    // Add selected MCP servers back into tool_categories
+    selectedMcpServers.forEach(server => {
+      finalToolCategories.push(`mcp:${server}`)
+    })
 
     setIsCreating(true)
 
@@ -928,8 +985,8 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
         logo_base64 = await fileToBase64(logoFile)
       }
 
-      const url = isEditMode && agentId
-        ? `${getApiUrl()}/api/agents/${agentId}`
+      const url = isEditMode && localAgentId
+        ? `${getApiUrl()}/api/agents/${localAgentId}`
         : `${getApiUrl()}/api/agents`
 
       const method = isEditMode ? "PUT" : "POST"
@@ -985,6 +1042,7 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
           const newAgent = await response.json()
           setCreatedAgent(newAgent)
           setShowSuccessDialog(true)
+          setLocalAgentId(newAgent.id.toString())
 
           // Silently update URL to include ID so refreshing works
           // We don't want to trigger a full navigation that might close the dialog or reset state if not handled carefully
@@ -1009,12 +1067,12 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
   }
 
   const handlePublish = async () => {
-    if (!agentId) return
+    if (!localAgentId) return
 
     setLoadingAgent(true)
 
     try {
-      const response = await apiRequest(`${getApiUrl()}/api/agents/${agentId}/publish`, {
+      const response = await apiRequest(`${getApiUrl()}/api/agents/${localAgentId}/publish`, {
         method: "POST",
       })
 
@@ -1037,12 +1095,12 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
   }
 
   const handleUnpublish = async () => {
-    if (!agentId) return
+    if (!localAgentId) return
 
     setLoadingAgent(true)
 
     try {
-      const response = await apiRequest(`${getApiUrl()}/api/agents/${agentId}/unpublish`, {
+      const response = await apiRequest(`${getApiUrl()}/api/agents/${localAgentId}/unpublish`, {
         method: "POST",
       })
 
@@ -1131,6 +1189,57 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
 
   const LeftPanel = (
     <div className="p-6 space-y-8 min-h-full bg-card/50">
+      {/* Header moved to middle panel */}
+      <div className="flex justify-between items-start">
+        <div>
+          {isEditMode && (
+            <div
+              className="inline-flex items-center gap-1 mb-2 cursor-pointer hover:text-primary"
+              onClick={() => router.push("/build")}
+            >
+              <ChevronLeft className="h-4 w-4" />
+              {t("builds.editor.header.backToList")}
+            </div>
+          )}
+          <h1 className="text-3xl font-bold mb-1">{name || t("builds.editor.header.title")}</h1>
+          <p className="text-muted-foreground">{t("builds.editor.header.subtitle")}</p>
+        </div>
+        <div className="flex items-center gap-4">
+          <Button
+            onClick={handleCreate}
+            disabled={isCreating || loadingAgent || (isEditMode && !isDirty)}
+          >
+            {isCreating
+              ? isEditMode
+                ? t("builds.editor.header.updating")
+                : t("builds.editor.header.creating")
+              : isEditMode
+                ? t("builds.editor.header.update")
+                : t("builds.editor.header.create")}
+          </Button>
+
+          {isEditMode && (
+            originalData?.status === "published" ? (
+              <Button
+                variant="outline"
+                onClick={handleUnpublish}
+                disabled={isCreating || loadingAgent}
+              >
+                {t("builds.editor.header.unpublish")}
+              </Button>
+            ) : (
+              <Button
+                variant="secondary"
+                onClick={handlePublish}
+                disabled={isCreating || loadingAgent || isDirty}
+              >
+                {t("builds.editor.header.publish")}
+              </Button>
+            )
+          )}
+        </div>
+      </div>
+
       <div className="space-y-6">
         {/* Logo Upload */}
         <div className="space-y-2">
@@ -1251,28 +1360,48 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
         {/* Execution Mode */}
         <div className="space-y-2">
           <Label>{t("builds.configForm.executionMode.label")}</Label>
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-3 gap-2">
             <button
               type="button"
-              className={`px-3 py-2 text-sm border rounded-md transition-colors ${executionMode === "react"
+              className={`px-3 py-2 text-sm border rounded-md transition-colors ${executionMode === "flash"
                 ? "bg-primary text-primary-foreground border-primary"
                 : "bg-background hover:bg-accent"
                 }`}
-              onClick={() => setExecutionMode("react")}
+              onClick={() => setExecutionMode("flash")}
             >
-              <div className="font-medium">{t("builds.configForm.executionMode.react.title")}</div>
-              <div className="text-xs opacity-80">{t("builds.configForm.executionMode.react.description")}</div>
+              <div className="flex items-center justify-center gap-1 mb-1">
+                <Zap className="h-3.5 w-3.5" />
+                <div className="font-medium">{t("builds.configForm.executionMode.flash.title")}</div>
+              </div>
+              <div className="text-xs opacity-80">{t("builds.configForm.executionMode.flash.description")}</div>
             </button>
             <button
               type="button"
-              className={`px-3 py-2 text-sm border rounded-md transition-colors ${executionMode === "graph"
+              className={`px-3 py-2 text-sm border rounded-md transition-colors ${executionMode === "balanced"
                 ? "bg-primary text-primary-foreground border-primary"
                 : "bg-background hover:bg-accent"
                 }`}
-              onClick={() => setExecutionMode("graph")}
+              onClick={() => setExecutionMode("balanced")}
             >
-              <div className="font-medium">{t("builds.configForm.executionMode.graph.title")}</div>
-              <div className="text-xs opacity-80">{t("builds.configForm.executionMode.graph.description")}</div>
+              <div className="flex items-center justify-center gap-1 mb-1">
+                <Gauge className="h-3.5 w-3.5" />
+                <div className="font-medium">{t("builds.configForm.executionMode.balanced.title")}</div>
+              </div>
+              <div className="text-xs opacity-80">{t("builds.configForm.executionMode.balanced.description")}</div>
+            </button>
+            <button
+              type="button"
+              className={`px-3 py-2 text-sm border rounded-md transition-colors ${executionMode === "think"
+                ? "bg-primary text-primary-foreground border-primary"
+                : "bg-background hover:bg-accent"
+                }`}
+              onClick={() => setExecutionMode("think")}
+            >
+              <div className="flex items-center justify-center gap-1 mb-1">
+                <Brain className="h-3.5 w-3.5" />
+                <div className="font-medium">{t("builds.configForm.executionMode.think.title")}</div>
+              </div>
+              <div className="text-xs opacity-80">{t("builds.configForm.executionMode.think.description")}</div>
             </button>
           </div>
         </div>
@@ -1442,7 +1571,7 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
           </div>
 
           <MultiSelect
-            values={selectedKbs}
+            values={selectedKbs || []}
             onValuesChange={(newValues) => {
               setSelectedKbs(newValues)
               if (newValues.length > 0 && !selectedToolCategories.includes("knowledge")) {
@@ -1482,7 +1611,7 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
           </div>
           {skills.length > 0 ? (
             <MultiSelect
-              values={selectedSkills}
+              values={selectedSkills || []}
               onValuesChange={setSelectedSkills}
               options={skillOptions}
               placeholder={t("builds.configForm.skills.placeholder")}
@@ -1522,7 +1651,7 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
           </div>
           {toolCategories.length > 0 ? (
             <MultiSelect
-              values={selectedToolCategories}
+              values={selectedToolCategories || []}
               onValuesChange={setSelectedToolCategories}
               options={toolCategoryOptions}
               placeholder={t("builds.configForm.tools.placeholder")}
@@ -1540,6 +1669,69 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
               })}
             </div>
           )}
+          <div className="flex flex-col gap-2">
+            {selectedMcpServers.map((serverName, index) => {
+              const isConnected = mcpServers.some((s: any) => s.name === serverName)
+              const isSupported = officialApps.some((app: any) => app.name.toLowerCase() === serverName.toLowerCase() || app.id.toLowerCase() === serverName.toLowerCase())
+
+              let statusDesc = ""
+
+              if (isConnected) {
+                const server = mcpServers.find((s: any) => s.name === serverName)
+                statusDesc = server?.description || ""
+              } else if (isSupported) {
+                statusDesc = t("tools.mcp.notConnected")
+              } else {
+                statusDesc = t("tools.mcp.notSupported")
+              }
+
+              const server = { name: serverName, description: statusDesc }
+              const icon = getAppIcon(server.name)
+              return (
+                <div key={index} className={cn("flex items-center gap-3 p-2 rounded-md border", !isConnected && "opacity-50 bg-muted/50")}>
+                  <div className="bg-slate-100 p-1.5 rounded">
+                    {icon ? (
+                      <img src={icon} alt={server.name} className={cn("h-5 w-5 object-contain", !isConnected && "grayscale")} />
+                    ) : (
+                      <span className="text-xl">🔌</span>
+                    )}
+                  </div>
+                  <div>
+                    <div className="text-sm font-medium flex items-center gap-2">
+                      {server.name}
+                      {!isConnected && (
+                        <span className="text-[10px] bg-yellow-100 text-yellow-700 px-1.5 py-0.5 rounded font-normal whitespace-nowrap">
+                          {t("tools.mcp.mcpUnavailable")}
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-xs text-muted-foreground">{server.description}</div>
+                  </div>
+                  <div className="ml-auto">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-8 w-8 p-0 text-red-500 hover:text-red-600 hover:bg-red-50"
+                      onClick={() => setSelectedMcpServers(prev => prev.filter(name => name !== server.name))}
+                    >
+                      <X className="h-4 w-4" />
+                    </Button>
+                  </div>
+                </div>
+              )
+            })}
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setIsConnectMcpOpen(true)}
+              className="w-auto self-start text-blue-600 border-blue-200 hover:bg-blue-50"
+            >
+              <PlusCircle className="h-4 w-4 mr-2" />
+              {t('tools.mcp.dialog.connector')}
+            </Button>
+          </div>
         </div>
 
         {/* Suggested Prompts */}
@@ -1548,8 +1740,8 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
           <div className="text-xs text-muted-foreground mb-2">
             {t("builds.configForm.suggestedPrompts.description")}
           </div>
-          <div className="space-y-2">
-            {suggestedPrompts.map((prompt, index) => (
+          <div className="space-y-3">
+            {(suggestedPrompts || []).map((prompt, index) => (
               <div key={index} className="flex gap-2 items-start">
                 <Input
                   value={prompt}
@@ -1589,7 +1781,7 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
   )
 
   const RightPanel = (
-    <div className="flex flex-col h-full bg-background border-l">
+    <div className="flex flex-col flex-1 min-h-0 h-full bg-background border-l">
       {/* Header */}
       <div className="h-14 border-b flex items-center px-4 gap-2 bg-card/30">
         <MessageSquare className="h-5 w-5 text-muted-foreground" />
@@ -1669,66 +1861,58 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
     </div>
   )
 
+  if (notFound) {
+    return (
+      <div className="flex flex-col items-center justify-center h-[100vh] w-full bg-background text-center p-4">
+        <Bot className="w-16 h-16 text-muted-foreground mb-4 opacity-20" />
+        <h2 className="text-2xl font-bold mb-2">{t("builds.editor.error.notFound")}</h2>
+        <p className="text-muted-foreground max-w-md mb-6">
+          {t("builds.editor.error.notFoundDesc")}
+        </p>
+        <Button onClick={() => router.push("/build/new")}>
+          {t("builds.editor.header.create")}
+        </Button>
+      </div>
+    )
+  }
+
   return (
     <div className="flex flex-col h-[100vh]">
-      {/* Header */}
-      <div className="border-b flex justify-between items-center p-8">
-        <div>
-          {isEditMode && (
-            <div
-              className="inline-flex items-center gap-1 mb-2 cursor-pointer hover:text-primary"
-              onClick={() => router.push("/build")}
-            >
-              <ChevronLeft className="h-4 w-4" />
-              {t("builds.editor.header.backToList")}
-            </div>
-          )}
-          <h1 className="text-3xl font-bold mb-1">{name || t("builds.editor.header.title")}</h1>
-          <p className="text-muted-foreground">{t("builds.editor.header.subtitle")}</p>
-        </div>
-        <div className="flex items-center gap-4">
-          <Button
-            onClick={handleCreate}
-            disabled={isCreating || loadingAgent || (isEditMode && !isDirty)}
-          >
-            {isCreating
-              ? isEditMode
-                ? t("builds.editor.header.updating")
-                : t("builds.editor.header.creating")
-              : isEditMode
-                ? t("builds.editor.header.update")
-                : t("builds.editor.header.create")}
-          </Button>
-
-          {isEditMode && (
-            originalData?.status === "published" ? (
-              <Button
-                variant="outline"
-                onClick={handleUnpublish}
-                disabled={isCreating || loadingAgent}
-              >
-                {t("builds.editor.header.unpublish")}
-              </Button>
-            ) : (
-              <Button
-                variant="secondary"
-                onClick={handlePublish}
-                disabled={isCreating || loadingAgent || isDirty}
-              >
-                {t("builds.editor.header.publish")}
-              </Button>
-            )
-          )}
-        </div>
-      </div>
-
       <div className="flex-1 min-h-0">
-        <ResizableSplitLayout
-          leftPanel={LeftPanel}
+        <ResizableThreeColumnLayout
+          leftPanel={<AgentBuilderChat
+            initialPrompt={initialPrompt}
+            agentConfig={{
+              id: localAgentId ? parseInt(localAgentId) : undefined,
+              name, description, instructions, executionMode, suggestedPrompts,
+              modelConfig, selectedKbs, selectedSkills, selectedToolCategories
+            }}
+            onUpdateConfig={(updates) => {
+              if (updates.id !== undefined) setLocalAgentId(updates.id.toString());
+              if (updates.name !== undefined) setName(updates.name);
+              if (updates.description !== undefined) setDescription(updates.description);
+              if (updates.instructions !== undefined) setInstructions(updates.instructions);
+              if (updates.executionMode !== undefined) setExecutionMode(updates.executionMode);
+              if (updates.suggestedPrompts !== undefined) setSuggestedPrompts(updates.suggestedPrompts);
+              if (updates.modelConfig !== undefined) setModelConfig(updates.modelConfig);
+              if (updates.selectedKbs !== undefined) setSelectedKbs(updates.selectedKbs);
+              if (updates.selectedSkills !== undefined) setSelectedSkills(updates.selectedSkills);
+              if (updates.selectedToolCategories !== undefined) setSelectedToolCategories(updates.selectedToolCategories);
+            }}
+            availableOptions={{
+              models: (Array.isArray(models) ? models : []).map(m => ({ id: m.id, name: m.model_name || m.model_id })),
+              knowledgeBases: (Array.isArray(kbs) ? kbs : []).map(k => ({ name: k.name })),
+              skills: (Array.isArray(skills) ? skills : []).map(s => ({ name: s.name })),
+              toolCategories: Array.from(new Set((Array.isArray(tools) ? tools : []).map(t => t.category)))
+            }}
+          />}
+          middlePanel={LeftPanel}
           rightPanel={RightPanel}
-          initialLeftWidth={50}
-          minLeftWidth={30}
-          maxLeftWidth={70}
+          initialLeftWidth={20}
+          initialMiddleWidth={45}
+          minLeftWidth={15}
+          minMiddleWidth={35}
+          minRightWidth={20}
         />
       </div>
       {/* File Preview Drawer */}
@@ -1818,6 +2002,22 @@ export function AgentBuilder({ agentId }: AgentBuilderProps) {
               setSelectedToolCategories(prev => [...prev, "knowledge"])
             }
           }
+        }}
+      />
+
+      <ConnectMcpDialog
+        open={isConnectMcpOpen}
+        onOpenChange={setIsConnectMcpOpen}
+        globalMcpServers={mcpServers}
+        selectedMcpServers={selectedMcpServers}
+        onConnectSelected={(selectedApps) => {
+          setSelectedMcpServers(selectedApps)
+        }}
+        onSuccess={() => {
+          apiRequest(`${getApiUrl()}/api/mcp/servers`)
+            .then(res => res.json())
+            .then(data => setMcpServers(data || []))
+            .catch(console.error)
         }}
       />
     </div>

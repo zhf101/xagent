@@ -3,24 +3,17 @@
 import React, { useState, useEffect } from "react"
 import { SearchInput } from "@/components/ui/search-input"
 import { Button } from "@/components/ui/button"
-import { Plus, Bot, Trash2, MessageSquare, Edit, MoreVertical, Globe, Calendar, Clock } from "lucide-react"
+import { Plus, Bot, Trash2, MessageSquare, Edit, MoreVertical, Globe, Calendar, Clock, Rocket, Sparkles, Settings2, ArrowRight } from "lucide-react"
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover"
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { Textarea } from "@/components/ui/textarea"
+import { DeployAgentDialog, Agent } from "@/components/build/deploy-agent-dialog"
 import { useI18n } from "@/contexts/i18n-context"
 import { useRouter, useSearchParams } from "next/navigation"
 import { apiRequest } from "@/lib/api-wrapper"
 import { getApiUrl } from "@/lib/utils"
 import { ConfirmDialog } from "@/components/ui/confirm-dialog"
 import { toast } from "sonner"
-
-interface Agent {
-  id: number
-  name: string
-  description: string
-  logo_url: string | null
-  status: string
-  created_at: string
-  updated_at: string
-}
 
 export default function BuildsPage() {
   const { t } = useI18n()
@@ -29,6 +22,9 @@ export default function BuildsPage() {
   const [searchTerm, setSearchTerm] = useState("")
   const [agents, setAgents] = useState<Agent[]>([])
   const [loading, setLoading] = useState(true)
+
+  // Deploy Dialog State
+  const [deployAgent, setDeployAgent] = useState<Agent | null>(null)
 
   // Check for template parameter and redirect to create page
   useEffect(() => {
@@ -121,8 +117,25 @@ export default function BuildsPage() {
     (agent.description && agent.description.toLowerCase().includes(searchTerm.toLowerCase()))
   )
 
+  const [isCreateModalOpen, setIsCreateModalOpen] = useState(false)
+  const [createPrompt, setCreatePrompt] = useState("")
+
   const handleCreate = () => {
+    setIsCreateModalOpen(true)
+  }
+
+  const handleBuildWithPrompt = () => {
+    if (createPrompt.trim()) {
+      router.push(`/build/new?prompt=${encodeURIComponent(createPrompt.trim())}`)
+    } else {
+      router.push("/build/new")
+    }
+    setIsCreateModalOpen(false)
+  }
+
+  const handleManualCreate = () => {
     router.push("/build/new")
+    setIsCreateModalOpen(false)
   }
 
   const formatDate = (dateString: string) => {
@@ -167,7 +180,8 @@ export default function BuildsPage() {
                 {filteredAgents.map((agent) => (
                   <div
                     key={agent.id}
-                    className="group relative flex flex-col justify-between space-y-4 rounded-xl border bg-card p-6 shadow-sm transition-all hover:shadow-md hover:border-primary/50"
+                    className="group relative flex flex-col justify-between space-y-4 rounded-xl border bg-card p-6 shadow-sm transition-all hover:shadow-md hover:border-primary/50 cursor-pointer"
+                    onClick={() => router.push(`/build/${agent.id}`)}
                   >
                     <div className="flex-1">
                       <div className="space-y-4">
@@ -264,6 +278,16 @@ export default function BuildsPage() {
                             </Button>
                             <Button
                               variant="outline"
+                              size="icon"
+                              onClick={() => {
+                                setDeployAgent(agent);
+                              }}
+                              title="Deploy"
+                            >
+                              <Rocket className="h-4 w-4" />
+                            </Button>
+                            <Button
+                              variant="outline"
                               className="px-4"
                               onClick={() => router.push(`/build/${agent.id}`)}
                             >
@@ -314,6 +338,107 @@ export default function BuildsPage() {
         isLoading={isDeletingAgent}
         description={t('builds.list.actions.deleteConfirm')}
       />
+
+      {/* Deploy Agent Dialog */}
+      <DeployAgentDialog
+        deployAgent={deployAgent}
+        onClose={() => setDeployAgent(null)}
+        onUpdate={(updatedAgent) => {
+          setDeployAgent(updatedAgent)
+          setAgents(agents.map(a => a.id === updatedAgent.id ? updatedAgent : a))
+        }}
+      />
+
+      <Dialog open={isCreateModalOpen} onOpenChange={setIsCreateModalOpen}>
+        <DialogContent className="sm:max-w-[550px] gap-0 p-0 overflow-hidden bg-background shadow-lg rounded-xl">
+          <DialogHeader className="px-6 py-5 border-b">
+            <DialogTitle className="flex items-center gap-2 text-xl font-semibold">
+              <Bot className="h-6 w-6" />
+              {t("builds.list.createModal.title")}
+            </DialogTitle>
+          </DialogHeader>
+
+          <div className="p-6 space-y-6">
+            {/* Option 1: By Describing It */}
+            <div className="flex flex-col space-y-4 rounded-xl border border-border p-5 bg-card">
+              <div className="flex items-start gap-4">
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-indigo-50 text-indigo-500">
+                  <Sparkles className="h-5 w-5" />
+                </div>
+                <div className="space-y-1">
+                  <h3 className="font-semibold text-base">
+                    {t("builds.list.createModal.describeTitle")}
+                  </h3>
+                  <p className="text-sm text-muted-foreground">
+                    {t("builds.list.createModal.describeDesc", { appName: process.env.NEXT_PUBLIC_APP_NAME || "Xagent" })}
+                  </p>
+                </div>
+              </div>
+
+              <div className="relative rounded-lg border border-input bg-background focus-within:ring-1 focus-within:ring-ring">
+                <Textarea
+                  value={createPrompt}
+                  onChange={(e) => setCreatePrompt(e.target.value)}
+                  placeholder={t("builds.list.createModal.placeholder")}
+                  className="min-h-[120px] resize-none border-0 shadow-none focus-visible:ring-0 pb-14"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault()
+                      handleBuildWithPrompt()
+                    }
+                  }}
+                />
+                <div className="absolute bottom-2 right-2">
+                  <Button
+                    onClick={handleBuildWithPrompt}
+                    disabled={!createPrompt.trim()}
+                    className="bg-indigo-400 hover:bg-indigo-500 text-white shadow-none"
+                  >
+                    <Sparkles className="mr-2 h-4 w-4" />
+                    {t("builds.list.createModal.buildBtn")}
+                  </Button>
+                </div>
+              </div>
+            </div>
+
+            <div className="relative">
+              <div className="absolute inset-0 flex items-center">
+                <span className="w-full border-t" />
+              </div>
+              <div className="relative flex justify-center text-xs">
+                <span className="bg-background px-2 text-muted-foreground">
+                  {t("common.or")}
+                </span>
+              </div>
+            </div>
+
+            {/* Option 2: Manually */}
+            <div className="flex flex-col items-start gap-4 rounded-xl border border-border p-5 bg-card">
+              <div className="flex items-start gap-4">
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+                  <Settings2 className="h-5 w-5" />
+                </div>
+                <div className="space-y-1 flex-1">
+                  <h3 className="font-semibold text-base">
+                    {t("builds.list.createModal.manualTitle")}
+                  </h3>
+                  <p className="text-sm text-muted-foreground">
+                    {t("builds.list.createModal.manualDesc")}
+                  </p>
+                </div>
+              </div>
+              <Button
+                variant="outline"
+                onClick={handleManualCreate}
+                className="gap-2"
+              >
+                {t("builds.list.createModal.manualBtn")}
+                <ArrowRight className="h-4 w-4" />
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

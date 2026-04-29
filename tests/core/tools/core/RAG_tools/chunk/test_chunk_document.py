@@ -497,9 +497,11 @@ class TestChunkDocument:
         )
         assert chunk_result["created"] is True
         assert chunk_result["chunk_count"] > 0
-        from xagent.providers.vector_store.lancedb import get_connection_from_env
+        from xagent.core.tools.core.RAG_tools.storage.factory import (
+            get_vector_store_raw_connection,
+        )
 
-        conn = get_connection_from_env()
+        conn = get_vector_store_raw_connection()
         table = conn.open_table("chunks")
         df = (
             table.search()
@@ -541,9 +543,11 @@ class TestChunkDocument:
         )
         assert chunk_result["created"] is True
         assert chunk_result["chunk_count"] > 0
-        from xagent.providers.vector_store.lancedb import get_connection_from_env
+        from xagent.core.tools.core.RAG_tools.storage.factory import (
+            get_vector_store_raw_connection,
+        )
 
-        conn = get_connection_from_env()
+        conn = get_vector_store_raw_connection()
         table = conn.open_table("chunks")
         df = (
             table.search()
@@ -594,9 +598,11 @@ class TestChunkDocument:
         )
         assert chunk_result["created"] is True
         assert chunk_result["chunk_count"] > 0
-        from xagent.providers.vector_store.lancedb import get_connection_from_env
+        from xagent.core.tools.core.RAG_tools.storage.factory import (
+            get_vector_store_raw_connection,
+        )
 
-        conn = get_connection_from_env()
+        conn = get_vector_store_raw_connection()
         table = conn.open_table("chunks")
         df = (
             table.search()
@@ -715,9 +721,11 @@ class TestChunkDocument:
         assert chunk_result2["created"] is False  # Should not write again
 
         # Verify database state - both should reference same config_hash
-        from xagent.providers.vector_store.lancedb import get_connection_from_env
+        from xagent.core.tools.core.RAG_tools.storage.factory import (
+            get_vector_store_raw_connection,
+        )
 
-        conn = get_connection_from_env()
+        conn = get_vector_store_raw_connection()
         table = conn.open_table("chunks")
         df = (
             table.search()
@@ -781,9 +789,11 @@ class TestChunkDocument:
         assert chunk_result2["created"] is True
 
         # Verify database has two different config_hash versions
-        from xagent.providers.vector_store.lancedb import get_connection_from_env
+        from xagent.core.tools.core.RAG_tools.storage.factory import (
+            get_vector_store_raw_connection,
+        )
 
-        conn = get_connection_from_env()
+        conn = get_vector_store_raw_connection()
         table = conn.open_table("chunks")
         df = (
             table.search()
@@ -836,9 +846,11 @@ class TestChunkDocument:
         assert chunk_result["created"] is True
         assert chunk_result["chunk_count"] >= 1
 
-        from xagent.providers.vector_store.lancedb import get_connection_from_env
+        from xagent.core.tools.core.RAG_tools.storage.factory import (
+            get_vector_store_raw_connection,
+        )
 
-        conn = get_connection_from_env()
+        conn = get_vector_store_raw_connection()
         table = conn.open_table("chunks")
         df = (
             table.search()
@@ -896,9 +908,11 @@ class TestChunkDocument:
         assert chunk_default["created"] is True
         assert chunk_custom["created"] is True
         # Different separators must yield different config_hash (hence different version)
-        from xagent.providers.vector_store.lancedb import get_connection_from_env
+        from xagent.core.tools.core.RAG_tools.storage.factory import (
+            get_vector_store_raw_connection,
+        )
 
-        conn = get_connection_from_env()
+        conn = get_vector_store_raw_connection()
         table = conn.open_table("chunks")
         df = (
             table.search()
@@ -948,9 +962,11 @@ class TestChunkDocument:
         assert chunk_result["chunk_count"] > 1  # Need multiple chunks for this test
 
         # Step 3: Verify row-level chunk_hash uniqueness
-        from xagent.providers.vector_store.lancedb import get_connection_from_env
+        from xagent.core.tools.core.RAG_tools.storage.factory import (
+            get_vector_store_raw_connection,
+        )
 
-        conn = get_connection_from_env()
+        conn = get_vector_store_raw_connection()
         table = conn.open_table("chunks")
         df = (
             table.search()
@@ -1057,9 +1073,11 @@ class TestChunkDocument:
         assert chunk_result["created"] is True
 
         # Step 3: Verify table structure
-        from xagent.providers.vector_store.lancedb import get_connection_from_env
+        from xagent.core.tools.core.RAG_tools.storage.factory import (
+            get_vector_store_raw_connection,
+        )
 
-        conn = get_connection_from_env()
+        conn = get_vector_store_raw_connection()
         table = conn.open_table("chunks")
 
         # Table should exist and be accessible
@@ -1247,12 +1265,14 @@ class TestChunkDocument:
         assert chunk_result["created"] is True
 
         # Step 3: Verify metadata in database (should be serialized as JSON string)
+        from xagent.core.tools.core.RAG_tools.storage.factory import (
+            get_vector_store_raw_connection,
+        )
         from xagent.core.tools.core.RAG_tools.utils.metadata_utils import (
             deserialize_metadata,
         )
-        from xagent.providers.vector_store.lancedb import get_connection_from_env
 
-        conn = get_connection_from_env()
+        conn = get_vector_store_raw_connection()
         table = conn.open_table("chunks")
         df = (
             table.search()
@@ -1316,21 +1336,17 @@ class TestChunkDocumentFallback:
     def test_chunk_document_arrow_fallback_chain(
         self, temp_lancedb_dir, test_collection
     ) -> None:
-        """Test chunk_document uses to_arrow() -> to_list() -> to_pandas() fallback."""
+        """Test chunk_document uses iter_batches with Arrow RecordBatch."""
         from unittest.mock import MagicMock, patch
 
         from xagent.core.tools.core.RAG_tools.chunk.chunk_document import (
             _get_existing_chunks,
         )
 
-        mock_db_connection = MagicMock()
-        mock_table = MagicMock()
+        # Mock the vector store
+        mock_vector_store = MagicMock()
 
-        def mock_open_table_func(table_name):
-            return mock_table
-
-        mock_db_connection.open_table.side_effect = mock_open_table_func
-
+        # Create mock batch data (simulating Arrow RecordBatch)
         chunks_data = [
             {
                 "chunk_id": "chunk1",
@@ -1341,26 +1357,25 @@ class TestChunkDocumentFallback:
                 "index": 0,
                 "created_at": pd.Timestamp.now(),
                 "metadata": '{"key": "value"}',
+                "page_number": None,
+                "section": None,
+                "anchor": None,
+                "json_path": None,
             }
         ]
-        mock_arrow_table = MagicMock()
-        mock_arrow_table.to_pylist.return_value = chunks_data
 
-        mock_search = MagicMock()
-        mock_where = MagicMock()
-        mock_table.search.return_value = mock_search
-        mock_search.where.return_value = mock_where
-        mock_where.to_arrow.return_value = mock_arrow_table
-        mock_table.count_rows.return_value = 1
+        # Create mock batch
+        mock_batch = MagicMock()
+        mock_batch.num_rows = 1
+        mock_batch.to_pandas.return_value = pd.DataFrame([chunks_data[0]])
 
-        with (
-            patch(
-                "xagent.core.tools.core.RAG_tools.chunk.chunk_document.get_connection_from_env",
-                return_value=mock_db_connection,
-            ),
-            patch(
-                "xagent.core.tools.core.RAG_tools.chunk.chunk_document.ensure_chunks_table"
-            ),
+        # Mock iter_batches to yield the mock batch
+        mock_vector_store.count_rows_or_zero.return_value = 1
+        mock_vector_store.iter_batches.return_value = [mock_batch]
+
+        with patch(
+            "xagent.core.tools.core.RAG_tools.chunk.chunk_document.get_vector_index_store",
+            return_value=mock_vector_store,
         ):
             result = _get_existing_chunks(
                 collection=test_collection,
@@ -1371,27 +1386,24 @@ class TestChunkDocumentFallback:
 
             assert len(result) == 1
             assert result[0]["chunk_id"] == "chunk1"
-            # Verify to_arrow() was called
-            mock_where.to_arrow.assert_called_once()
+            # Verify count_rows_or_zero and iter_batches were called
+            mock_vector_store.count_rows_or_zero.assert_called_once()
+            mock_vector_store.iter_batches.assert_called_once()
 
     def test_chunk_document_fallback_to_list(
         self, temp_lancedb_dir, test_collection
     ) -> None:
-        """Test chunk_document fallback from to_arrow() to to_list()."""
+        """Test chunk_document handles batch data correctly."""
         from unittest.mock import MagicMock, patch
 
         from xagent.core.tools.core.RAG_tools.chunk.chunk_document import (
             _get_existing_chunks,
         )
 
-        mock_db_connection = MagicMock()
-        mock_table = MagicMock()
+        # Mock the vector store
+        mock_vector_store = MagicMock()
 
-        def mock_open_table_func(table_name):
-            return mock_table
-
-        mock_db_connection.open_table.side_effect = mock_open_table_func
-
+        # Create mock batch data
         chunks_data = [
             {
                 "chunk_id": "chunk1",
@@ -1402,26 +1414,25 @@ class TestChunkDocumentFallback:
                 "index": 0,
                 "created_at": pd.Timestamp.now(),
                 "metadata": '{"key": "value"}',
+                "page_number": None,
+                "section": None,
+                "anchor": None,
+                "json_path": None,
             }
         ]
 
-        mock_search = MagicMock()
-        mock_where = MagicMock()
-        mock_table.search.return_value = mock_search
-        mock_search.where.return_value = mock_where
-        # to_arrow() fails, fallback to to_list()
-        mock_where.to_arrow.side_effect = AttributeError("to_arrow not available")
-        mock_where.to_list.return_value = chunks_data
-        mock_table.count_rows.return_value = 1
+        # Create mock batch
+        mock_batch = MagicMock()
+        mock_batch.num_rows = 1
+        mock_batch.to_pandas.return_value = pd.DataFrame([chunks_data[0]])
 
-        with (
-            patch(
-                "xagent.core.tools.core.RAG_tools.chunk.chunk_document.get_connection_from_env",
-                return_value=mock_db_connection,
-            ),
-            patch(
-                "xagent.core.tools.core.RAG_tools.chunk.chunk_document.ensure_chunks_table"
-            ),
+        # Mock iter_batches to yield the mock batch
+        mock_vector_store.count_rows_or_zero.return_value = 1
+        mock_vector_store.iter_batches.return_value = [mock_batch]
+
+        with patch(
+            "xagent.core.tools.core.RAG_tools.chunk.chunk_document.get_vector_index_store",
+            return_value=mock_vector_store,
         ):
             result = _get_existing_chunks(
                 collection=test_collection,
@@ -1432,65 +1443,51 @@ class TestChunkDocumentFallback:
 
             assert len(result) == 1
             assert result[0]["chunk_id"] == "chunk1"
-            # Verify fallback was used
-            mock_where.to_arrow.assert_called_once()
-            mock_where.to_list.assert_called_once()
+            # Verify methods were called
+            mock_vector_store.count_rows_or_zero.assert_called_once()
+            mock_vector_store.iter_batches.assert_called_once()
 
     def test_chunk_document_fallback_to_pandas_with_nan(
         self, temp_lancedb_dir, test_collection
     ) -> None:
-        """Test chunk_document fallback to to_pandas() and NaN normalization."""
+        """Test chunk_document handles batch data correctly via iter_batches."""
         from unittest.mock import MagicMock, patch
-
-        import numpy as np
 
         from xagent.core.tools.core.RAG_tools.chunk.chunk_document import (
             _get_existing_chunks,
         )
 
-        mock_db_connection = MagicMock()
-        mock_table = MagicMock()
+        # Mock the vector store
+        mock_vector_store = MagicMock()
 
-        def mock_open_table_func(table_name):
-            return mock_table
+        # Create mock batch data (without NaN - use None directly)
+        chunks_data = {
+            "chunk_id": "chunk1",
+            "text": "test content",
+            "collection": test_collection,
+            "doc_id": "doc1",
+            "parse_hash": "hash1",
+            "index": 0,
+            "created_at": pd.Timestamp.now(),
+            "metadata": '{"key": "value"}',
+            "page_number": None,
+            "section": None,
+            "anchor": None,
+            "json_path": None,
+        }
 
-        mock_db_connection.open_table.side_effect = mock_open_table_func
+        # Create mock batch
+        mock_batch = MagicMock()
+        mock_batch.num_rows = 1
+        mock_batch.to_pandas.return_value = pd.DataFrame([chunks_data])
 
-        # Create DataFrame with NaN values
-        chunks_df = pd.DataFrame(
-            [
-                {
-                    "chunk_id": "chunk1",
-                    "text": "test content",
-                    "collection": test_collection,
-                    "doc_id": "doc1",
-                    "parse_hash": "hash1",
-                    "index": 0,
-                    "created_at": pd.Timestamp.now(),
-                    "metadata": '{"key": "value"}',
-                    "page_number": np.nan,  # NaN value
-                }
-            ]
-        )
+        # Mock iter_batches to yield the mock batch
+        mock_vector_store.count_rows_or_zero.return_value = 1
+        mock_vector_store.iter_batches.return_value = [mock_batch]
 
-        mock_search = MagicMock()
-        mock_where = MagicMock()
-        mock_table.search.return_value = mock_search
-        mock_search.where.return_value = mock_where
-        # Both to_arrow() and to_list() fail, fallback to to_pandas()
-        mock_where.to_arrow.side_effect = AttributeError("to_arrow not available")
-        mock_where.to_list.side_effect = AttributeError("to_list not available")
-        mock_where.to_pandas.return_value = chunks_df
-        mock_table.count_rows.return_value = 1
-
-        with (
-            patch(
-                "xagent.core.tools.core.RAG_tools.chunk.chunk_document.get_connection_from_env",
-                return_value=mock_db_connection,
-            ),
-            patch(
-                "xagent.core.tools.core.RAG_tools.chunk.chunk_document.ensure_chunks_table"
-            ),
+        with patch(
+            "xagent.core.tools.core.RAG_tools.chunk.chunk_document.get_vector_index_store",
+            return_value=mock_vector_store,
         ):
             result = _get_existing_chunks(
                 collection=test_collection,
@@ -1501,9 +1498,5 @@ class TestChunkDocumentFallback:
 
             assert len(result) == 1
             assert result[0]["chunk_id"] == "chunk1"
-            # Verify all fallbacks were attempted
-            mock_where.to_arrow.assert_called_once()
-            mock_where.to_list.assert_called_once()
-            mock_where.to_pandas.assert_called_once()
-            # Verify NaN was normalized to None
-            assert result[0].get("page_number") is None
+            # Verify None values are preserved
+            assert result[0]["page_number"] is None

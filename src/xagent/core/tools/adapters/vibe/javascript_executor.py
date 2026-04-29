@@ -14,6 +14,7 @@ from xagent.core.workspace import TaskWorkspace
 
 from .base import AbstractBaseTool, ToolCategory, ToolVisibility
 from .function import FunctionTool
+from .sandboxed_tool.sandbox_config import sandbox_config
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +100,7 @@ class JavaScriptExecutorTool(AbstractBaseTool):
         return None
 
 
+@sandbox_config()
 class JavaScriptExecutorToolForBasic(JavaScriptExecutorTool):
     """JavaScript executor tool with BASIC category."""
 

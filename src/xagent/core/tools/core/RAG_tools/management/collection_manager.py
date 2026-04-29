@@ -12,12 +12,14 @@ from datetime import datetime, timezone
 from functools import wraps
 from typing import Any, Awaitable, Callable, Optional, TypeVar
 
-from ......providers.vector_store.lancedb import DBConnection, get_connection_from_env
+import pyarrow as pa  # type: ignore
+
 from ..core.parser_registry import get_supported_parsers, validate_parser_compatibility
 from ..core.schemas import CollectionInfo
-from ..LanceDB.schema_manager import ensure_collection_metadata_table
+from ..LanceDB.schema_manager import _safe_close_table
+from ..storage.factory import get_metadata_store, get_vector_index_store
 from ..utils.model_resolver import resolve_embedding_adapter
-from ..utils.string_utils import escape_lancedb_string
+from ..utils.tag_mapping import register_tag_mapping
 
 T = TypeVar("T")
 
@@ -134,17 +136,11 @@ class CollectionManager:
     """
 
     def __init__(self) -> None:
-        self._conn: Optional[DBConnection] = None
+        self._metadata_store = get_metadata_store()
 
-    async def _get_connection(self) -> DBConnection:
-        """Lazy initialization of LanceDB connection.
-
-        Returns:
-            The LanceDB connection instance
-        """
-        if self._conn is None:
-            self._conn = get_connection_from_env()
-        return self._conn
+    async def _get_connection(self) -> Any:
+        """Get raw metadata storage connection for legacy helper methods."""
+        return self._metadata_store.get_raw_connection()
 
     async def get_collection(self, collection_name: str) -> CollectionInfo:
         """Get collection metadata from storage.
@@ -158,27 +154,11 @@ class CollectionManager:
         Raises:
             ValueError: If collection not found
         """
-        conn = await self._get_connection()
-
-        # Ensure table exists before accessing
-        ensure_collection_metadata_table(conn)
-
         try:
-            # Try to read from collection_metadata table
-            table = conn.open_table("collection_metadata")
-            # Use safe parameterized query to prevent SQL injection
-            safe_name = escape_lancedb_string(collection_name)
-            result = table.search().where(f"name = '{safe_name}'").to_pandas()
-
-            if result.empty:
-                raise ValueError(f"Collection '{collection_name}' not found")
-
-            # Convert to dict and deserialize
-            data = result.iloc[0].to_dict()
-            return CollectionInfo.from_storage(data)
+            return await self._metadata_store.get_collection(collection_name)
 
         except Exception as e:
-            # Table might not exist yet, or other LanceDB errors
+            # Table might not exist yet, or other backend errors
             logger.debug(f"Error reading collection {collection_name}: {e}")
             raise ValueError(f"Collection '{collection_name}' not found")
 
@@ -205,62 +185,9 @@ class CollectionManager:
         Raises:
             Exception: If all retry attempts fail
         """
-        conn = await self._get_connection()
-
-        # Ensure table exists before accessing
-        ensure_collection_metadata_table(conn)
-
         for attempt in range(max_retries):
             try:
-                # Prepare data for storage
-                data = collection.to_storage()
-                data["updated_at"] = datetime.now(timezone.utc).replace(
-                    tzinfo=None
-                )  # Fresh timestamp
-
-                # Upsert to LanceDB: delete existing then add new
-                table = conn.open_table("collection_metadata")
-                safe_name = escape_lancedb_string(collection.name)
-
-                # Check if collection already exists
-                existing = table.search().where(f"name = '{safe_name}'").to_pandas()
-                if not existing.empty:
-                    # Delete existing record
-                    table.delete(f"name = '{safe_name}'")
-
-                # Add new record
-                # Ensure data strictly matches table schema to prevent LanceDB schema errors
-                # (e.g. "missing=[owners]" or "contains null values")
-                import pyarrow as pa  # type: ignore[import-not-found]
-
-                clean_data: dict[str, Any] = {}
-                for field in table.schema:
-                    val = data.get(field.name)
-                    if val is None:
-                        # Provide default for missing or None values if not nullable
-                        if not field.nullable:
-                            if pa.types.is_string(
-                                field.type
-                            ) or pa.types.is_large_string(field.type):
-                                clean_data[field.name] = ""
-                            elif pa.types.is_integer(field.type):
-                                clean_data[field.name] = 0
-                            elif pa.types.is_floating(field.type):
-                                clean_data[field.name] = 0.0
-                            elif pa.types.is_boolean(field.type):
-                                clean_data[field.name] = False
-                            elif pa.types.is_timestamp(field.type):
-                                clean_data[field.name] = datetime.now(
-                                    timezone.utc
-                                ).replace(tzinfo=None)
-                            else:
-                                clean_data[field.name] = ""
-                        else:
-                            clean_data[field.name] = None
-                    else:
-                        clean_data[field.name] = val
-
-                table.add([clean_data])
+                await self._metadata_store.save_collection(collection)
                 return
 
             except Exception as e:
@@ -276,6 +203,78 @@ class CollectionManager:
                     f"Save attempt {attempt + 1} failed for {collection.name}, retrying in {wait_time}s: {e}"
                 )
                 await asyncio.sleep(wait_time)
+
+    async def _ensure_metadata_table(self) -> None:
+        """Ensure collection_metadata table exists in LanceDB.
+
+        Creates the table if it doesn't exist, otherwise does nothing.
+        """
+
+        conn = await self._get_connection()
+
+        schema = pa.schema(
+            [
+                ("name", pa.string()),
+                ("schema_version", pa.string()),
+                ("embedding_model_id", pa.string()),  # Nullable
+                ("embedding_dimension", pa.int32()),  # Nullable
+                ("documents", pa.int32()),
+                ("processed_documents", pa.int32()),
+                ("parses", pa.int32()),
+                ("chunks", pa.int32()),
+                ("embeddings", pa.int32()),
+                ("document_names", pa.string()),  # JSON string
+                (
+                    "owners",
+                    pa.string(),
+                ),  # Schema-only; not maintained (derived at list time from user_id)
+                ("collection_locked", pa.bool_()),
+                ("allow_mixed_parse_methods", pa.bool_()),
+                ("skip_config_validation", pa.bool_()),
+                ("ingestion_config", pa.string()),  # JSON string
+                ("created_at", pa.timestamp("us")),
+                ("updated_at", pa.timestamp("us")),
+                ("last_accessed_at", pa.timestamp("us")),
+                ("extra_metadata", pa.string()),  # JSON string
+            ]
+        )
+
+        # Check if table already exists
+        table_names_fn = getattr(conn, "table_names", None)
+        table_exists = False
+        if table_names_fn:
+            try:
+                existing_tables = table_names_fn()
+                table_exists = "collection_metadata" in existing_tables
+            except Exception as e:
+                logger.debug(f"Table names check failed: {e}")
+
+        if not table_exists:
+            try:
+                conn.create_table("collection_metadata", schema=schema)
+            except Exception as e:
+                logger.debug(f"Table creation failed (may already exist): {e}")
+                # Table might already exist, continue
+        else:
+            # Table exists: ensure it has the "owners" column (schema compat; column is not maintained)
+            table = None
+            try:
+                table = conn.open_table("collection_metadata")
+                if hasattr(table, "schema") and table.schema is not None:
+                    names = getattr(table.schema, "names", None) or []
+                    if "owners" not in names:
+                        add_fn = getattr(table, "add_columns", None)
+                        if add_fn is not None:
+                            add_fn({"owners": "cast('[]' as string)"})
+                            logger.info(
+                                "collection_metadata: added missing 'owners' column (schema-only)"
+                            )
+            except Exception as e:
+                logger.debug(
+                    "Could not migrate collection_metadata schema (add owners): %s", e
+                )
+            finally:
+                _safe_close_table(table)
 
     async def initialize_collection_embedding(
         self, collection_name: str, embedding_model_id: str
@@ -572,9 +571,11 @@ def resolve_effective_embedding_model_sync(
     """Resolve the effective embedding model ID for a collection.
 
     Logic:
-    1. If collection is initialized, use its bound model ID (and warn if config differs).
-    2. If collection is not initialized, use config model ID.
-    3. If neither is available, raise ValueError.
+    1. If collection is initialized, use its bound model ID.
+    2. Else if collection ingestion_config stores an embedding model, use it.
+    3. Else if existing embedding tables can be inferred for this collection, use that.
+    4. Else if config provides an embedding model, use it.
+    5. If none are available, raise ValueError.
 
     Args:
         collection_name: Name of the collection
@@ -586,20 +587,25 @@ def resolve_effective_embedding_model_sync(
     Raises:
         ValueError: If model cannot be resolved or collection not found.
     """
-    # Treat empty/whitespace-only model IDs as missing values.
-    config_model_id = (
-        config_model_id.strip()
-        if isinstance(config_model_id, str) and config_model_id.strip()
-        else None
-    )
+
+    def _normalize_model_id(model_id: Optional[str]) -> Optional[str]:
+        if not isinstance(model_id, str):
+            return None
+        normalized = model_id.strip()
+        if not normalized or normalized.lower() == "none":
+            return None
+        return normalized
+
+    # Treat empty/whitespace-only IDs and the tool-layer "none" placeholder as missing.
+    config_model_id = _normalize_model_id(config_model_id)
     try:
         mark_collection_accessed_sync(collection_name)
         collection_info = get_collection_sync(collection_name)
 
-        bound_model_id = (
-            collection_info.embedding_model_id.strip()
-            if isinstance(collection_info.embedding_model_id, str)
-            and collection_info.embedding_model_id.strip()
+        bound_model_id = _normalize_model_id(collection_info.embedding_model_id)
+        indexed_model_id = _normalize_model_id(
+            collection_info.ingestion_config.embedding_model_id
+            if collection_info.ingestion_config is not None
             else None
         )
 
@@ -613,6 +619,65 @@ def resolve_effective_embedding_model_sync(
                     bound_model_id,
                 )
             return bound_model_id
+
+        if indexed_model_id:
+            if config_model_id and config_model_id != indexed_model_id:
+                logger.warning(
+                    "Config embedding_model_id '%s' overridden by "
+                    "collection '%s' ingestion config model '%s'",
+                    config_model_id,
+                    collection_name,
+                    indexed_model_id,
+                )
+            logger.info(
+                "Collection '%s' using ingestion config embedding_model_id '%s'",
+                collection_name,
+                indexed_model_id,
+            )
+            return indexed_model_id
+
+        inferred_model_id: Optional[str] = None
+        inferred_dimension: Optional[int] = None
+        if collection_info.embeddings > 0:
+            try:
+                from ..utils.migration_utils import (
+                    _infer_embedding_config_from_collection,
+                )
+
+                inferred_model_id, inferred_dimension = (
+                    _infer_embedding_config_from_collection(collection_name)
+                )
+                inferred_model_id = _normalize_model_id(inferred_model_id)
+            except Exception as exc:
+                logger.warning(
+                    "Embedding inference failed for collection '%s': %s",
+                    collection_name,
+                    exc,
+                )
+
+        if inferred_model_id:
+            logger.info(
+                "Collection '%s' inferred embedding_model_id '%s' from existing embedding tables",
+                collection_name,
+                inferred_model_id,
+            )
+            try:
+                updated_collection = collection_info.model_copy(
+                    update={
+                        "embedding_model_id": inferred_model_id,
+                        "embedding_dimension": inferred_dimension
+                        if inferred_dimension is not None
+                        else collection_info.embedding_dimension,
+                    }
+                )
+                _sync_wrapper(collection_manager.save_collection)(updated_collection)
+            except Exception as save_error:
+                logger.warning(
+                    "Failed to persist inferred embedding metadata for collection '%s': %s",
+                    collection_name,
+                    save_error,
+                )
+            return inferred_model_id
 
         if config_model_id:
             logger.info(
@@ -637,22 +702,19 @@ def resolve_effective_embedding_model_sync(
         raise
 
 
-def rebuild_collection_metadata() -> None:
+async def rebuild_collection_metadata() -> None:
     """Rebuild collection_metadata table from existing data.
 
     This function reads all collections from documents/parses/chunks/embeddings tables
     and creates corresponding entries in the collection_metadata table.
 
     Use this to migrate existing data when collection_metadata table is missing or outdated.
-
-    This is a synchronous blocking operation.
     """
-    from xagent.providers.vector_store.lancedb import get_connection_from_env
-
     from . import collections
 
     # Get all existing collections (use is_admin=True to bypass user filtering)
-    result = collections.list_collections(is_admin=True)
+    # force_realtime=True to avoid reading stale metadata cache.
+    result = await collections.list_collections(is_admin=True, force_realtime=True)
 
     if result.status != "success":
         logger.error(f"Failed to list collections: {result.message}")
@@ -662,9 +724,48 @@ def rebuild_collection_metadata() -> None:
         return
 
     # Get connection and find embeddings tables
-    conn = get_connection_from_env()
-    table_names = conn.table_names()  # type: ignore[attr-defined]
+    vector_store = get_vector_index_store()
+    table_names = vector_store.list_table_names()
     embeddings_tables = [t for t in table_names if t.startswith("embeddings_")]
+
+    # Build lookup from legacy/new table tags to Hub model IDs.
+    hub_tag_to_id: dict[str, tuple[str, Optional[int]]] = {}
+    try:
+        from xagent.core.model.model import EmbeddingModelConfig
+
+        from ..LanceDB.model_tag_utils import to_model_tag
+        from ..utils.model_resolver import _get_or_init_model_hub
+
+        hub = _get_or_init_model_hub()
+        if hub is not None:
+            for cfg in hub.list().values():
+                if not isinstance(cfg, EmbeddingModelConfig):
+                    continue
+                register_tag_mapping(
+                    hub_tag_to_id,
+                    to_model_tag(cfg.id),
+                    (cfg.id, cfg.dimension),
+                    get_identity=lambda item: item[0],
+                    logger=logger,
+                )
+                register_tag_mapping(
+                    hub_tag_to_id,
+                    to_model_tag(cfg.model_name),
+                    (cfg.id, cfg.dimension),
+                    get_identity=lambda item: item[0],
+                    logger=logger,
+                )
+    except Exception as e:
+        logger.warning(
+            "Model hub initialization failed during collection metadata rebuild: "
+            "error_type=%s, error_message=%s, fallback_behavior=%s, impact=%s",
+            type(e).__name__,
+            str(e),
+            "legacy_model_resolution",
+            "May use suboptimal model selection or missing embeddings",
+            exc_info=True,
+        )
+        hub_tag_to_id = {}
 
     # Save each collection to metadata table
     for collection in result.collections:
@@ -676,30 +777,28 @@ def rebuild_collection_metadata() -> None:
             if collection.embeddings > 0:
                 # Find which embeddings table has data for this collection
                 for table_name in embeddings_tables:
-                    table = conn.open_table(table_name)
-                    count = table.count_rows(
-                        f"collection = '{escape_lancedb_string(collection.name)}'"
+                    # Use abstraction layer to count rows
+                    count = vector_store.count_rows_or_zero(
+                        table_name,
+                        filters={"collection": collection.name},
+                        is_admin=True,
                     )
                     if count > 0:
-                        # Extract model name from table name
-                        # Table names use underscores (e.g., embeddings_text_embedding_v4)
-                        # Model IDs use hyphens (e.g., text-embedding-v4)
-                        embedding_model_id = table_name.replace(
-                            "embeddings_", ""
-                        ).replace("_", "-")
+                        suffix = table_name.replace("embeddings_", "", 1)
+                        # Prefer Hub ID mapping (single source of truth).
+                        if suffix in hub_tag_to_id:
+                            embedding_model_id, inferred_dim = hub_tag_to_id[suffix]
+                            if inferred_dim is not None:
+                                embedding_dimension = inferred_dim
+                        else:
+                            # Legacy fallback: best-effort reverse normalization.
+                            embedding_model_id = suffix.replace("_", "-")
 
-                        # Get vector dimension from schema
-                        schema = table.schema
-                        vector_field = schema.field("vector")
-                        if hasattr(vector_field, "type"):
-                            vector_type = vector_field.type
-                            if hasattr(vector_type, "list_size"):
-                                embedding_dimension = vector_type.list_size
-                            else:
-                                # Variable length list, get first row to infer dimension
-                                sample = table.search().limit(1).to_pandas()
-                                if not sample.empty and "vector" in sample.columns:
-                                    embedding_dimension = len(sample.iloc[0]["vector"])
+                        # Use abstraction layer to get vector dimension from schema
+                        table_dim = vector_store.get_vector_dimension(table_name)
+                        if table_dim is not None:
+                            embedding_dimension = table_dim
+
                         break
 
             # Update collection with embedding info

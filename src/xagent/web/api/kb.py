@@ -1,14 +1,13 @@
-"""知识库 API。
-
-这个模块仍然承载传统 KB 路由，但当前分支已经把 SQL/Vanna 相关能力拆到新的 GDP 目录。
-因此这里更像“通用文档知识库入口”，而不是所有知识能力的总入口。
-"""
+"""Knowledge base API route handlers"""
 
 import asyncio
 import concurrent.futures
 import functools
+import hashlib
 import json
 import logging
+import mimetypes
+import shutil
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, TypeVar, cast
 
@@ -23,11 +22,15 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from googleapiclient.discovery import build  # type: ignore
+from googleapiclient.http import MediaIoBaseDownload  # type: ignore
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from ...core.tools.core.RAG_tools.core.config import DEFAULT_VECTOR_STORE_SCAN_LIMIT
 from ...core.tools.core.RAG_tools.core.schemas import (
     ChunkStrategy,
+    CollectionDocumentMetadata,
     CollectionOperationResult,
     FusionConfig,
     IngestionConfig,
@@ -44,6 +47,7 @@ from ...core.tools.core.RAG_tools.core.schemas import (
 from ...core.tools.core.RAG_tools.management.collections import (
     delete_collection,
     list_collections,
+    list_documents,
 )
 from ...core.tools.core.RAG_tools.parse.parse_display import (
     paginate_parse_results,
@@ -53,9 +57,15 @@ from ...core.tools.core.RAG_tools.pipelines.document_ingestion import (
     run_document_ingestion,
 )
 from ...core.tools.core.RAG_tools.pipelines.document_search import run_document_search
-from ...core.tools.core.RAG_tools.pipelines.web_ingestion import run_web_ingestion
+from ...core.tools.core.RAG_tools.pipelines.web_ingestion import (
+    FileHandlerResult,
+    run_web_ingestion,
+)
 from ...core.tools.core.RAG_tools.progress import get_progress_manager
-from ...providers.vector_store.lancedb import get_connection_from_env
+from ...core.tools.core.RAG_tools.storage.factory import get_vector_index_store
+from ...core.tools.core.RAG_tools.utils.string_utils import (
+    generate_deterministic_doc_id,
+)
 from ..auth_dependencies import get_current_user
 from ..config import (
     MAX_FILE_SIZE,
@@ -63,7 +73,8 @@ from ..config import (
     is_allowed_file,
     sanitize_path_component,
 )
-from ..models.database import get_db
+from ..models.database import get_db, get_session_local
+from ..models.uploaded_file import UploadedFile
 from ..models.user import User
 from ..services.kb_collection_service import (
     delete_collection_physical_dir,
@@ -88,17 +99,25 @@ from ..services.kb_file_service import (
 from ..services.kb_file_service import (
     upsert_uploaded_file_record as _upsert_uploaded_file_record,
 )
+from .cloud_storage import get_google_credentials
 
 T = TypeVar("T", bound=Callable[..., Any])
 logger = logging.getLogger(__name__)
 
+_SQL_LIKE_ESCAPE = "\\"
+
+
+def _like_contains_pattern(value: str) -> str:
+    escaped = (
+        value.replace(_SQL_LIKE_ESCAPE, _SQL_LIKE_ESCAPE * 2)
+        .replace("%", f"{_SQL_LIKE_ESCAPE}%")
+        .replace("_", f"{_SQL_LIKE_ESCAPE}_")
+    )
+    return f"%{escaped}%"
+
 
 def handle_kb_exceptions(func: T) -> T:
-    """统一知识库路由异常语义。
-
-    这里的目标不是把所有异常都吞掉，而是把常见的格式错误、文件系统错误、
-    未知服务端错误转换成更稳定的 HTTP 语义，减少前端分支判断复杂度。
-    """
+    """Decorator to handle common exceptions in KB API routes."""
 
     @functools.wraps(func)
     async def wrapper(*args: Any, **kwargs: Any) -> Any:
@@ -126,13 +145,31 @@ def handle_kb_exceptions(func: T) -> T:
 kb_router = APIRouter(prefix="/api/kb", tags=["kb"])
 
 
-def _parse_separators(separators: Optional[str]) -> Optional[List[str]]:
-    """解析前端表单上传的自定义分隔符。
+class CloudFile(BaseModel):
+    provider: str
+    fileId: str
+    fileName: str
 
-    这里约束得比较保守：
-    - 缺失、空串、非法 JSON 一律回退为 `None`
-    - 只有“字符串数组”才视为有效配置
-    - 返回值里会过滤掉空串，避免后续 chunk 逻辑出现无意义分隔符
+
+class CloudIngestRequest(BaseModel):
+    files: List[CloudFile]
+    collection: str
+    parse_method: Optional[ParseMethod] = None
+    chunk_strategy: Optional[ChunkStrategy] = None
+    chunk_size: Optional[int] = None
+    chunk_overlap: Optional[int] = None
+    separators: Optional[List[str]] = None
+    embedding_model_id: str = "text-embedding-v4"
+    embedding_batch_size: Optional[int] = None
+    max_retries: Optional[int] = None
+    retry_delay: Optional[float] = None
+
+
+def _parse_separators(separators: Optional[str]) -> Optional[List[str]]:
+    """Parse optional custom separators (JSON array of strings) from form input.
+
+    Returns None if input is missing/empty or invalid; returns a list of
+    non-empty strings when valid (possibly empty list for input '[]').
     """
     if not separators or not separators.strip():
         return None
@@ -156,57 +193,31 @@ async def save_collection_config(
     config: IngestionConfig = Body(...),
     _user: User = Depends(get_current_user),
 ) -> CollectionOperationResult:
-    """保存某个 collection 的 ingestion 配置。
-
-    当前仍使用兼容性表 `collection_config` 持久化配置，
-    目的是在不大改现有 RAG 管线的前提下，先把“每个 collection 有独立 ingestion 参数”
-    这件事稳定跑起来。
-    """
-    from datetime import datetime, timezone
-
-    from ...core.tools.core.RAG_tools.LanceDB.schema_manager import (
-        ensure_collection_config_table,
-    )
-    from ...providers.vector_store.lancedb import get_connection_from_env
-
-    def _save_config() -> None:
-        conn = get_connection_from_env()
-        # TODO(refactor): keep collection_config as a compatibility store for
-        # per-user ingestion settings; unify this with metadata-backed storage
-        # once config ownership and migration strategy are finalized.
-        ensure_collection_config_table(conn)
-        table = conn.open_table("collection_config")
-
-        user_id_val = int(_user.id)
-        config_json = config.model_dump_json(exclude_unset=True)
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
-
-        try:
-            # Try to delete existing configuration for this collection and user
-            table.delete(f"collection = '{collection}' AND user_id = {user_id_val}")
-        except Exception as e:
-            logger.warning(f"Error deleting old config: {e}")
-
-        # Insert new config
-        data = [
-            {
-                "collection": collection,
-                "config_json": config_json,
-                "updated_at": now,
-                "user_id": user_id_val,
-            }
-        ]
-
-        table.add(data)
+    """Save ingestion configuration for a specific collection."""
+    from ...core.tools.core.RAG_tools.storage.factory import get_metadata_store
 
     try:
-        await asyncio.to_thread(_save_config)
+        safe_collection = sanitize_path_component(collection, "collection")
+    except ValueError as e:
+        raise HTTPException(
+            status_code=422, detail=f"Invalid collection name: {str(e)}"
+        ) from e
+
+    config_json = config.model_dump_json(exclude_unset=True)
+
+    try:
+        metadata_store = get_metadata_store()
+        await metadata_store.save_collection_config(
+            collection=safe_collection,
+            config_json=config_json,
+            user_id=int(_user.id),
+        )
 
         return CollectionOperationResult(
             status="success",
-            collection=collection,
+            collection=safe_collection,
             operation="save_config",
-            message=f"Configuration saved for collection '{collection}'",
+            message=f"Configuration saved for collection '{safe_collection}'",
         )
     except Exception as e:
         logger.error(f"Failed to save collection config: {e}", exc_info=True)
@@ -306,24 +317,14 @@ async def ingest(
     try:
         # SECURITY: Validate collection name at API boundary
         safe_collection = sanitize_path_component(collection, "collection")
+        collection = safe_collection
 
-        try:
-            file_path = get_upload_path(
-                safe_filename,
-                user_id=int(_user.id),
-                collection=safe_collection,
-                collection_is_sanitized=True,
-            )
-        except TypeError as e:
-            # Backward compatibility for tests/mocks that patch get_upload_path
-            # with an older signature that doesn't accept this keyword.
-            if "collection_is_sanitized" not in str(e):
-                raise
-            file_path = get_upload_path(
-                safe_filename,
-                user_id=int(_user.id),
-                collection=safe_collection,
-            )
+        file_path = get_upload_path(
+            safe_filename,
+            user_id=int(_user.id),
+            collection=safe_collection,
+            collection_is_sanitized=True,
+        )
     except ValueError as e:
         logger.warning("Invalid collection name rejected: %s - %s", collection, e)
         raise HTTPException(
@@ -366,8 +367,6 @@ async def ingest(
         raise
 
     # Register file in unified file management (file_id) for KB + file APIs.
-    import mimetypes
-
     mime_type = (
         getattr(file, "content_type", None)
         or mimetypes.guess_type(safe_filename)[0]
@@ -454,6 +453,165 @@ async def ingest(
         content={**result.model_dump(), "file_id": file_record.file_id},
     )
 
+
+@kb_router.post("/ingest-cloud", response_model=List[IngestionResult])
+async def ingest_cloud(
+    request: CloudIngestRequest,
+    db: Session = Depends(get_db),
+    _user: User = Depends(get_current_user),
+) -> List[IngestionResult]:
+    """Ingest files from cloud storage."""
+    try:
+        safe_collection = sanitize_path_component(request.collection, "collection")
+    except ValueError as e:
+        raise HTTPException(
+            status_code=422, detail=f"Invalid collection name: {str(e)}"
+        ) from e
+
+    results = []
+
+    # Common configuration setup
+    final_chunk_size = (
+        request.chunk_size if request.chunk_size and request.chunk_size > 0 else 1000
+    )
+    final_chunk_overlap = (
+        request.chunk_overlap
+        if request.chunk_overlap and request.chunk_overlap >= 0
+        else 200
+    )
+    if final_chunk_overlap >= final_chunk_size:
+        final_chunk_overlap = min(int(final_chunk_size * 0.2), final_chunk_size - 1)
+
+    config = IngestionConfig(
+        parse_method=request.parse_method or ParseMethod.DEFAULT,
+        chunk_strategy=request.chunk_strategy or ChunkStrategy.RECURSIVE,
+        chunk_size=final_chunk_size,
+        chunk_overlap=final_chunk_overlap,
+        separators=request.separators,
+        embedding_model_id=request.embedding_model_id,
+        embedding_batch_size=request.embedding_batch_size or 10,
+        max_retries=request.max_retries or 3,
+        retry_delay=request.retry_delay or 1.0,
+    )
+
+    progress_manager = get_progress_manager()
+
+    # Concurrency limit for cloud ingestion to avoid overloading
+    semaphore = asyncio.Semaphore(5)
+
+    async def process_file(file_info: CloudFile) -> IngestionResult:
+        async with semaphore:
+            try:
+                if file_info.provider == "google-drive":
+                    # Get credentials (run in thread to avoid blocking)
+                    try:
+                        creds = await asyncio.to_thread(
+                            get_google_credentials, int(_user.id), db
+                        )
+                    except HTTPException as e:
+                        return IngestionResult(
+                            status="error",
+                            message=f"Authentication error: {e.detail}",
+                            doc_id=file_info.fileName,
+                        )
+
+                    # Build service (blocking)
+                    service = await asyncio.to_thread(
+                        build, "drive", "v3", credentials=creds, cache_discovery=False
+                    )
+
+                    # Save to local path
+                    safe_filename = Path(file_info.fileName).name
+                    file_path = get_upload_path(safe_filename, user_id=int(_user.id))
+
+                    # Download file directly to disk
+                    try:
+
+                        def _download_file() -> None:
+                            request_file = service.files().get_media(
+                                fileId=file_info.fileId
+                            )
+                            with open(file_path, "wb") as fh:
+                                downloader = MediaIoBaseDownload(fh, request_file)
+                                done = False
+                                while done is False:
+                                    status, done = downloader.next_chunk()
+
+                        await asyncio.to_thread(_download_file)
+
+                    except Exception as e:
+                        return IngestionResult(
+                            status="error",
+                            message=f"Download failed: {str(e)}",
+                            doc_id=file_info.fileName,
+                        )
+
+                    file_record = _upsert_uploaded_file_record(
+                        db,
+                        user_id=int(_user.id),
+                        filename=safe_filename,
+                        storage_path=file_path,
+                        mime_type=(
+                            mimetypes.guess_type(safe_filename)[0]
+                            or "application/octet-stream"
+                        ),
+                        file_size=int(file_path.stat().st_size),
+                    )
+
+                    # Run ingestion (blocking)
+                    try:
+                        result = await asyncio.to_thread(
+                            run_document_ingestion,
+                            collection=safe_collection,
+                            source_path=str(file_path),
+                            ingestion_config=config,
+                            progress_manager=progress_manager,
+                            user_id=int(_user.id),
+                            is_admin=bool(_user.is_admin),
+                            file_id=str(file_record.file_id),
+                        )
+                        return result
+                    except Exception as e:
+                        # Clean up the file record and physical file on failure
+                        try:
+                            db.delete(file_record)
+                            db.commit()
+                        except Exception:
+                            db.rollback()
+                        try:
+                            if file_path.exists():
+                                file_path.unlink()
+                        except OSError:
+                            pass
+                        return IngestionResult(
+                            status="error",
+                            message=f"Ingestion failed: {str(e)}",
+                            doc_id=file_info.fileName,
+                        )
+
+                else:
+                    return IngestionResult(
+                        status="error",
+                        message=f"Unsupported provider: {file_info.provider}",
+                        doc_id=file_info.fileName,
+                    )
+
+            except Exception as e:
+                logger.exception(
+                    f"Unexpected error ingesting {file_info.fileName}: {e}"
+                )
+                return IngestionResult(
+                    status="error",
+                    message=f"Unexpected error: {str(e)}",
+                    doc_id=file_info.fileName,
+                )
+
+    # Run all file processings concurrently
+    results = await asyncio.gather(*[process_file(f) for f in request.files])
+
+    return results
+
+
 @kb_router.get(
     "/collections",
     response_model=ListCollectionsResult,
@@ -461,15 +619,246 @@ async def ingest(
 @handle_kb_exceptions
 async def list_collections_api(
     _user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> ListCollectionsResult:
     """List all collections with their statistics."""
     kb_collections_timeout_seconds = 15
 
     try:
         result = await asyncio.wait_for(
-            asyncio.to_thread(list_collections, int(_user.id), bool(_user.is_admin)),
+            list_collections(user_id=int(_user.id), is_admin=bool(_user.is_admin)),
             timeout=kb_collections_timeout_seconds,
         )
+
+        # Backward compatibility: some unit tests (and older callers) mock or return a
+        # plain dict payload. In that case, skip post-processing and return it as-is.
+        if isinstance(result, dict):
+            return result
+
+        # Fallback: when LanceDB documents table has legacy decode issues, collection
+        # stats can still be built from chunks/parses but document_names may be empty.
+        # In that case, fill names from UploadedFile rows under user_{id}/{collection}/.
+        # Note: This is temporary compatibility code for legacy data. After running
+        # the backfill migration (backfill_documents_file_id.py), this should no longer
+        # be needed and can be removed.
+        if result.collections:
+            document_metadata_by_collection: Dict[
+                str, List[CollectionDocumentMetadata]
+            ] = {}
+            document_metadata_seen: Dict[str, set[tuple[str, str, str]]] = {}
+            fallback_names: Dict[str, set[str]] = {}
+
+            def _collection_needs_document_scan(collection: Any) -> bool:
+                if collection.document_metadata:
+                    return False
+                return (not collection.document_names) or (
+                    collection.documents != len(collection.document_names)
+                )
+
+            collections_needing_scan = [
+                collection
+                for collection in result.collections
+                if _collection_needs_document_scan(collection)
+                and not document_metadata_by_collection.get(collection.name)
+            ]
+            scan_target_names = {c.name for c in collections_needing_scan}
+
+            def _normalize_optional_identifier(value: Any) -> Optional[str]:
+                if not isinstance(value, str):
+                    return None
+                normalized = value.strip()
+                return normalized or None
+
+            def _add_collection_document_metadata(
+                collection_name: str,
+                filename: Any,
+                *,
+                file_id: Optional[str] = None,
+                doc_id: Optional[str] = None,
+            ) -> None:
+                if not isinstance(filename, str):
+                    return
+                normalized_filename = filename.strip()
+                if not normalized_filename:
+                    return
+
+                normalized_file_id = _normalize_optional_identifier(file_id)
+                normalized_doc_id = _normalize_optional_identifier(doc_id)
+                dedupe_key = (
+                    normalized_filename,
+                    normalized_file_id or "",
+                    normalized_doc_id or "",
+                )
+                seen_keys = document_metadata_seen.setdefault(collection_name, set())
+                if dedupe_key in seen_keys:
+                    return
+                seen_keys.add(dedupe_key)
+                document_metadata_by_collection.setdefault(collection_name, []).append(
+                    CollectionDocumentMetadata(
+                        filename=normalized_filename,
+                        file_id=normalized_file_id,
+                        doc_id=normalized_doc_id,
+                    )
+                )
+
+            for collection in result.collections:
+                for document_metadata in collection.document_metadata:
+                    _add_collection_document_metadata(
+                        collection.name,
+                        document_metadata.filename,
+                        file_id=document_metadata.file_id,
+                        doc_id=document_metadata.doc_id,
+                    )
+
+            if collections_needing_scan:
+                try:
+                    doc_records = _list_documents_for_user(
+                        user_id=int(_user.id),
+                        is_admin=bool(_user.is_admin),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "Failed to list documents for metadata fallback: %s", exc
+                    )
+                    doc_records = []
+
+                if doc_records:
+                    filename_map = _build_uploaded_filename_map(
+                        db,
+                        user_id=int(_user.id),
+                        file_ids=[
+                            file_id
+                            for file_id in (
+                                _get_document_record_file_id(record)
+                                for record in doc_records
+                            )
+                            if file_id
+                        ],
+                    )
+                    for doc_rec in doc_records:
+                        rec_collection = doc_rec.get("collection")
+                        if not isinstance(rec_collection, str) or not rec_collection:
+                            continue
+                        if rec_collection not in scan_target_names:
+                            continue
+                        resolved_filename = _resolve_document_filename(
+                            doc_rec, filename_map
+                        )
+                        resolved_doc_id = _normalize_optional_identifier(
+                            doc_rec.get("doc_id")
+                        )
+                        _add_collection_document_metadata(
+                            rec_collection,
+                            resolved_filename or resolved_doc_id,
+                            file_id=_get_document_record_file_id(doc_rec),
+                            doc_id=resolved_doc_id,
+                        )
+
+                collections_needing_fallback = [
+                    collection
+                    for collection in collections_needing_scan
+                    if not document_metadata_by_collection.get(collection.name)
+                ]
+
+                if collections_needing_fallback:
+                    # Filter at SQL level to only load relevant uploaded files
+                    collection_patterns = [
+                        _like_contains_pattern(f"/user_{int(_user.id)}/{c.name}/")
+                        for c in collections_needing_fallback
+                    ]
+
+                    uploaded_records = []
+                    if len(collection_patterns) == 1:
+                        uploaded_records = (
+                            db.query(UploadedFile)
+                            .filter(
+                                UploadedFile.user_id == int(_user.id),
+                                UploadedFile.storage_path.like(
+                                    collection_patterns[0],
+                                    escape=_SQL_LIKE_ESCAPE,
+                                ),
+                            )
+                            .all()
+                        )
+                    else:
+                        # Multiple collections: use OR logic
+                        from sqlalchemy import or_
+
+                        uploaded_records = (
+                            db.query(UploadedFile)
+                            .filter(
+                                UploadedFile.user_id == int(_user.id),
+                                or_(
+                                    *[
+                                        UploadedFile.storage_path.like(
+                                            pattern,
+                                            escape=_SQL_LIKE_ESCAPE,
+                                        )
+                                        for pattern in collection_patterns
+                                    ]
+                                ),
+                            )
+                            .all()
+                        )
+
+                    user_segment = f"user_{int(_user.id)}"
+                    for rec in uploaded_records:
+                        storage_path = Path(str(getattr(rec, "storage_path", "")))
+                        parts = storage_path.parts
+                        if user_segment not in parts:
+                            continue
+                        user_idx = parts.index(user_segment)
+                        if user_idx + 2 >= len(parts):
+                            continue
+                        collection_name = parts[user_idx + 1]
+                        if collection_name not in scan_target_names:
+                            continue
+                        fallback_filename = str(getattr(rec, "filename", "")).strip()
+                        fallback_names.setdefault(collection_name, set()).add(
+                            fallback_filename
+                        )
+                        fallback_file_id = _normalize_optional_identifier(
+                            getattr(rec, "file_id", None)
+                        )
+                        fallback_doc_id = None
+                        if str(getattr(rec, "storage_path", "")).strip():
+                            fallback_doc_id = generate_deterministic_doc_id(
+                                collection_name,
+                                str(getattr(rec, "storage_path", "")).strip(),
+                            )
+                        _add_collection_document_metadata(
+                            collection_name,
+                            fallback_filename,
+                            file_id=fallback_file_id,
+                            doc_id=fallback_doc_id,
+                        )
+
+            for collection in result.collections:
+                resolved_metadata = sorted(
+                    document_metadata_by_collection.get(collection.name, []),
+                    key=lambda item: (
+                        item.filename,
+                        item.file_id or "",
+                        item.doc_id or "",
+                    ),
+                )
+                collection.document_metadata = resolved_metadata
+                if not collection.document_names and resolved_metadata:
+                    collection.document_names = sorted(
+                        {item.filename for item in resolved_metadata if item.filename}
+                    )
+                    if collection.documents == 0:
+                        collection.documents = len(collection.document_names)
+                    continue
+
+                fallback = sorted(
+                    name for name in fallback_names.get(collection.name, set()) if name
+                )
+                if fallback:
+                    collection.document_names = fallback
+                    if collection.documents == 0:
+                        collection.documents = len(fallback)
+
         return result
     except asyncio.TimeoutError:
         logger.error(
@@ -508,7 +897,10 @@ async def search(
     ),
     filters: Optional[Dict[str, Any]] = Form(
         None,
-        description="Optional filters to apply during search (LanceDB format)",
+        description="Optional filters to apply during search. "
+        "Format: {field: value} for equality filters. "
+        "For advanced filters, use {field: {operator: str, value: Any}} "
+        "where operator can be: eq, ne, gt, gte, lt, lte, in, contains.",
     ),
     fusion_config: Optional[Dict[str, Any]] = Form(
         None,
@@ -566,6 +958,13 @@ async def search(
     if not collection or not query_text:
         raise HTTPException(status_code=422, detail="Missing required parameters")
 
+    try:
+        safe_collection = sanitize_path_component(collection, "collection")
+    except ValueError as e:
+        raise HTTPException(
+            status_code=422, detail=f"Invalid collection name: {str(e)}"
+        ) from e
+
     if not embedding_model_id:
         raise HTTPException(
             status_code=422,
@@ -593,7 +992,7 @@ async def search(
 
     progress_manager = get_progress_manager()
     result = run_document_search(
-        collection=collection,
+        collection=safe_collection,
         query_text=query_text,
         config=config,
         progress_manager=progress_manager,
@@ -707,6 +1106,7 @@ async def ingest_web(
         description="Delay between retries in seconds (default: 1.0)",
     ),
     _user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> WebIngestionResult | JSONResponse:
     """Ingest website content into the knowledge base.
 
@@ -827,6 +1227,165 @@ async def ingest_web(
             ),
         )
 
+        # Track processed URLs to prevent duplicate UploadedFile records
+        # Key: URL hash, Value: file_id
+        # Note: For large-scale web ingestion (>10000 pages), consider using
+        # a bounded-size dict (e.g., with maxitems) to control memory usage.
+        _processed_urls: Dict[str, str] = {}
+
+        # Define file handler for persistent storage and UploadedFile record creation
+        def _handle_web_file(
+            temp_file_path: Path,
+            title: str,
+            collection_name: str,
+            url: str,
+            db_session: Session,
+        ) -> FileHandlerResult:
+            """Handle file persistence and UploadedFile record creation for web ingestion.
+
+            This function:
+            1. Checks if a file with this URL already exists (URL-based deduplication)
+            2. If exists, reuses the existing file and UploadedFile record
+            3. If not, copies the temporary file to the persistent uploads directory
+            4. Creates an UploadedFile record in the database
+            5. Returns the file_path and file_id for ingestion
+
+            Args:
+                temp_file_path: Path to the temporary markdown file
+                title: Page title (used for display)
+                collection_name: Collection name for organizing files
+                url: Source URL (used for unique identification)
+
+            Returns:
+                FileHandlerResult with file_path and optional file_id
+            """
+            # Use URL hash for unique filename (true URL deduplication)
+            # Using SHA256 for better collision resistance than MD5
+            # Include collection to prevent cross-collection file sharing
+            url_hash = hashlib.sha256(f"{collection_name}:{url}".encode()).hexdigest()[
+                :16
+            ]
+            safe_title = (
+                sanitize_path_component(title, "filename") if title else "untitled"
+            )
+            filename = f"{url_hash}_{safe_title}.md"
+
+            # Check if we've already processed this URL (in-memory cache)
+            if url_hash in _processed_urls:
+                existing_file_id = _processed_urls[url_hash]
+                logger.info(
+                    f"Reusing existing UploadedFile record for web ingestion: "
+                    f"url={url}, file_id={existing_file_id}"
+                )
+                # Query the database to get the storage path
+                existing_record = (
+                    db_session.query(UploadedFile)
+                    .filter(UploadedFile.file_id == existing_file_id)
+                    .first()
+                )
+                if existing_record:
+                    return FileHandlerResult(
+                        file_path=str(existing_record.storage_path),
+                        file_id=str(existing_record.file_id),
+                    )
+                else:
+                    # Cached file_id was deleted from DB, fall through to recreate
+                    logger.warning(
+                        f"Cached file_id {existing_file_id} not found in DB (record was deleted), "
+                        f"will create new record for url={url}"
+                    )
+
+            # Check database for existing file with same URL hash (cross-session deduplication)
+            existing_record = (
+                db_session.query(UploadedFile)
+                .filter(
+                    UploadedFile.user_id == int(_user.id),
+                    UploadedFile.filename == filename,
+                )
+                .first()
+            )
+
+            if existing_record:
+                logger.info(
+                    f"Found existing UploadedFile record from previous session: "
+                    f"url={url}, file_id={existing_record.file_id}"
+                )
+                _processed_urls[url_hash] = str(existing_record.file_id)
+                return FileHandlerResult(
+                    file_path=str(existing_record.storage_path),
+                    file_id=str(existing_record.file_id),
+                )
+
+            # Generate persistent file path
+            persistent_file = get_upload_path(
+                filename,
+                user_id=int(_user.id),
+                collection=collection_name,
+                collection_is_sanitized=True,
+            )
+
+            # Ensure directory exists
+            persistent_file.parent.mkdir(parents=True, exist_ok=True)
+
+            try:
+                # Copy file to persistent location
+                shutil.copy2(temp_file_path, persistent_file)
+                logger.info(
+                    f"Copied web ingestion file from {temp_file_path} to {persistent_file}"
+                )
+
+                # Create UploadedFile record
+                file_record = _upsert_uploaded_file_record(
+                    db_session,
+                    user_id=int(_user.id),
+                    filename=filename,
+                    storage_path=persistent_file,
+                    mime_type="text/markdown",
+                    file_size=persistent_file.stat().st_size,
+                )
+
+                logger.info(
+                    f"Created UploadedFile record for web ingestion: file_id={file_record.file_id}, "
+                    f"filename={filename}, url={url}"
+                )
+
+                # Track this URL to prevent duplicates
+                _processed_urls[url_hash] = str(file_record.file_id)
+
+                return FileHandlerResult(
+                    file_path=str(persistent_file),
+                    file_id=str(file_record.file_id),
+                )
+            except Exception:
+                # Clean up orphaned persistent file if upsert failed
+                if persistent_file.exists():
+                    try:
+                        persistent_file.unlink()
+                        logger.warning(
+                            f"Cleaned up orphaned persistent file due to upsert failure: {persistent_file}"
+                        )
+                    except Exception as cleanup_error:
+                        logger.warning(
+                            f"Failed to clean up orphaned persistent file {persistent_file}: {cleanup_error}"
+                        )
+                raise
+
+        # Create a wrapper that creates a dedicated DB session for the executor thread
+        # This avoids sharing the request thread's session across thread boundaries,
+        # which is fragile and could break with concurrent access.
+        def _file_handler_with_db(
+            temp_file_path: Path, title: str, collection_name: str, url: str
+        ) -> FileHandlerResult:
+            # Create a new session for this thread
+            SessionLocal = get_session_local()
+            db_session = SessionLocal()
+            try:
+                return _handle_web_file(
+                    temp_file_path, title, collection_name, url, db_session
+                )
+            finally:
+                db_session.close()
+
         result = await asyncio.get_event_loop().run_in_executor(
             None,
             lambda: asyncio.run(
@@ -836,6 +1395,7 @@ async def ingest_web(
                     ingestion_config=ingestion_config,
                     user_id=int(_user.id),
                     is_admin=bool(_user.is_admin),
+                    file_handler=_file_handler_with_db,
                 )
             ),
         )
@@ -868,6 +1428,300 @@ async def ingest_web(
         ) from e
 
 
+class BatchDeleteCollectionsRequest(BaseModel):
+    """Request body for batch delete collections."""
+
+    collection_names: List[str] = Field(
+        ...,
+        min_length=1,
+        max_length=200,
+        description="List of collection names to delete",
+    )
+
+
+class BatchDeleteFailureItem(BaseModel):
+    """One failed deletion in a batch."""
+
+    name: str = Field(..., description="Collection name")
+    error: str = Field(..., description="Error message")
+
+
+class BatchDeleteCollectionsResponse(BaseModel):
+    """Response for batch delete collections."""
+
+    deleted: List[str] = Field(
+        default_factory=list,
+        description="Collection names that were deleted successfully",
+    )
+    failed: List[BatchDeleteFailureItem] = Field(
+        default_factory=list,
+        description="Collection names that failed to delete with reasons",
+    )
+
+
+def _http_detail_to_str(detail: Any) -> str:
+    """Normalize FastAPI/Starlette ``HTTPException.detail`` to a string."""
+    if isinstance(detail, str):
+        return detail
+    try:
+        return json.dumps(detail)
+    except (TypeError, ValueError):
+        return str(detail)
+
+
+def _check_can_delete_collection(
+    collection_name: str,
+    user_id: int,
+    is_admin: bool,
+) -> None:
+    """Validate collection name and non-admin delete permission."""
+    if not collection_name or not collection_name.strip():
+        raise HTTPException(status_code=422, detail="Collection name cannot be empty")
+    if is_admin:
+        return
+    try:
+        vector_store = get_vector_index_store()
+        total_count = int(
+            vector_store.count_documents_grouped_by_collection(
+                [collection_name], user_id=None, is_admin=True
+            ).get(collection_name, 0)
+        )
+        own_count = int(
+            vector_store.count_documents_grouped_by_collection(
+                [collection_name], user_id=user_id, is_admin=False
+            ).get(collection_name, 0)
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to verify collection delete permission (documents table).",
+        ) from exc
+
+    if total_count > 0 and own_count < total_count:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Only admin users can delete collections containing documents "
+                "from other users."
+            ),
+        )
+
+
+def _preflight_batch_delete_permissions(
+    unique_names: List[str],
+    user_id: int,
+    is_admin: bool,
+) -> tuple[List[str], List[BatchDeleteFailureItem]]:
+    """Preflight validation for batch delete permissions and empty names."""
+    failed: List[BatchDeleteFailureItem] = []
+    allowed: List[str] = []
+
+    if is_admin:
+        for name in unique_names:
+            if not name or not name.strip():
+                failed.append(
+                    BatchDeleteFailureItem(
+                        name=name or "",
+                        error="Collection name cannot be empty",
+                    )
+                )
+            else:
+                allowed.append(name)
+        return allowed, failed
+
+    non_empty: List[str] = []
+    for name in unique_names:
+        if not name or not name.strip():
+            failed.append(
+                BatchDeleteFailureItem(
+                    name=name or "",
+                    error="Collection name cannot be empty",
+                )
+            )
+        else:
+            non_empty.append(name)
+
+    if not non_empty:
+        return [], failed
+
+    vector_store = get_vector_index_store()
+    try:
+        totals = vector_store.count_documents_grouped_by_collection(
+            non_empty, user_id=None, is_admin=True
+        )
+        owns = vector_store.count_documents_grouped_by_collection(
+            non_empty, user_id=int(user_id), is_admin=False
+        )
+    except Exception as exc:
+        logger.error(
+            "Batch permission scan failed (vector store grouped counts): %s",
+            exc,
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to scan documents table for batch delete permission.",
+        ) from exc
+
+    forbidden_detail = (
+        "Only admin users can delete collections containing documents from other users."
+    )
+    for name in unique_names:
+        if not name or not name.strip():
+            continue
+        key = str(name).strip()
+        total = int(totals.get(key, 0))
+        own = int(owns.get(key, 0))
+        if total > 0 and own < total:
+            failed.append(BatchDeleteFailureItem(name=name, error=forbidden_detail))
+        else:
+            allowed.append(name)
+
+    return allowed, failed
+
+
+def _perform_kb_collection_delete(
+    collection_name: str,
+    user_id: int,
+    is_admin: bool,
+    db: Session,
+) -> CollectionOperationResult:
+    """Delete one KB collection (same pipeline as single-delete API)."""
+    try:
+        try:
+            safe_collection = sanitize_path_component(collection_name, "collection")
+        except ValueError as e:
+            raise HTTPException(
+                status_code=422, detail=f"Invalid collection name: {str(e)}"
+            ) from e
+
+        _check_can_delete_collection(safe_collection, user_id, is_admin)
+
+        physical_cleanup = delete_collection_physical_dir(
+            user_id=user_id,
+            collection_name=safe_collection,
+        )
+        physical_cleanup_status = physical_cleanup.status
+        physical_cleanup_error = physical_cleanup.error
+        collection_dir = physical_cleanup.collection_dir
+        if physical_cleanup_status == "failed":
+            if (
+                physical_cleanup_error
+                == "Another operation is in progress; please try again later."
+            ):
+                raise HTTPException(status_code=409, detail=physical_cleanup_error)
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "Failed to delete collection: cannot move physical files. "
+                    f"Error: {physical_cleanup_error}. "
+                    "Please ensure the directory is not in use and you have proper permissions."
+                ),
+            )
+
+        vector_store = get_vector_index_store()
+        collection_records = vector_store.list_document_records(
+            collection_name=safe_collection,
+            user_id=user_id,
+            is_admin=is_admin,
+        )
+        collection_file_ids = {
+            file_id
+            for file_id in (
+                _get_document_record_file_id(record) for record in collection_records
+            )
+            if file_id
+        }
+
+        # Re-check right before vector deletion to reduce TOCTTOU window.
+        _check_can_delete_collection(safe_collection, user_id, is_admin)
+        result = delete_collection(safe_collection, user_id, is_admin)
+
+        remaining_records = vector_store.list_document_records(
+            collection_name=None,
+            user_id=user_id,
+            is_admin=is_admin,
+        )
+        remaining_file_ids = {
+            file_id
+            for file_id in (
+                _get_document_record_file_id(record) for record in remaining_records
+            )
+            if file_id
+        }
+        deleted_uploaded_files = delete_collection_uploaded_files(
+            db,
+            user_id=user_id,
+            collection_file_ids=collection_file_ids,
+            remaining_file_ids=remaining_file_ids,
+            collection_dir=collection_dir,
+        )
+        if deleted_uploaded_files:
+            logger.info(
+                "Deleted %s UploadedFile record(s) for collection %s",
+                deleted_uploaded_files,
+                safe_collection,
+            )
+
+        cleanup_warnings = list(result.warnings) if result.warnings else []
+        cleanup_info_message = ""
+
+        if physical_cleanup_status == "success":
+            cleanup_info = (
+                f"Physical directory moved to trash: {collection_dir} "
+                "(trash cleanup requires external scheduler/cron)"
+            )
+            cleanup_warnings.append(cleanup_info)
+            cleanup_info_message = f" {cleanup_info}."
+        elif physical_cleanup_status == "not_found":
+            cleanup_info = "Physical directory cleanup: No physical directory found (collection had no files)"
+            cleanup_warnings.append(cleanup_info)
+            cleanup_info_message = f" {cleanup_info}."
+        elif physical_cleanup_status == "error" and physical_cleanup_error:
+            cleanup_info = f"Physical directory cleanup: Warning - {physical_cleanup_error}. Database deletion proceeded, but physical file cleanup status is uncertain."
+            cleanup_warnings.append(cleanup_info)
+            cleanup_info_message = f" {cleanup_info}"
+        elif physical_cleanup_status == "failed" and physical_cleanup_error:
+            cleanup_info = (
+                f"Physical directory cleanup: Failed - {physical_cleanup_error}"
+            )
+            cleanup_warnings.append(cleanup_info)
+            cleanup_info_message = f" {cleanup_info}"
+
+        final_status = result.status
+        if result.status == "success" and physical_cleanup_status in (
+            "error",
+            "failed",
+        ):
+            final_status = "partial_success"
+            if not cleanup_info_message:
+                cleanup_info_message = " Database deletion succeeded, but physical file cleanup encountered issues."
+
+        updated_message = result.message
+        if cleanup_info_message:
+            updated_message = f"{result.message}{cleanup_info_message}"
+
+        updated_result = CollectionOperationResult(
+            status=final_status,
+            collection=result.collection,
+            message=updated_message,
+            warnings=cleanup_warnings,
+            affected_documents=result.affected_documents,
+            deleted_counts=result.deleted_counts,
+        )
+
+        return updated_result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to delete collection '%s': %s", collection_name, e)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to delete collection: {str(e)}",
+        ) from e
+
+
 @kb_router.delete(
     "/collections/{collection_name}",
 )
@@ -892,144 +1746,104 @@ async def delete_collection_api(
     Raises:
         HTTPException: If physical deletion fails (prevents database deletion)
     """
-    try:
+    result = _perform_kb_collection_delete(
+        collection_name,
+        int(_user.id),
+        bool(_user.is_admin),
+        db,
+    )
+    if result.status in ("success", "partial_success"):
         try:
-            safe_collection = sanitize_path_component(collection_name, "collection")
-        except ValueError as e:
-            raise HTTPException(
-                status_code=422, detail=f"Invalid collection name: {str(e)}"
-            ) from e
+            from ...core.tools.core.RAG_tools.storage.factory import get_metadata_store
 
-        physical_cleanup = delete_collection_physical_dir(
-            user_id=int(_user.id),
-            collection_name=safe_collection,
-        )
-        physical_cleanup_status = physical_cleanup.status
-        physical_cleanup_error = physical_cleanup.error
-        collection_dir = physical_cleanup.collection_dir
-        if physical_cleanup_status == "failed":
-            if (
-                physical_cleanup_error
-                == "Another operation is in progress; please try again later."
-            ):
-                raise HTTPException(status_code=409, detail=physical_cleanup_error)
-            raise HTTPException(
-                status_code=500,
-                detail=(
-                    "Failed to delete collection: cannot move physical files. "
-                    f"Error: {physical_cleanup_error}. "
-                    "Please ensure the directory is not in use and you have proper permissions."
-                ),
-            )
+            metadata_store = get_metadata_store()
+            await metadata_store.delete_collection(collection_name)
+        except Exception as exc:
+            logger.debug("Failed to delete collection metadata: %s", exc)
+    return result
 
-        collection_records = _list_documents_for_user(
-            user_id=int(_user.id),
-            is_admin=bool(_user.is_admin),
-            collection_name=collection_name,
-        )
-        collection_file_ids = {
-            file_id
-            for file_id in (
-                _get_document_record_file_id(record) for record in collection_records
-            )
-            if file_id
-        }
 
-        result = delete_collection(collection_name, int(_user.id), bool(_user.is_admin))
+@kb_router.post(
+    "/collections/batch-delete",
+    response_model=BatchDeleteCollectionsResponse,
+)
+async def batch_delete_collections_api(
+    body: BatchDeleteCollectionsRequest,
+    _user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> BatchDeleteCollectionsResponse:
+    """Delete multiple collections in one request.
 
-        remaining_records = _list_documents_for_user(
-            user_id=int(_user.id),
-            is_admin=bool(_user.is_admin),
-        )
-        remaining_file_ids = {
-            file_id
-            for file_id in (
-                _get_document_record_file_id(record) for record in remaining_records
-            )
-            if file_id
-        }
-        deleted_uploaded_files = delete_collection_uploaded_files(
-            db,
-            user_id=int(_user.id),
-            collection_file_ids=collection_file_ids,
-            remaining_file_ids=remaining_file_ids,
-            collection_dir=collection_dir,
-        )
-        if deleted_uploaded_files:
-            logger.info(
-                "Deleted %s UploadedFile record(s) for collection %s",
-                deleted_uploaded_files,
-                collection_name,
-            )
+    For each name, runs the same pipeline as single delete (permissions, physical
+    trash, LanceDB, ``UploadedFile`` cleanup). Per-item failures are collected in
+    ``failed``; they do not roll back earlier successful deletions in the batch.
+    LanceDB removal uses ``delete_collection`` with tenant-aware ``user_id`` and
+    ``is_admin`` filtering. Returns ``deleted`` and ``failed`` name lists.
+    """
+    user_id = int(_user.id)
+    is_admin = bool(_user.is_admin)
+    deleted: List[str] = []
 
-        # Step 3: Add physical cleanup status to warnings and message for visibility
-        # This ensures users are always aware of physical cleanup status, not just in logs
-        cleanup_warnings = list(result.warnings) if result.warnings else []
-        cleanup_info_message = ""
+    # Deduplicate while keeping request order.
+    seen: set[str] = set()
+    unique_names: List[str] = []
+    for raw_name in body.collection_names:
+        key = str(raw_name)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_names.append(raw_name)
 
-        if physical_cleanup_status == "success":
-            cleanup_info = (
-                f"Physical directory moved to trash: {collection_dir} "
-                "(trash cleanup requires external scheduler/cron)"
-            )
-            cleanup_warnings.append(cleanup_info)
-            cleanup_info_message = f" {cleanup_info}."
-        elif physical_cleanup_status == "not_found":
-            cleanup_info = "Physical directory cleanup: No physical directory found (collection had no files)"
-            cleanup_warnings.append(cleanup_info)
-            cleanup_info_message = f" {cleanup_info}."
-        elif physical_cleanup_status == "error" and physical_cleanup_error:
-            # Path resolution error - database deletion proceeded, but physical cleanup status is unknown
-            cleanup_info = f"Physical directory cleanup: Warning - {physical_cleanup_error}. Database deletion proceeded, but physical file cleanup status is uncertain."
-            cleanup_warnings.append(cleanup_info)
-            cleanup_info_message = f" {cleanup_info}"
-        elif physical_cleanup_status == "failed" and physical_cleanup_error:
-            # This should not happen if we aborted above, but include for completeness
-            cleanup_info = (
-                f"Physical directory cleanup: Failed - {physical_cleanup_error}"
-            )
-            cleanup_warnings.append(cleanup_info)
-            cleanup_info_message = f" {cleanup_info}"
+    allowed, failed = _preflight_batch_delete_permissions(
+        unique_names, user_id, is_admin
+    )
 
-        # Step 4: Determine final status based on both database and physical cleanup results
-        # If database deletion succeeded but physical cleanup had issues, mark as partial_success
-        final_status = result.status
-        if result.status == "success" and physical_cleanup_status in (
-            "error",
-            "failed",
-        ):
-            # Database deletion succeeded but physical cleanup had problems
-            final_status = "partial_success"
-            if not cleanup_info_message:
-                cleanup_info_message = " Database deletion succeeded, but physical file cleanup encountered issues."
+    try:
+        for name in allowed:
+            try:
+                result = _perform_kb_collection_delete(name, user_id, is_admin, db)
+                if result.status in ("success", "partial_success"):
+                    deleted.append(name)
+                    try:
+                        from ...core.tools.core.RAG_tools.storage.factory import (
+                            get_metadata_store,
+                        )
 
-        # Step 5: Update message to include physical cleanup information
-        updated_message = result.message
-        if cleanup_info_message:
-            updated_message = f"{result.message}{cleanup_info_message}"
-
-        # Create updated result with cleanup information
-        # Note: CollectionOperationResult is frozen, so we create a new instance
-        updated_result = CollectionOperationResult(
-            status=final_status,
-            collection=result.collection,
-            message=updated_message,
-            warnings=cleanup_warnings,
-            affected_documents=result.affected_documents,
-            deleted_counts=result.deleted_counts,
-        )
-
-        return updated_result
-
-    except HTTPException:
-        # Re-raise HTTP exceptions (including physical deletion failures)
+                        metadata_store = get_metadata_store()
+                        await metadata_store.delete_collection(name)
+                    except Exception as exc:
+                        logger.debug("Failed to delete collection metadata: %s", exc)
+                else:
+                    failed.append(
+                        BatchDeleteFailureItem(
+                            name=name,
+                            error=result.message or "Unknown error",
+                        )
+                    )
+            except HTTPException as e:
+                # SQL-only rollback for this request; no vector/file rollback.
+                db.rollback()
+                failed.append(
+                    BatchDeleteFailureItem(
+                        name=name,
+                        error=_http_detail_to_str(e.detail),
+                    )
+                )
+                logger.warning(
+                    "Batch delete aborted after HTTP error for %s; rolled back pending SQL.",
+                    name,
+                )
+                break
+            except Exception as e:
+                db.rollback()
+                logger.exception("Batch delete failed for collection %s: %s", name, e)
+                failed.append(BatchDeleteFailureItem(name=name, error=str(e)))
+                break
+    except Exception:
+        db.rollback()
         raise
-    except Exception as e:
-        logger.exception(f"Failed to delete collection '{collection_name}': {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to delete collection: {str(e)}",
-        )
+
+    return BatchDeleteCollectionsResponse(deleted=deleted, failed=failed)
 
 
 @kb_router.post(
@@ -1053,6 +1867,15 @@ async def check_documents_exist_api(
     for admins), so "already exists" matches what will be overwritten on re-upload.
     """
     try:
+        try:
+            safe_collection_name = sanitize_path_component(
+                collection_name, "collection"
+            )
+        except ValueError as e:
+            raise HTTPException(
+                status_code=422, detail=f"Invalid collection name: {str(e)}"
+            ) from e
+
         filenames = body.get("filenames")
         if not isinstance(filenames, list):
             raise HTTPException(
@@ -1068,11 +1891,17 @@ async def check_documents_exist_api(
         if not requested:
             return {"existing_filenames": []}
 
-        records = _list_documents_for_user(
+        # Use storage abstraction layer to fetch document records
+        vector_store = get_vector_index_store()
+        records = vector_store.list_document_records(
+            collection_name=safe_collection_name,
             user_id=int(_user.id),
             is_admin=False,
-            collection_name=collection_name,
+            max_results=DEFAULT_VECTOR_STORE_SCAN_LIMIT,
         )
+
+        # Build filename map from file_ids (for UploadedFile lookup)
+        # This preserves main branch's file_id -> filename resolution
         filename_map = _build_uploaded_filename_map(
             db,
             user_id=int(_user.id),
@@ -1087,6 +1916,7 @@ async def check_documents_exist_api(
 
         existing_filenames = set()
         for record in records:
+            # Resolve filename using file_id first, then fallback to source_path basename
             resolved_filename = _resolve_document_filename(record, filename_map)
             if resolved_filename:
                 existing_filenames.add(resolved_filename)
@@ -1135,40 +1965,419 @@ async def delete_document_api(
     # NOTE: Exceptions are normalized by @handle_kb_exceptions for consistent API responses.
     from ...core.tools.core.RAG_tools.management.collections import delete_document
 
-    records = _list_documents_for_user(
-        user_id=int(_user.id),
-        is_admin=bool(_user.is_admin),
-        collection_name=collection_name,
-    )
+    try:
+        safe_collection_name = sanitize_path_component(collection_name, "collection")
+    except ValueError as e:
+        raise HTTPException(
+            status_code=422, detail=f"Invalid collection name: {str(e)}"
+        ) from e
+
+    def _collect_candidate_doc_ids(
+        docs: list[dict[str, Any]],
+    ) -> list[str]:
+        candidate: set[str] = set()
+        for item in docs:
+            raw = item.get("doc_id")
+            if isinstance(raw, str) and raw:
+                candidate.add(raw)
+        return sorted(candidate)
+
+    def _append_matching_uploaded_file_candidate(rec: UploadedFile) -> bool:
+        file_id_str = str(getattr(rec, "file_id", "")).strip()
+        if not file_id_str:
+            return False
+        storage_path = str(getattr(rec, "storage_path", "")).strip()
+        if not storage_path:
+            return False
+        derived_doc_id = generate_deterministic_doc_id(
+            safe_collection_name, storage_path
+        )
+        if doc_id and derived_doc_id != doc_id:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Provided `file_id` and `doc_id` do not reference the same document"
+                ),
+            )
+        matching_docs.append(
+            {
+                "doc_id": derived_doc_id,
+                "file_id": file_id_str,
+                "filename": str(getattr(rec, "filename", "")).strip() or filename,
+            }
+        )
+        return True
+
+    def _resolve_cleanup_file_id(doc_info: dict[str, Any]) -> Optional[str]:
+        current_file_id = str(doc_info.get("file_id") or "").strip()
+        if current_file_id:
+            return current_file_id
+
+        source_path = str(doc_info.get("source_path") or "").strip()
+        if source_path:
+            exact_match = (
+                db.query(UploadedFile)
+                .filter(
+                    UploadedFile.user_id == user_id_int,
+                    UploadedFile.storage_path == source_path,
+                )
+                .first()
+            )
+            if exact_match is not None:
+                exact_file_id = str(getattr(exact_match, "file_id", "")).strip()
+                if exact_file_id:
+                    return exact_file_id
+
+        normalized_filename = str(doc_info.get("filename") or "").strip()
+        normalized_doc_id = str(doc_info.get("doc_id") or "").strip()
+        user_segment = f"/user_{user_id_int}/{safe_collection_name}/"
+        uploaded_query = db.query(UploadedFile).filter(
+            UploadedFile.user_id == user_id_int,
+            UploadedFile.storage_path.like(
+                _like_contains_pattern(user_segment),
+                escape=_SQL_LIKE_ESCAPE,
+            ),
+        )
+        if normalized_filename:
+            uploaded_query = uploaded_query.filter(
+                UploadedFile.filename == normalized_filename
+            )
+
+        matched_file_ids: set[str] = set()
+        for rec in uploaded_query.all():
+            candidate_file_id = str(getattr(rec, "file_id", "")).strip()
+            if not candidate_file_id:
+                continue
+            if normalized_doc_id:
+                candidate_storage_path = str(getattr(rec, "storage_path", "")).strip()
+                if not candidate_storage_path:
+                    continue
+                derived_doc_id = generate_deterministic_doc_id(
+                    safe_collection_name,
+                    candidate_storage_path,
+                )
+                if derived_doc_id != normalized_doc_id:
+                    continue
+            matched_file_ids.add(candidate_file_id)
+
+        if len(matched_file_ids) == 1:
+            return next(iter(matched_file_ids))
+        if len(matched_file_ids) > 1:
+            logger.warning(
+                "Multiple UploadedFile candidates matched cleanup resolution "
+                "(collection=%s, filename=%s, doc_id=%s)",
+                safe_collection_name,
+                normalized_filename,
+                normalized_doc_id,
+            )
+
+        return None
+
+    def _build_resolved_document_match(
+        summary_doc_id: str,
+        summary_basename: Optional[str],
+        normalized_source_path: str,
+        *,
+        matched_file_id: Optional[str],
+        matched_filename: Optional[str],
+    ) -> dict[str, Any]:
+        return {
+            "doc_id": summary_doc_id,
+            "file_id": matched_file_id,
+            "filename": matched_filename or summary_basename or filename,
+            "source_path": normalized_source_path or None,
+        }
+
+    def _match_uploaded_file_summary(
+        uploaded_file_record: UploadedFile,
+        summary_doc_id: str,
+        summary_basename: Optional[str],
+        normalized_source_path: str,
+    ) -> Optional[dict[str, Any]]:
+        uploaded_storage_path = str(
+            getattr(uploaded_file_record, "storage_path", "")
+        ).strip()
+        uploaded_filename = str(getattr(uploaded_file_record, "filename", "")).strip()
+
+        if normalized_source_path == uploaded_storage_path:
+            return _build_resolved_document_match(
+                summary_doc_id,
+                summary_basename,
+                normalized_source_path,
+                matched_file_id=file_id,
+                matched_filename=uploaded_filename,
+            )
+
+        if not uploaded_storage_path:
+            return None
+
+        derived_doc_id = generate_deterministic_doc_id(
+            safe_collection_name,
+            uploaded_storage_path,
+        )
+        if derived_doc_id != summary_doc_id:
+            return None
+
+        return _build_resolved_document_match(
+            summary_doc_id,
+            summary_basename,
+            normalized_source_path,
+            matched_file_id=file_id,
+            matched_filename=uploaded_filename,
+        )
+
+    def _resolve_list_documents_match() -> Optional[dict[str, Any]]:
+        uploaded_file_record: Optional[UploadedFile] = None
+        if file_id:
+            uploaded_file_record = (
+                db.query(UploadedFile)
+                .filter(
+                    UploadedFile.user_id == user_id_int,
+                    UploadedFile.file_id == file_id,
+                )
+                .first()
+            )
+
+        doc_list = list_documents(
+            collection=safe_collection_name,
+            user_id=user_id_int,
+            is_admin=bool(_user.is_admin),
+        )
+        for summary in doc_list.documents:
+            summary_doc_id = getattr(summary, "doc_id", None)
+            if not isinstance(summary_doc_id, str) or not summary_doc_id:
+                continue
+
+            summary_source_path = getattr(summary, "source_path", None)
+            normalized_source_path = (
+                str(summary_source_path).strip()
+                if isinstance(summary_source_path, str)
+                else ""
+            )
+            summary_basename = (
+                Path(normalized_source_path).name if normalized_source_path else None
+            )
+
+            if doc_id and summary_doc_id != doc_id:
+                continue
+
+            if not file_id:
+                return _build_resolved_document_match(
+                    summary_doc_id,
+                    summary_basename,
+                    normalized_source_path,
+                    matched_file_id=None,
+                    matched_filename=None,
+                )
+
+            if uploaded_file_record is None:
+                if doc_id:
+                    return _build_resolved_document_match(
+                        summary_doc_id,
+                        summary_basename,
+                        normalized_source_path,
+                        matched_file_id=None,
+                        matched_filename=None,
+                    )
+                continue
+
+            uploaded_match = _match_uploaded_file_summary(
+                uploaded_file_record,
+                summary_doc_id,
+                summary_basename,
+                normalized_source_path,
+            )
+            if uploaded_match is not None:
+                return uploaded_match
+
+            if doc_id:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "Provided `file_id` and `doc_id` do not reference the same document"
+                    ),
+                )
+
+        return None
+
+    user_id_int = int(_user.id)
+    records: List[Dict[str, Any]] = []
+    try:
+        records = _list_documents_for_user(
+            user_id=user_id_int,
+            is_admin=bool(_user.is_admin),
+            collection_name=safe_collection_name,
+        )
+    except Exception as exc:
+        # Degrade gracefully when LanceDB cannot decode legacy rows.
+        logger.warning(
+            "Failed to read documents for delete resolution (collection=%s): %s",
+            safe_collection_name,
+            exc,
+        )
     filename_map = _build_uploaded_filename_map(
         db,
-        user_id=int(_user.id),
+        user_id=user_id_int,
         file_ids=[
-            current_file_id
-            for current_file_id in (
-                _get_document_record_file_id(record) for record in records
-            )
-            if current_file_id
+            file_id
+            for file_id in (_get_document_record_file_id(record) for record in records)
+            if file_id
         ],
     )
 
+    # Find all matching documents (handle duplicates)
     matching_docs = []
     for record in records:
         current_doc_id = record.get("doc_id")
         current_file_id = _get_document_record_file_id(record)
         resolved_filename = _resolve_document_filename(record, filename_map)
+
+        # Support filtering by doc_id, file_id, or filename (main branch feature)
         if doc_id and current_doc_id != doc_id:
             continue
         if file_id and current_file_id != file_id:
             continue
         if not doc_id and not file_id and resolved_filename != filename:
             continue
+
         matching_docs.append(
             {
                 "doc_id": current_doc_id,
                 "file_id": current_file_id,
                 "filename": resolved_filename or filename,
+                "source_path": record.get("source_path"),
             }
+        )
+
+    # Safety: refuse to delete by basename if it is ambiguous.
+    # This endpoint keeps `filename` in the path for backward compatibility, but
+    # deleting multiple documents with the same filename is dangerous and hard
+    # for users to reason about. Require an explicit `file_id` or `doc_id` when
+    # more than one candidate matches.
+    if not doc_id and not file_id and len(matching_docs) > 1:
+        candidate_doc_ids = _collect_candidate_doc_ids(matching_docs)
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Ambiguous document deletion for filename '{filename}'. "
+                "Multiple documents match; please retry with query param "
+                "`file_id` or `doc_id`. "
+                f"Candidates: {candidate_doc_ids}"
+            ),
+        )
+
+    if not matching_docs and file_id:
+        user_segment = f"/user_{user_id_int}/{safe_collection_name}/"
+        uploaded_candidates = (
+            db.query(UploadedFile)
+            .filter(
+                UploadedFile.user_id == user_id_int,
+                UploadedFile.file_id == file_id,
+                UploadedFile.storage_path.like(
+                    _like_contains_pattern(user_segment),
+                    escape=_SQL_LIKE_ESCAPE,
+                ),
+            )
+            .all()
+        )
+        for rec in uploaded_candidates:
+            _append_matching_uploaded_file_candidate(rec)
+
+    if not matching_docs and (doc_id or file_id):
+        # Explicit identifiers: validate through other data sources before allowing deletion
+        # to prevent accidental deletion of non-existent or wrong documents.
+        try:
+            resolved_match = _resolve_list_documents_match()
+            if resolved_match is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Document not found in collection '{safe_collection_name}'",
+                )
+
+            matching_docs.append(resolved_match)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            # If validation fails, err on the side of caution and refuse deletion
+            logger.warning(
+                "Failed to validate document existence for deletion (collection=%s): %s",
+                safe_collection_name,
+                exc,
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="Unable to verify document existence. Deletion refused to prevent data loss.",
+            )
+
+    if not matching_docs:
+        # Fallback 1: derive doc_id from UploadedFile linkage for uploaded docs.
+        user_segment = f"/user_{user_id_int}/{safe_collection_name}/"
+        uploaded_query = db.query(UploadedFile).filter(
+            UploadedFile.user_id == user_id_int,
+            UploadedFile.storage_path.like(
+                _like_contains_pattern(user_segment),
+                escape=_SQL_LIKE_ESCAPE,
+            ),
+        )
+        if file_id:
+            uploaded_query = uploaded_query.filter(UploadedFile.file_id == file_id)
+        else:
+            uploaded_query = uploaded_query.filter(UploadedFile.filename == filename)
+        uploaded_candidates = uploaded_query.all()
+        for rec in uploaded_candidates:
+            _append_matching_uploaded_file_candidate(rec)
+
+    if not doc_id and not file_id and len(matching_docs) > 1:
+        candidate_doc_ids = _collect_candidate_doc_ids(matching_docs)
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Ambiguous document deletion for filename '{filename}'. "
+                "Multiple documents match; please retry with query param "
+                "`file_id` or `doc_id`. "
+                f"Candidates: {candidate_doc_ids}"
+            ),
+        )
+
+    if not matching_docs and not file_id and not doc_id:
+        # Fallback 2: allow web-ingested docs to be deleted by doc_id-like filename.
+        try:
+            doc_list = list_documents(
+                collection=safe_collection_name,
+                user_id=user_id_int,
+                is_admin=bool(_user.is_admin),
+            )
+            for summary in doc_list.documents:
+                doc_id_value = getattr(summary, "doc_id", None)
+                source_path = getattr(summary, "source_path", None)
+                fallback_basename: str | None = None
+                if isinstance(source_path, str) and source_path.strip():
+                    fallback_basename = Path(source_path).name
+                if doc_id_value == filename or fallback_basename == filename:
+                    matching_docs.append(
+                        {
+                            "doc_id": doc_id_value,
+                            "file_id": None,
+                            "filename": filename,
+                        }
+                    )
+        except Exception as exc:
+            logger.warning(
+                "Fallback doc resolution via list_documents failed (collection=%s): %s",
+                safe_collection_name,
+                exc,
+            )
+
+    if not doc_id and not file_id and len(matching_docs) > 1:
+        candidate_doc_ids = _collect_candidate_doc_ids(matching_docs)
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Ambiguous document deletion for filename '{filename}'. "
+                "Multiple documents match; please retry with query param "
+                "`file_id` or `doc_id`. "
+                f"Candidates: {candidate_doc_ids}"
+            ),
         )
 
     if not matching_docs:
@@ -1180,62 +2389,86 @@ async def delete_document_api(
     deleted_doc_ids = []
     deletion_errors = []
 
-    remaining_records = _list_documents_for_user(
-        user_id=int(_user.id),
-        is_admin=bool(_user.is_admin),
-    )
-    remaining_file_ids = {
-        current_file_id
-        for current_file_id in (
-            _get_document_record_file_id(record) for record in remaining_records
+    remaining_file_ids: set[str] = set()
+    try:
+        remaining_records = _list_documents_for_user(
+            user_id=user_id_int,
+            is_admin=bool(_user.is_admin),
+            collection_name=safe_collection_name,
         )
-        if current_file_id
-    }
+        remaining_file_ids = {
+            current_file_id
+            for current_file_id in (
+                _get_document_record_file_id(record) for record in remaining_records
+            )
+            if current_file_id
+        }
+    except Exception as exc:
+        logger.warning(
+            "Failed to read remaining docs for orphan cleanup; fallback to UploadedFile set: %s",
+            exc,
+        )
+        remaining_file_ids = {
+            str(rec.file_id)
+            for rec in db.query(UploadedFile)
+            .filter(UploadedFile.user_id == user_id_int)
+            .all()
+            if getattr(rec, "file_id", None)
+        }
 
     for doc_info in matching_docs:
-        doc_id = doc_info["doc_id"]
-        if not isinstance(doc_id, str) or not doc_id:
+        resolved_doc_id = doc_info["doc_id"]
+        if not isinstance(resolved_doc_id, str) or not resolved_doc_id:
             error_msg = "Failed to delete document: resolved doc_id is missing"
             deletion_errors.append(error_msg)
             logger.error("%s", error_msg)
             continue
         try:
             delete_document(
-                collection_name, doc_id, int(_user.id), bool(_user.is_admin)
+                safe_collection_name,
+                resolved_doc_id,
+                int(_user.id),
+                bool(_user.is_admin),
             )
-            deleted_doc_ids.append(doc_id)
-            current_file_id = doc_info.get("file_id")
+            deleted_doc_ids.append(resolved_doc_id)
+            current_file_id = _resolve_cleanup_file_id(doc_info)
             if current_file_id:
                 remaining_file_ids.discard(current_file_id)
                 if _delete_uploaded_file_if_orphaned(
                     db,
                     file_id=current_file_id,
-                    user_id=int(_user.id),
+                    user_id=user_id_int,
                     remaining_file_ids=remaining_file_ids,
                 ):
                     pass
             logger.info(
                 "Deleted document '%s' (doc_id: %s) from collection '%s'",
                 doc_info.get("filename", filename),
-                doc_id,
-                collection_name,
+                resolved_doc_id,
+                safe_collection_name,
             )
         except Exception as e:
-            error_msg = f"Failed to delete doc_id {doc_id}: {str(e)}"
+            error_msg = f"Failed to delete doc_id {resolved_doc_id}: {str(e)}"
             deletion_errors.append(error_msg)
             logger.error("%s", error_msg)
 
     # Commit all orphan file cleanups in a single batch after the loop
     try:
         db.commit()
-    except Exception:
+    except Exception as exc:
         db.rollback()
+        deletion_errors.append(f"Failed to persist orphan cleanup changes: {str(exc)}")
+        logger.error(
+            "Failed to commit orphan cleanup changes for collection %s: %s",
+            safe_collection_name,
+            exc,
+        )
 
     if deletion_errors:
         return {
             "status": "partial_success" if deleted_doc_ids else "failed",
             "message": f"Deleted {len(deleted_doc_ids)} of {len(matching_docs)} documents",
-            "collection": collection_name,
+            "collection": safe_collection_name,
             "filename": filename,
             "deleted_doc_ids": deleted_doc_ids,
             "errors": deletion_errors,
@@ -1244,7 +2477,7 @@ async def delete_document_api(
     return {
         "status": "success",
         "message": f"Successfully deleted {len(deleted_doc_ids)} document(s)",
-        "collection": collection_name,
+        "collection": safe_collection_name,
         "filename": filename,
         "deleted_doc_ids": deleted_doc_ids,
     }
@@ -1269,30 +2502,20 @@ async def rename_collection_api(
     Returns:
         Success message
     """
-    from ...core.tools.core.RAG_tools.management.collections import (
-        _list_table_names,
-    )
     from ...core.tools.core.RAG_tools.management.status import (
         clear_ingestion_status,
         load_ingestion_status,
         write_ingestion_status,
     )
-    from ...core.tools.core.RAG_tools.utils.string_utils import (
-        escape_lancedb_string,
-    )
+    from ...core.tools.core.RAG_tools.storage.factory import get_vector_index_store
 
-    conn = get_connection_from_env()
+    vector_store = get_vector_index_store()
 
     if not new_name or not new_name.strip():
         raise HTTPException(
             status_code=422,
             detail="New collection name cannot be empty",
         )
-
-    new_name = new_name.strip()
-
-    if new_name == collection_name:
-        return {"status": "success", "message": "Collection name unchanged"}
 
     warnings: list[str] = []
 
@@ -1305,19 +2528,22 @@ async def rename_collection_api(
             status_code=422, detail=f"Invalid collection name: {str(e)}"
         ) from e
 
+    if safe_new_collection == safe_old_collection:
+        return {"status": "success", "message": "Collection name unchanged"}
+
     physical_rename_status = "not_found"
     physical_rename_error: Optional[str] = None
     old_collection_dir: Optional[Path] = None
     new_collection_dir: Optional[Path] = None
+    collection_records = vector_store.list_document_records(
+        collection_name=safe_old_collection,
+        user_id=int(_user.id),
+        is_admin=bool(_user.is_admin),
+    )
     collection_file_ids = {
         file_id
         for file_id in (
-            _get_document_record_file_id(record)
-            for record in _list_documents_for_user(
-                user_id=int(_user.id),
-                is_admin=bool(_user.is_admin),
-                collection_name=collection_name,
-            )
+            _get_document_record_file_id(record) for record in collection_records
         )
         if file_id
     }
@@ -1348,48 +2574,30 @@ async def rename_collection_api(
             ),
         )
 
-    # Step 2: Update collection name in all tables
-    table_names = _list_table_names(conn, warnings)
-
-    for table_name in ["documents", "parses", "chunks"]:
-        if table_name in table_names:
-            try:
-                table = conn.open_table(table_name)
-                table.update(
-                    f"collection = '{escape_lancedb_string(collection_name)}'",
-                    {"collection": new_name},
-                )
-            except Exception as e:
-                logger.warning("Failed to update '%s': %s", table_name, e)
-                warnings.append(f"Failed to update '{table_name}': {e}")
-
-    for table_name in table_names:
-        if not table_name.startswith("embeddings_"):
-            continue
-        try:
-            table = conn.open_table(table_name)
-            table.update(
-                f"collection = '{escape_lancedb_string(collection_name)}'",
-                {"collection": new_name},
-            )
-        except Exception as e:
-            logger.warning("Failed to update embeddings table '%s': %s", table_name, e)
-            warnings.append(f"Failed to update '{table_name}': {e}")
+    # Step 2: Update collection name in all tables (documents, parses, chunks, embeddings)
+    # Use storage abstraction layer which handles all tables including embeddings
+    vector_store = get_vector_index_store()
+    warnings.extend(
+        vector_store.rename_collection_data(
+            collection_name=safe_old_collection,
+            new_name=safe_new_collection,
+        )
+    )
 
     # Migrate ingestion status from old collection name to new
     try:
-        status_entries = load_ingestion_status(collection=collection_name)
+        status_entries = load_ingestion_status(collection=safe_old_collection)
         for entry in status_entries:
             doc_id = entry.get("doc_id")
             if doc_id:
                 write_ingestion_status(
-                    new_name,
+                    safe_new_collection,
                     doc_id,
                     status=entry.get("status", "pending"),
                     message=entry.get("message", ""),
                     parse_hash=entry.get("parse_hash", ""),
                 )
-                clear_ingestion_status(collection_name, doc_id)
+                clear_ingestion_status(safe_old_collection, doc_id)
     except Exception as e:
         logger.warning("Failed to update ingestion status: %s", e)
         warnings.append(f"Failed to update ingestion status: {e}")
@@ -1428,7 +2636,9 @@ async def rename_collection_api(
             rename_info_message = " Database rename succeeded, but physical directory rename encountered issues."
 
     # Step 5: Build final message
-    base_message = f"Collection renamed from '{collection_name}' to '{new_name}'"
+    base_message = (
+        f"Collection renamed from '{safe_old_collection}' to '{safe_new_collection}'"
+    )
     if warnings and len(warnings) > (1 if physical_rename_status != "not_found" else 0):
         final_message = f"{base_message} with some warnings"
     else:
@@ -1480,6 +2690,13 @@ async def get_parse_result_api(
     from ...core.tools.core.RAG_tools.core.exceptions import DocumentNotFoundError
     from ...core.tools.core.RAG_tools.utils.string_utils import sanitize_for_doc_id
 
+    try:
+        safe_collection_name = sanitize_path_component(collection_name, "collection")
+    except ValueError as e:
+        raise HTTPException(
+            status_code=422, detail=f"Invalid collection name: {str(e)}"
+        ) from e
+
     safe_doc_id = sanitize_for_doc_id(doc_id)
     if safe_doc_id != doc_id:
         logger.warning("Invalid doc_id format detected: %s", doc_id)
@@ -1494,7 +2711,7 @@ async def get_parse_result_api(
 
     try:
         elements, actual_parse_hash = reconstruct_parse_result_from_db(
-            collection_name,
+            safe_collection_name,
             doc_id,
             parse_hash,
             user_id=int(_user.id),

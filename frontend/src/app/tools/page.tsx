@@ -36,9 +36,15 @@ import {
 } from "lucide-react"
 import { getApiUrl } from "@/lib/utils"
 import { apiRequest } from "@/lib/api-wrapper"
+import { ConnectMcpDialog, AppIntegration } from "@/components/mcp/connect-mcp-dialog"
+import { OfficialMcpSettingsDialog } from "@/components/mcp/official-mcp-settings-dialog"
+import { CustomApiForm } from "@/components/mcp/custom-api-form"
+import { CustomMcpForm } from "@/components/mcp/custom-mcp-form"
 import { useI18n } from "@/contexts/i18n-context"
 import { useAuth } from "@/contexts/auth-context"
+import { useMcpApps } from "@/contexts/mcp-apps-context"
 import { toast } from "sonner"
+import { isValidMcpName, buildCustomApiPayload } from "@/lib/mcp-utils"
 
 interface Tool {
   name: string
@@ -55,7 +61,7 @@ interface Tool {
   usage_count?: number
 }
 
-interface MCPServer {
+export interface MCPServer {
   id: number
   user_id: number
   name: string
@@ -67,6 +73,9 @@ interface MCPServer {
   transport_display: string
   created_at: string
   updated_at: string
+  connected_account?: string
+  app_id?: string
+  provider?: string
 }
 
 interface TransportConfig {
@@ -128,7 +137,11 @@ export default function ToolsPage() {
   const [configurableTools, setConfigurableTools] = useState<ConfigurableTool[]>([])
   const [sqlConnections, setSqlConnections] = useState<SqlConnectionItem[]>([])
   const [isLoading, setIsLoading] = useState(false)
+  const [isConnectMcpOpen, setIsConnectMcpOpen] = useState(false)
+  const [isOfficialAppDialogOpen, setIsOfficialAppDialogOpen] = useState(false)
+  const [editingOfficialApp, setEditingOfficialApp] = useState<AppIntegration | null>(null)
   const [isMcpDialogOpen, setIsMcpDialogOpen] = useState(false)
+  const [customApiEnv, setCustomApiEnv] = useState<{ key: string, value: string }[]>([{ key: "", value: "" }])
   const [isCredentialDialogOpen, setIsCredentialDialogOpen] = useState(false)
   const [editingConfigTool, setEditingConfigTool] = useState<ConfigurableTool | null>(null)
   const [credentialValues, setCredentialValues] = useState<Record<string, string>>({})
@@ -158,6 +171,7 @@ export default function ToolsPage() {
 
   const { t } = useI18n()
   const { user } = useAuth()
+  const { getAppIcon } = useMcpApps()
   const isAdmin = Boolean(user?.is_admin)
 
   useEffect(() => {
@@ -454,26 +468,61 @@ export default function ToolsPage() {
     }
   }
 
-  const handleAddMcpServer = () => {
-    setEditingServer(null)
-    setMcpFormData({
-      name: "",
-      transport: "stdio",
-      description: "",
-      config: {}
-    })
-    setIsMcpDialogOpen(true)
-  }
-
   const handleEditMcpServer = (server: MCPServer) => {
-    setEditingServer(server)
-    setMcpFormData({
-      name: server.name,
-      transport: server.transport,
-      description: server.description || "",
-      config: server.config
-    })
-    setIsMcpDialogOpen(true)
+    // Check if this is an official integration (from library)
+    const isOfficial = server.transport === 'oauth'
+
+    if (isOfficial) {
+      // Use provider from backend if available, fallback to basic logic
+      const isGoogle = server.name.toLowerCase().includes('google') || server.name.toLowerCase() === 'gmail'
+      const provider = server.provider || (isGoogle ? 'google' : 'linkedin')
+
+      // Use app_id from backend if available, fallback to basic logic
+      const appId = server.app_id || server.name.toLowerCase().replace(/\s+/g, '-')
+
+      // We need to fetch the icon or use a generic one
+      let icon = getAppIcon(server.name) || "";
+
+      // Create an AppIntegration-like object for the dialog
+      setEditingOfficialApp({
+        id: appId, // Store the app ID for OAuth flow
+        server_id: server.id, // Store the actual server ID for disconnect
+        name: server.name,
+        description: server.description || "",
+        icon: icon,
+        is_connected: true,
+        provider: provider,
+        connected_account: server.connected_account,
+        is_custom: false
+      })
+      setIsOfficialAppDialogOpen(true)
+    } else if (server.transport === "custom_api") {
+      setEditingOfficialApp({
+        id: server.id.toString(),
+        server_id: server.id,
+        name: server.name,
+        description: server.description || "",
+        icon: "",
+        is_connected: true,
+        provider: "custom_api",
+        is_custom: true,
+        server: server
+      })
+      setIsOfficialAppDialogOpen(true)
+    } else {
+      setEditingOfficialApp({
+        id: server.id.toString(),
+        server_id: server.id,
+        name: server.name,
+        description: server.description || "",
+        icon: "",
+        is_connected: true,
+        provider: "custom",
+        is_custom: true,
+        server: server
+      })
+      setIsOfficialAppDialogOpen(true)
+    }
   }
 
   const handleSaveMcpServer = async () => {
@@ -481,18 +530,38 @@ export default function ToolsPage() {
       toast.error(t('tools.mcp.alerts.nameRequired'))
       return
     }
+
+    if (!isValidMcpName(mcpFormData.name)) {
+      toast.error(t('tools.mcp.alerts.nameInvalidFormat') || "Name can only contain letters, numbers, hyphens and underscores");
+      return;
+    }
+
+    let payload: any = { ...mcpFormData }
+    if (payload.transport === "custom_api") {
+      const buildResult = buildCustomApiPayload(payload, customApiEnv);
+      if (!buildResult.isValid) {
+        toast.error(t(buildResult.errorKey || 'tools.mcp.alerts.atLeastOneSecret') || "At least one valid secret is required");
+        return;
+      }
+      payload = buildResult.payload;
+    }
+
     setIsLoading(true)
     try {
-      const url = editingServer
-        ? `${getApiUrl()}/api/mcp/servers/${editingServer.id}`
-        : `${getApiUrl()}/api/mcp/servers`
+      const url = mcpFormData.transport === 'custom_api'
+        ? (editingServer
+          ? `${getApiUrl()}/api/custom-apis/${editingServer.id}`
+          : `${getApiUrl()}/api/custom-apis`)
+        : (editingServer
+          ? `${getApiUrl()}/api/mcp/servers/${editingServer.id}`
+          : `${getApiUrl()}/api/mcp/servers`);
       const method = editingServer ? 'PUT' : 'POST'
       const response = await apiRequest(url, {
         method,
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify(mcpFormData)
+        body: JSON.stringify(payload)
       })
       if (response.ok) {
         await loadMCPServers()
@@ -541,12 +610,12 @@ export default function ToolsPage() {
     // Special cases for correct capitalization
     const categoryDisplayMap: Record<string, string> = {
       ppt: "PPT",
-    pptx: "PPTX",
-    ai: "AI",
-    api: "API",
-    llm: "LLM",
-    ai2: "AI2",
-      }
+      pptx: "PPTX",
+      ai: "AI",
+      api: "API",
+      llm: "LLM",
+      ai2: "AI2",
+    }
 
     // Check special cases first
     if (categoryDisplayMap[category]) {
@@ -573,6 +642,13 @@ export default function ToolsPage() {
   const getToolIcon = (name: string, type: string, category?: string) => {
     const lowerName = name.toLowerCase()
     const lowerCategory = (category || "").toLowerCase()
+    if (type === 'mcp') {
+      const appIcon = getAppIcon(name)
+      if (appIcon) {
+        return <img src={appIcon} alt={name} className="h-6 w-6 rounded-sm object-contain" />
+      }
+      return <Server className="h-6 w-6 text-green-600" />
+    }
 
     if (lowerName.includes('firecrawl')) return <Flame className="h-6 w-6 text-orange-500" />
     if (lowerName.includes('google')) return <Globe className="h-6 w-6 text-blue-500" />
@@ -582,8 +658,6 @@ export default function ToolsPage() {
     if (lowerCategory === 'file') return <FileText className="h-6 w-6 text-amber-500" />
     if (lowerCategory === 'knowledge') return <Book className="h-6 w-6 text-indigo-500" />
     if (lowerCategory === 'audio') return <Mic className="h-6 w-6 text-green-500" />
-
-    if (type === 'mcp') return <Server className="h-6 w-6 text-green-600" />
     if (type === 'builtin' || lowerCategory === 'basic') return <Wrench className="h-6 w-6 text-slate-500" />
 
     return <Code className="h-6 w-6 text-slate-500" />
@@ -601,11 +675,16 @@ export default function ToolsPage() {
   }
 
   // Get unique categories
-  const categories = Array.from(new Set(tools.map(t => t.category).filter(Boolean))).sort()
+  const categories = Array.from(new Set(
+    tools
+      .map(t => t.category)
+      .filter(Boolean)
+      .filter(c => c !== 'mcp')
+  )).sort()
 
   const filteredTools = tools.filter(t => {
     const matchesSearch = t.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                          t.description.toLowerCase().includes(searchQuery.toLowerCase())
+      t.description.toLowerCase().includes(searchQuery.toLowerCase())
 
     // For 'all' tab, show everything (except MCP type which are handled separately if we want,
     // but here we filter 'mcp' type out from tools array usually, let's check filteredApiTools logic)
@@ -846,98 +925,64 @@ export default function ToolsPage() {
             onChange={setSearchQuery}
             className="w-64 bg-background"
           />
+          <Button className="bg-primary text-primary-foreground hover:bg-primary/90" onClick={() => setIsConnectMcpOpen(true)}>
+            <Plus className="h-4 w-4 mr-2" />
+            {t('tools.mcp.addConnector')}
+          </Button>
           <Dialog open={isMcpDialogOpen} onOpenChange={setIsMcpDialogOpen}>
-            <DialogTrigger asChild>
-              <Button className="bg-primary text-primary-foreground hover:bg-primary/90" onClick={handleAddMcpServer}>
-                <Plus className="h-4 w-4 mr-2" />
-                {t('tools.mcp.addServer')}
-              </Button>
-            </DialogTrigger>
             <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
               <DialogHeader>
                 <DialogTitle>
-                  {editingServer ? t('tools.mcp.dialog.editTitle') : t('tools.mcp.dialog.addTitle')}
+                  {editingServer ? mcpFormData.transport === 'custom_api' ? t('tools.mcp.dialog.editCustomApi') : t('tools.mcp.dialog.editTitle') : mcpFormData.transport === 'custom_api' ? t('tools.mcp.dialog.addCustomApi') : t('tools.mcp.dialog.addTitle')}
                 </DialogTitle>
                 <DialogDescription>
-                  {t('tools.mcp.dialog.description')}
+                  {mcpFormData.transport === 'custom_api' ? t('tools.mcp.dialog.customApiDescription') : t('tools.mcp.dialog.description')}
                 </DialogDescription>
               </DialogHeader>
               <div className="space-y-4">
-                <div className="space-y-2">
-                  <Label htmlFor="name">{t('tools.mcp.form.nameLabel')}</Label>
-                  <Input
-                    id="name"
-                    value={mcpFormData.name}
-                    onChange={(e) => setMcpFormData(prev => ({ ...prev, name: e.target.value }))}
-                    placeholder={t('tools.mcp.form.namePlaceholder')}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="transport">{t('tools.mcp.form.transportLabel')}</Label>
-                  <Select
-                    value={mcpFormData.transport}
-                    onValueChange={(value: string) => setMcpFormData(prev => ({ ...prev, transport: value }))}
-                    options={transports}
-                    placeholder={t('tools.mcp.form.transportPlaceholder')}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="description">{t('tools.mcp.form.descriptionLabel')}</Label>
-                  <Textarea
-                    id="description"
-                    value={mcpFormData.description}
-                    onChange={(e) => setMcpFormData(prev => ({ ...prev, description: e.target.value }))}
-                    placeholder={t('tools.mcp.form.descriptionPlaceholder')}
-                    rows={3}
-                  />
-                </div>
-                {(() => {
-                  const selectedTransport = transports.find(t => t.value === mcpFormData.transport);
-                  return selectedTransport?.fields?.map((field) => (
-                    <div key={field.name} className="space-y-2">
-                      <Label htmlFor={field.name}>{field.label} {field.required && "*"}</Label>
-                      {field.type === 'textarea' ? (
-                        <Textarea
-                          id={field.name}
-                          value={mcpFormData.config[field.name] || ''}
-                          onChange={(e) => setMcpFormData(prev => ({
-                            ...prev,
-                            config: { ...prev.config, [field.name]: e.target.value }
-                          }))}
-                          placeholder={field.placeholder}
-                          rows={3}
-                        />
-                      ) : field.type === 'select' ? (
-                        <Select
-                          value={mcpFormData.config[field.name] || ''}
-                          onValueChange={(value: string) => setMcpFormData(prev => ({
-                            ...prev,
-                            config: { ...prev.config, [field.name]: value }
-                          }))}
-                          options={field.options || []}
-                          placeholder={field.placeholder}
-                        />
-                      ) : (
-                        <Input
-                          id={field.name}
-                          type={field.type === 'number' ? 'number' : 'text'}
-                          value={mcpFormData.config[field.name] || ''}
-                          onChange={(e) => setMcpFormData(prev => ({
-                            ...prev,
-                            config: { ...prev.config, [field.name]: field.type === 'number' ? Number(e.target.value) : e.target.value }
-                          }))}
-                          placeholder={field.placeholder}
-                        />
-                      )}
-                    </div>
-                  ));
-                })()}
+                {mcpFormData.transport === 'custom_api' ? (
+                  <>
+                    <CustomApiForm
+                      mcpFormData={mcpFormData}
+                      setMcpFormData={setMcpFormData}
+                      customApiEnv={customApiEnv}
+                      setCustomApiEnv={setCustomApiEnv}
+                      originalEnvObj={(() => {
+                        let originalEnvObj: Record<string, any> = {};
+                        if (editingServer?.config?.env) {
+                          originalEnvObj = typeof editingServer.config.env === 'string'
+                            ? JSON.parse(editingServer.config.env)
+                            : editingServer.config.env;
+                        }
+                        return originalEnvObj;
+                      })()}
+                    />
+                  </>
+                ) : (
+                  <>
+                    <CustomMcpForm
+                      mcpFormData={mcpFormData}
+                      setMcpFormData={setMcpFormData}
+                      transports={transports}
+                    />
+                  </>
+                )}
               </div>
               <DialogFooter>
                 <Button variant="outline" onClick={() => setIsMcpDialogOpen(false)}>
                   {t('tools.mcp.buttons.cancel')}
                 </Button>
-                <Button onClick={handleSaveMcpServer} disabled={isLoading}>
+                <Button
+                  onClick={handleSaveMcpServer}
+                  disabled={
+                    isLoading ||
+                    (mcpFormData.transport === 'custom_api' && (
+                      !mcpFormData.name.trim() ||
+                      customApiEnv.length === 0 ||
+                      customApiEnv.some(env => !env.key.trim() || !env.value.trim())
+                    ))
+                  }
+                >
                   {isLoading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
                   {t('tools.mcp.buttons.save')}
                 </Button>
@@ -949,7 +994,7 @@ export default function ToolsPage() {
 
       {/* Tabs */}
       <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-        <TabsList className="w-full justify-start bg-transparent p-0 h-auto border-b border-border/80 rounded-none flex">
+        <TabsList className="w-full justify-start bg-transparent p-0 h-auto border-b border-border/80 rounded-none flex overflow-x-auto">
           <div className="flex space-x-4">
             <TabsTrigger
               value="all"
@@ -970,7 +1015,7 @@ export default function ToolsPage() {
               value="mcp"
               className="data-[state=active]:text-primary font-medium data-[state=active]:border-b-2 data-[state=active]:border-primary"
             >
-              {t('tools.tabs.mcp')}
+              {t('tools.tabs.connectors')}
             </TabsTrigger>
           </div>
         </TabsList>
@@ -997,10 +1042,10 @@ export default function ToolsPage() {
                 filteredSearchProviderTools.length === 0 &&
                 ((activeTab !== 'all' && activeTab !== 'mcp') || (activeTab === 'all' && filteredMcpServers.length === 0)) &&
                 (activeTab !== 'mcp' || filteredMcpServers.length === 0)) && (
-                <div className="col-span-full flex justify-center">
-                  <EmptyState />
-                </div>
-              )}
+                  <div className="col-span-full flex justify-center">
+                    <EmptyState />
+                  </div>
+                )}
 
               {/* Special case: Tab is MCP and no servers */}
               {activeTab === 'mcp' && filteredMcpServers.length === 0 && (
@@ -1075,8 +1120,8 @@ export default function ToolsPage() {
                               <p className="break-all text-xs leading-relaxed text-foreground/80">{item.masked || '--'}</p>
                             </div>
                           </div>
-                      </CardContent>
-                    </Card>
+                        </CardContent>
+                      </Card>
                     )
                   })}
                 </div>
@@ -1216,8 +1261,8 @@ export default function ToolsPage() {
             <DialogDescription>
               {editingConfigTool
                 ? t('tools.credentials.dialog.description', {
-                    tool: editingConfigTool.display_name || editingConfigTool.tool_name,
-                  })
+                  tool: editingConfigTool.display_name || editingConfigTool.tool_name,
+                })
                 : ''}
             </DialogDescription>
           </DialogHeader>
@@ -1257,6 +1302,43 @@ export default function ToolsPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      <ConnectMcpDialog
+        open={isConnectMcpOpen}
+        onOpenChange={setIsConnectMcpOpen}
+        globalMcpServers={mcpServers}
+        selectedMcpServers={[]} // No pre-selection logic on tools page
+        onSuccess={loadMCPServers}
+      />
+      <OfficialMcpSettingsDialog
+        open={isOfficialAppDialogOpen}
+        onOpenChange={setIsOfficialAppDialogOpen}
+        app={editingOfficialApp}
+        isGloballyConnected={true} // In tools page, official apps are always already connected
+        onSuccess={loadMCPServers}
+        onConfigure={(app) => {
+          if (app.is_custom && app.server) {
+            setIsOfficialAppDialogOpen(false);
+            setEditingServer(app.server);
+            setMcpFormData({
+              name: app.server.name,
+              transport: app.server.transport,
+              description: app.server.description || "",
+              config: app.server.config || {}
+            });
+            if (app.server.transport === "custom_api") {
+              const envObj = app.server.config?.env || {};
+              const envList = typeof envObj === 'object' && !Array.isArray(envObj)
+                ? Object.entries(envObj).map(([k, v]) => ({ key: k, value: v as string }))
+                : [];
+              if (envList.length === 0) {
+                envList.push({ key: "", value: "" });
+              }
+              setCustomApiEnv(envList);
+            }
+            setIsMcpDialogOpen(true);
+          }
+        }}
+      />
     </div>
   )
 }

@@ -1,11 +1,3 @@
-"""任务、执行状态与 Trace 事件模型。
-
-这组模型共同描述的是“一个任务从创建到执行再到事件追踪”的宿主结构：
-- `Task` 保存用户视角的一次任务请求
-- `DAGExecution` 保存任务在计划执行框架中的运行态
-- `TraceEvent` 保存更细粒度的过程事件流
-"""
-
 import enum
 from typing import Any
 
@@ -27,7 +19,7 @@ from .database import Base
 
 
 class TaskStatus(enum.Enum):
-    """任务生命周期状态。"""
+    """Task status enumeration"""
 
     PENDING = "pending"
     RUNNING = "running"
@@ -37,7 +29,7 @@ class TaskStatus(enum.Enum):
 
 
 class DAGExecutionPhase(enum.Enum):
-    """DAG 执行阶段枚举。"""
+    """DAG execution phase enumeration"""
 
     PLANNING = "planning"
     EXECUTING = "executing"
@@ -47,7 +39,7 @@ class DAGExecutionPhase(enum.Enum):
 
 
 class StepStatus(enum.Enum):
-    """步骤状态枚举。"""
+    """Step status enumeration"""
 
     PENDING = "pending"
     RUNNING = "running"
@@ -56,15 +48,16 @@ class StepStatus(enum.Enum):
     ANALYZED = "analyzed"
 
 
-class VibeMode(enum.Enum):
-    """任务交互模式枚举。"""
+class ExecutionMode(enum.Enum):
+    """Execution mode enumeration"""
 
-    TASK = "task"  # One-time task mode
-    PROCESS = "process"  # Reusable process mode (for build/deploy)
+    FLASH = "flash"  # Simple, quick tasks (single_call pattern)
+    BALANCED = "balanced"  # Most everyday tasks (react pattern)
+    THINK = "think"  # Complex, multi-step tasks (dag_plan_execute pattern)
 
 
 class AgentType(enum.Enum):
-    """任务绑定的 agent 类型枚举。"""
+    """Agent type enumeration"""
 
     STANDARD = "standard"  # Standard purpose agent
     TEXT2SQL = "text2sql"  # Text2SQL agent
@@ -74,15 +67,7 @@ class AgentType(enum.Enum):
 
 
 class Task(Base):  # type: ignore
-    """用户任务宿主模型。
-
-    关键字段说明：
-    - `status`: 当前任务大状态
-    - `*_model_name / *_model_id`: 本次任务选择了哪些模型
-    - `agent_id / agent_type / agent_config`: 是否绑定 Agent Builder 配置
-    - `channel_id`: 是否关联到外部渠道
-    - `token_usage_details`: 本次任务 token 消耗的细粒度统计
-    """
+    """Task model"""
 
     __tablename__ = "tasks"
 
@@ -121,10 +106,10 @@ class Task(Base):  # type: ignore
     )  # SQLite compatible
     agent_config = Column(JSON, nullable=True)  # Agent-specific configuration
 
-    # VIBE mode configuration
-    vibe_mode = Column(
-        String(20), default=VibeMode.TASK.value, nullable=True
-    )  # "task" or "process"
+    # Execution mode configuration
+    execution_mode = Column(
+        String(20), default=ExecutionMode.BALANCED.value, nullable=True
+    )  # "flash" | "balanced" | "think"
     process_description = Column(
         Text, nullable=True
     )  # Process mode: detailed process description
@@ -144,24 +129,25 @@ class Task(Base):  # type: ignore
     token_usage_details = Column(JSON, nullable=True)  # Detailed breakdown
 
     @property
-    def vibe_mode_enum(self) -> VibeMode:
-        """把字符串字段安全映射成 `VibeMode`。
-
-        这里做兜底是为了兼容历史脏值或未识别值，避免 ORM 读取时直接报错。
-        """
+    def execution_mode_enum(self) -> ExecutionMode:
+        """Get execution_mode as enum with fallback"""
         try:
-            return VibeMode(self.vibe_mode) if self.vibe_mode else VibeMode.TASK
+            return (
+                ExecutionMode(self.execution_mode)
+                if self.execution_mode
+                else ExecutionMode.BALANCED
+            )
         except ValueError:
-            return VibeMode.TASK
+            return ExecutionMode.BALANCED
 
-    @vibe_mode_enum.setter
-    def vibe_mode_enum(self, value: VibeMode) -> None:
-        """通过枚举回写 `vibe_mode` 字段。"""
-        setattr(self, "vibe_mode", value.value if value else None)
+    @execution_mode_enum.setter
+    def execution_mode_enum(self, value: ExecutionMode) -> None:
+        """Set execution_mode from enum"""
+        setattr(self, "execution_mode", value.value if value else None)
 
     @property
     def agent_type_enum(self) -> AgentType:
-        """把字符串字段安全映射成 `AgentType`。"""
+        """Get agent_type as enum with fallback"""
         try:
             return AgentType(self.agent_type) if self.agent_type else AgentType.STANDARD
         except ValueError:
@@ -169,7 +155,7 @@ class Task(Base):  # type: ignore
 
     @agent_type_enum.setter
     def agent_type_enum(self, value: AgentType) -> None:
-        """通过枚举回写 `agent_type` 字段。"""
+        """Set agent_type from enum"""
         # Use setattr to avoid mypy Column type checking
         setattr(self, "agent_type", value.value if value else None)
 
@@ -189,11 +175,7 @@ class Task(Base):  # type: ignore
 
 
 class DAGExecution(Base):  # type: ignore
-    """任务的 DAG 执行态。
-
-    它关注的是执行框架内部当前跑到哪，而不是任务业务语义本身。
-    审查时重点看 `phase / progress_percentage / current_plan` 这几类字段。
-    """
+    """DAG execution status model"""
 
     __tablename__ = "dag_executions"
 
@@ -223,11 +205,7 @@ class DAGExecution(Base):  # type: ignore
 
 
 class TraceEvent(Base):  # type: ignore
-    """统一 Trace 事件模型。
-
-    这张表同时服务持久化与 WebSocket 回放，因此只保存“过程事件事实”，
-    不在这里重复保存任务完整快照。
-    """
+    """Unified trace event model for consistent storage and WebSocket transmission"""
 
     __tablename__ = "trace_events"
 

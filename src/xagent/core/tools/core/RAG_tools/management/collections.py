@@ -6,7 +6,9 @@ system, including listing collections, managing documents, and handling deletion
 
 from __future__ import annotations
 
+import json
 import logging
+import warnings as py_warnings
 from collections import defaultdict
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Sequence, Set
@@ -14,10 +16,12 @@ from typing import Any, Dict, List, Optional, Sequence, Set
 import pyarrow as pa  # type: ignore
 from lancedb.db import DBConnection
 
-from xagent.providers.vector_store.lancedb import get_connection_from_env
-
-from ..core.config import DEFAULT_LANCEDB_SCAN_BATCH_SIZE
+from ..core.config import (
+    DEFAULT_LANCEDB_SCAN_BATCH_SIZE,
+    DEFAULT_VECTOR_STORE_EXTENDED_SCAN_LIMIT,
+)
 from ..core.schemas import (
+    CollectionDocumentMetadata,
     CollectionInfo,
     CollectionOperationDetail,
     CollectionOperationResult,
@@ -27,21 +31,18 @@ from ..core.schemas import (
     DocumentStats,
     DocumentStatsResult,
     DocumentSummary,
+    IngestionConfig,
     ListCollectionsResult,
 )
 from ..LanceDB.model_tag_utils import embeddings_table_name
-from ..LanceDB.schema_manager import (
-    ensure_chunks_table,
-    ensure_collection_config_table,
-    ensure_documents_table,
-    ensure_ingestion_runs_table,
-    ensure_parses_table,
-)
+from ..LanceDB.schema_manager import _safe_close_table
 from ..management.status import (
     clear_ingestion_status,
     load_ingestion_status,
     write_ingestion_status,
 )
+from ..storage.factory import get_metadata_store, get_vector_index_store
+from ..utils.lancedb_query_utils import _safe_count_rows
 from ..utils.string_utils import build_lancedb_filter_expression, escape_lancedb_string
 from ..utils.user_permissions import UserPermissions
 from ..version_management.cascade_cleaner import cleanup_document_cascade
@@ -62,6 +63,10 @@ def _iter_batches(
 ) -> Any:
     """Yield record batches from a LanceDB table while minimizing memory footprint.
 
+    .. deprecated::
+        This function is deprecated. Use VectorIndexStore.iter_batches() instead.
+        This function will be removed in a future release.
+
     This generator function iterates through a LanceDB table in batches to
     minimize memory usage, with support for user filtering and column selection.
 
@@ -77,7 +82,13 @@ def _iter_batches(
     Yields:
         PyArrow RecordBatch objects containing the data
     """
+    py_warnings.warn(
+        "_iter_batches is deprecated, use VectorIndexStore.iter_batches() instead",
+        DeprecationWarning,
+        stacklevel=2,
+    )
 
+    table = None
     try:
         table = conn.open_table(table_name)
     except Exception as exc:  # noqa: BLE001 - convert to warning
@@ -86,18 +97,37 @@ def _iter_batches(
         warnings.append(message)
         return
 
-    column_list = list(columns) if columns is not None else None
-
-    # Apply user filter for multi-tenancy
-    user_filter = UserPermissions.get_user_filter(user_id, is_admin)
-
-    # Preferred path: streaming batches directly from LanceDB
     try:
-        # Use filter if provided (for multi-tenancy)
-        if user_filter is not None:
-            for raw_batch in table.to_batches(
-                filter=user_filter, batch_size=batch_size
-            ):
+        column_list = list(columns) if columns is not None else None
+
+        # Apply user filter for multi-tenancy
+        user_filter = UserPermissions.get_user_filter(user_id, is_admin)
+
+        # Preferred path: streaming batches directly from LanceDB
+        try:
+            # Use filter if provided (for multi-tenancy)
+            if user_filter is not None:
+                for raw_batch in table.to_batches(
+                    filter=user_filter, batch_size=batch_size
+                ):
+                    batch = raw_batch
+                    if column_list is not None:
+                        arrays = []
+                        names = []
+                        for col_name in column_list:
+                            idx = batch.schema.get_field_index(col_name)
+                            if idx == -1:
+                                continue
+                            arrays.append(batch.column(idx))
+                            names.append(col_name)
+                        if not arrays:
+                            continue
+                        batch = pa.RecordBatch.from_arrays(arrays, names=names)
+                    if batch.num_rows > 0:
+                        yield batch
+                return
+
+            for raw_batch in table.to_batches(batch_size=batch_size):
                 batch = raw_batch
                 if column_list is not None:
                     arrays = []
@@ -114,77 +144,63 @@ def _iter_batches(
                 if batch.num_rows > 0:
                     yield batch
             return
-
-        for raw_batch in table.to_batches(batch_size=batch_size):
-            batch = raw_batch
-            if column_list is not None:
-                arrays = []
-                names = []
-                for col_name in column_list:
-                    idx = batch.schema.get_field_index(col_name)
-                    if idx == -1:
-                        continue
-                    arrays.append(batch.column(idx))
-                    names.append(col_name)
-                if not arrays:
-                    continue
-                batch = pa.RecordBatch.from_arrays(arrays, names=names)
-            if batch.num_rows > 0:
-                yield batch
-        return
-    except Exception as exc:  # noqa: BLE001 - continue to Arrow fallback
-        logger.debug("Batch streaming unavailable for table '%s': %s", table_name, exc)
-
-    # Arrow fallback: materialize table as Arrow then iterate
-    try:
-        arrow_table = table.to_arrow()
-    except Exception as exc:  # noqa: BLE001
-        message = f"Unable to read table '{table_name}' via to_arrow(): {exc}"
-        logger.warning(message)
-        warnings.append(message)
-        return
-
-    # Apply user filter on Arrow table if needed
-    if user_filter is not None and "user_id" in arrow_table.schema.names:
-        try:
-            # Parse filter and apply to Arrow table
-            # Simple filter parsing for "user_id == X" or "user_id IS NULL"
-            import re
-
-            if UserPermissions.is_no_access_filter(user_filter):
-                # Explicit unauthenticated no-access marker: return empty result directly.
-                arrow_table = arrow_table.slice(0, 0)
-            elif "user_id IS NULL" in user_filter:
-                # Filter for NULL user_id
-                mask = pa.compute.is_null(arrow_table["user_id"])
-                arrow_table = arrow_table.filter(mask)
-            elif "user_id ==" in user_filter:
-                # Filter for specific user_id
-                match = re.search(r"user_id == (-?\d+)", user_filter)
-                if match:
-                    user_val = int(match.group(1))
-                    mask = pa.compute.equal(
-                        arrow_table["user_id"], pa.scalar(user_val, type=pa.int64())
-                    )
-                    arrow_table = arrow_table.filter(mask)
-        except Exception as filter_exc:
-            logger.warning("Failed to apply user filter on Arrow table: %s", filter_exc)
-            # Continue without filter if filtering fails
-
-    if column_list is not None:
-        try:
-            arrow_table = arrow_table.select(column_list)
-        except Exception as exc:  # noqa: BLE001
-            message = (
-                f"Table '{table_name}' missing expected columns {column_list}: {exc}"
+        except Exception as exc:  # noqa: BLE001 - continue to Arrow fallback
+            logger.debug(
+                "Batch streaming unavailable for table '%s': %s", table_name, exc
             )
+
+        # Arrow fallback: materialize table as Arrow then iterate
+        try:
+            arrow_table = table.to_arrow()
+        except Exception as exc:  # noqa: BLE001
+            message = f"Unable to read table '{table_name}' via to_arrow(): {exc}"
             logger.warning(message)
             warnings.append(message)
             return
 
-    for batch in arrow_table.to_batches(max_chunksize=batch_size):
-        if batch.num_rows > 0:
-            yield batch
+        # Apply user filter on Arrow table if needed
+        if user_filter is not None and "user_id" in arrow_table.schema.names:
+            try:
+                # Parse filter and apply to Arrow table
+                # Simple filter parsing for "user_id == X" or "user_id IS NULL"
+                import re
+
+                if UserPermissions.is_no_access_filter(user_filter):
+                    # Explicit unauthenticated no-access marker: return empty result directly.
+                    arrow_table = arrow_table.slice(0, 0)
+                elif "user_id IS NULL" in user_filter:
+                    # Filter for NULL user_id
+                    mask = pa.compute.is_null(arrow_table["user_id"])
+                    arrow_table = arrow_table.filter(mask)
+                elif "user_id ==" in user_filter:
+                    # Filter for specific user_id
+                    match = re.search(r"user_id == '?(-?\d+)'?", user_filter)
+                    if match:
+                        user_val = int(match.group(1))
+                        mask = pa.compute.equal(
+                            arrow_table["user_id"], pa.scalar(user_val, type=pa.int64())
+                        )
+                        arrow_table = arrow_table.filter(mask)
+            except Exception as filter_exc:
+                logger.warning(
+                    "Failed to apply user filter on Arrow table: %s", filter_exc
+                )
+                # Continue without filter if filtering fails
+
+        if column_list is not None:
+            try:
+                arrow_table = arrow_table.select(column_list)
+            except Exception as exc:  # noqa: BLE001
+                message = f"Table '{table_name}' missing expected columns {column_list}: {exc}"
+                logger.warning(message)
+                warnings.append(message)
+                return
+
+        for batch in arrow_table.to_batches(max_chunksize=batch_size):
+            if batch.num_rows > 0:
+                yield batch
+    finally:
+        _safe_close_table(table)
 
 
 def _count_rows(
@@ -194,6 +210,10 @@ def _count_rows(
     warnings: List[str],
 ) -> int:
     """Count rows in a LanceDB table while handling failures gracefully.
+
+    .. deprecated::
+        This function is deprecated. Use VectorIndexStore.count_rows() instead.
+        This function will be removed in a future release.
 
     This function counts rows in a LanceDB table with optional filters,
     returning 0 on any error and logging warnings.
@@ -207,7 +227,13 @@ def _count_rows(
     Returns:
         Number of rows matching the filter, or 0 on error
     """
+    py_warnings.warn(
+        "_count_rows is deprecated, use VectorIndexStore.count_rows() instead",
+        DeprecationWarning,
+        stacklevel=2,
+    )
 
+    table = None
     try:
         table = conn.open_table(table_name)
     except Exception as exc:  # noqa: BLE001 - convert to warning
@@ -219,18 +245,22 @@ def _count_rows(
     filter_expr = build_lancedb_filter_expression(filters)
 
     try:
-        if filter_expr:
-            return int(table.count_rows(filter_expr))
-        return int(table.count_rows())
+        return _safe_count_rows(table, filter_expr if filter_expr else None)
     except Exception as exc:  # noqa: BLE001 - convert to warning
         message = f"Failed to count rows in '{table_name}': {exc}"
         logger.warning(message)
         warnings.append(message)
         return 0
+    finally:
+        _safe_close_table(table)
 
 
 def _list_table_names(conn: DBConnection, warnings: List[str]) -> List[str]:
     """Return available LanceDB table names with graceful degradation.
+
+    .. deprecated::
+        This function is deprecated. Use VectorIndexStore.list_table_names() instead.
+        This function will be removed in a future release.
 
     This function retrieves the list of table names from a LanceDB connection,
     handling errors gracefully by returning an empty list and logging warnings.
@@ -242,6 +272,11 @@ def _list_table_names(conn: DBConnection, warnings: List[str]) -> List[str]:
     Returns:
         List of table names as strings, or empty list on error
     """
+    py_warnings.warn(
+        "_list_table_names is deprecated, use VectorIndexStore.list_table_names() instead",
+        DeprecationWarning,
+        stacklevel=2,
+    )
 
     try:
         table_names_fn = getattr(conn, "table_names")
@@ -273,6 +308,10 @@ def _collect_doc_counts_for_collection(
 ) -> Dict[str, int]:
     """Aggregate per-document counts for the specified table within a collection.
 
+    .. deprecated::
+        This function is deprecated. Use VectorIndexStore.aggregate_document_counts() instead.
+        This function will be removed in a future release.
+
     This function iterates through batches of a table and counts records
     per document for a specific collection.
 
@@ -288,6 +327,11 @@ def _collect_doc_counts_for_collection(
     Returns:
         Dictionary mapping document IDs to their counts
     """
+    py_warnings.warn(
+        "_collect_doc_counts_for_collection is deprecated, use VectorIndexStore.aggregate_document_counts() instead",
+        DeprecationWarning,
+        stacklevel=2,
+    )
 
     counts: Dict[str, int] = defaultdict(int)
 
@@ -416,8 +460,53 @@ def _coerce_timestamp(value: Any) -> datetime | None:
     return None
 
 
-def list_collections(
-    user_id: Optional[int] = None, is_admin: bool = False
+async def _load_collection_ingestion_configs(
+    collection_keys: List[str],
+    user_id: Optional[int],
+    is_admin: bool,
+) -> Dict[str, IngestionConfig]:
+    """Load ingestion configs for the given collections using metadata store rules.
+
+    Args:
+        collection_keys: Collection names returned by stats / document scan.
+        user_id: Caller user id; None is treated as 0 for non-admin lookups.
+        is_admin: When True, ``get_collection_config`` returns the latest config
+            per collection across tenants.
+
+    Returns:
+        Map of collection name to parsed ingestion configuration.
+    """
+    metadata_store = get_metadata_store()
+    collection_configs: Dict[str, IngestionConfig] = {}
+    # Handle user_id=None explicitly: admin mode keeps None (load all configs),
+    # non-admin mode converts to 0 (backward compatible)
+    if is_admin and user_id is None:
+        uid = None
+    else:
+        uid = 0 if user_id is None else user_id
+    for collection in collection_keys:
+        try:
+            config_json = await metadata_store.get_collection_config(
+                collection, uid, is_admin=is_admin
+            )
+            if not config_json:
+                continue
+            try:
+                config_dict = json.loads(config_json)
+                collection_configs[collection] = IngestionConfig(**config_dict)
+            except Exception as e:
+                logger.warning(
+                    "Failed to parse config for collection %s: %s",
+                    collection,
+                    e,
+                )
+        except Exception as e:
+            logger.debug("Could not load config for collection %s: %s", collection, e)
+    return collection_configs
+
+
+async def list_collections(
+    user_id: Optional[int] = None, is_admin: bool = False, force_realtime: bool = False
 ) -> ListCollectionsResult:
     """List all knowledge base collections along with aggregated statistics.
 
@@ -438,135 +527,214 @@ def list_collections(
     warnings: List[str] = []
 
     try:
-        conn = get_connection_from_env()
-        ensure_documents_table(conn)
-        ensure_parses_table(conn)
-        ensure_chunks_table(conn)
+        vector_store = get_vector_index_store()
 
-        stats: Dict[str, Dict[str, int]] = defaultdict(
-            lambda: {"documents": 0, "parses": 0, "chunks": 0, "embeddings": 0}
-        )
         document_names: Dict[str, Set[str]] = defaultdict(set)
+        owners: Dict[str, Set[int]] = defaultdict(set)
+        document_metadata: Dict[str, List[CollectionDocumentMetadata]] = defaultdict(
+            list
+        )
+        document_metadata_seen: Dict[str, Set[tuple[str, str, str]]] = defaultdict(set)
 
-        def _collect_documents() -> None:
-            for batch in _iter_batches(
-                conn,
-                "documents",
-                warnings,
-                columns=["collection", "source_path"],
-                user_id=user_id,
-                is_admin=is_admin,
-            ):
-                collection_idx = batch.schema.get_field_index("collection")
-                source_idx = batch.schema.get_field_index("source_path")
-                if collection_idx == -1:
-                    continue
-                collection_array = batch.column(collection_idx)
-                source_array = (
-                    batch.column(source_idx)
-                    if source_idx != -1
-                    else pa.array([None] * batch.num_rows)
+        def _normalize_optional_identifier(value: Any) -> Optional[str]:
+            if not isinstance(value, str):
+                return None
+            normalized = value.strip()
+            return normalized or None
+
+        def _add_document_entry(
+            collection_key: str,
+            source_value: Any,
+            doc_id_value: Any,
+            file_id_value: Any,
+        ) -> None:
+            import os
+
+            normalized_doc_id = _normalize_optional_identifier(doc_id_value)
+            normalized_file_id = _normalize_optional_identifier(file_id_value)
+            display_name = None
+            if source_value:
+                display_name = os.path.basename(str(source_value))
+            display_name = (display_name or normalized_doc_id or "").strip()
+            if not display_name:
+                return
+
+            document_names[collection_key].add(display_name)
+
+            dedupe_key = (
+                display_name,
+                normalized_file_id or "",
+                normalized_doc_id or "",
+            )
+            seen_keys = document_metadata_seen[collection_key]
+            if dedupe_key in seen_keys:
+                return
+            seen_keys.add(dedupe_key)
+            document_metadata[collection_key].append(
+                CollectionDocumentMetadata(
+                    filename=display_name,
+                    file_id=normalized_file_id,
+                    doc_id=normalized_doc_id,
                 )
-                for idx in range(batch.num_rows):
-                    collection_raw = collection_array[idx].as_py()
-                    if not collection_raw:
-                        continue
-                    collection_key = str(collection_raw)
-                    stats[collection_key]["documents"] += 1
-                    source_value = source_array[idx].as_py()
-                    if source_value:
-                        import os
+            )
 
-                        document_names[collection_key].add(
-                            os.path.basename(str(source_value))
-                        )
-
-        def _collect_simple(table_name: str, stat_key: str) -> None:
-            for batch in _iter_batches(
-                conn,
-                table_name,
-                warnings,
-                columns=["collection"],
-                user_id=user_id,
-                is_admin=is_admin,
-            ):
-                collection_idx = batch.schema.get_field_index("collection")
-                if collection_idx == -1:
-                    continue
-                collection_array = batch.column(collection_idx)
-                for idx in range(batch.num_rows):
-                    collection_raw = collection_array[idx].as_py()
-                    if not collection_raw:
-                        continue
-                    collection_key = str(collection_raw)
-                    stats[collection_key][stat_key] += 1
-
-        _collect_documents()
-        _collect_simple("parses", "parses")
-        _collect_simple("chunks", "chunks")
-
-        for table_name in _list_table_names(conn, warnings):
-            if not table_name.startswith("embeddings_"):
+        # Step 1: Scan documents table once to get collection list,
+        # document names, and owners (real-time, user-filtered).
+        for batch in vector_store.iter_batches(
+            table_name="documents",
+            columns=[
+                "collection",
+                "source_path",
+                "doc_id",
+                "file_id",
+                "user_id",
+            ],
+            user_id=user_id,
+            is_admin=is_admin,
+        ):
+            collection_idx = batch.schema.get_field_index("collection")
+            source_idx = batch.schema.get_field_index("source_path")
+            doc_id_idx = batch.schema.get_field_index("doc_id")
+            file_id_idx = batch.schema.get_field_index("file_id")
+            user_idx = batch.schema.get_field_index("user_id")
+            if collection_idx == -1:
                 continue
-            for batch in _iter_batches(
-                conn,
-                table_name,
-                warnings,
-                columns=["collection"],
+            collection_array = batch.column(collection_idx)
+            source_array = (
+                batch.column(source_idx)
+                if source_idx != -1
+                else pa.array([None] * batch.num_rows)
+            )
+            doc_id_array = (
+                batch.column(doc_id_idx)
+                if doc_id_idx != -1
+                else pa.array([None] * batch.num_rows)
+            )
+            file_id_array = (
+                batch.column(file_id_idx)
+                if file_id_idx != -1
+                else pa.array([None] * batch.num_rows)
+            )
+            user_array = (
+                batch.column(user_idx)
+                if user_idx != -1
+                else pa.array([None] * batch.num_rows)
+            )
+            for idx in range(batch.num_rows):
+                collection_raw = collection_array[idx].as_py()
+                if not collection_raw:
+                    continue
+                collection_key = str(collection_raw)
+                _add_document_entry(
+                    collection_key,
+                    source_array[idx].as_py(),
+                    doc_id_array[idx].as_py(),
+                    file_id_array[idx].as_py(),
+                )
+                user_val = user_array[idx].as_py()
+                if user_val is not None:
+                    try:
+                        owners[collection_key].add(int(user_val))
+                    except (TypeError, ValueError):
+                        pass
+
+        collection_keys = sorted(document_names.keys())
+
+        # Step 2: Get stats. Try metadata cache first; fallback to realtime scan.
+        stats: Dict[str, Dict[str, int]] = {}
+        if not force_realtime:
+            try:
+                from ..storage.factory import get_metadata_store
+
+                metadata_store = get_metadata_store()
+                cached = await metadata_store.list_collections()
+                for info in cached:
+                    if info.name in collection_keys or is_admin:
+                        stats[info.name] = {
+                            "documents": info.documents,
+                            "parses": info.parses,
+                            "chunks": info.chunks,
+                            "embeddings": info.embeddings,
+                        }
+            except Exception as exc:
+                logger.debug(
+                    "Metadata cache unavailable, falling back to realtime: %s", exc
+                )
+
+        # Fallback to realtime aggregation for missing collections or cache failure
+        used_realtime = False
+        if (
+            force_realtime
+            or not stats
+            or any(key not in stats for key in collection_keys)
+        ):
+            used_realtime = True
+            realtime_stats = vector_store.aggregate_collection_stats(
                 user_id=user_id,
                 is_admin=is_admin,
-            ):
-                collection_idx = batch.schema.get_field_index("collection")
-                if collection_idx == -1:
-                    continue
-                collection_array = batch.column(collection_idx)
-                for idx in range(batch.num_rows):
-                    collection_raw = collection_array[idx].as_py()
-                    if not collection_raw:
-                        continue
-                    collection_key = str(collection_raw)
-                    stats[collection_key]["embeddings"] += 1
+            )
+            for key in collection_keys:
+                if key not in stats:
+                    stats[key] = realtime_stats.get(
+                        key,
+                        {
+                            "documents": 0,
+                            "parses": 0,
+                            "chunks": 0,
+                            "embeddings": 0,
+                        },
+                    )
 
-        collection_keys = sorted(stats.keys() | document_names.keys())
+        # Async write stats back to metadata cache for next request
+        if used_realtime:
+            try:
+                from ..storage.factory import get_metadata_store
 
-        # Load configs for collections
-        collection_configs = {}
+                metadata_store = get_metadata_store()
+                for collection in collection_keys:
+                    info = CollectionInfo(
+                        name=collection,
+                        documents=stats[collection]["documents"],
+                        parses=stats[collection]["parses"],
+                        chunks=stats[collection]["chunks"],
+                        embeddings=stats[collection]["embeddings"],
+                        processed_documents=stats[collection]["parses"],
+                        document_names=sorted(document_names.get(collection, set())),
+                        document_metadata=sorted(
+                            document_metadata.get(collection, []),
+                            key=lambda item: (
+                                item.filename,
+                                item.file_id or "",
+                                item.doc_id or "",
+                            ),
+                        ),
+                        owners=sorted(owners.get(collection, set())),
+                    )
+                    await metadata_store.save_collection(info)
+            except Exception as exc:
+                logger.debug("Failed to cache collection metadata: %s", exc)
+
+        # Load configs for collections (admin sees cross-tenant configs)
+        collection_configs: Dict[str, IngestionConfig] = {}
         try:
-            # TODO(refactor): this still reads per-user config from
-            # collection_config for backward compatibility. Move to the unified
-            # metadata/config store after migration semantics are defined.
-            ensure_collection_config_table(conn)
-            table = conn.open_table("collection_config")
-
-            # Apply user filter if needed
-            config_filter = UserPermissions.get_user_filter(user_id, is_admin)
-
-            if config_filter:
-                try:
-                    df = table.search().where(config_filter).to_pandas()
-                except Exception as e:
-                    logger.warning(f"Failed to apply filter to collection_config: {e}")
-                    df = table.to_pandas()
-            else:
-                df = table.to_pandas()
-
-            for _, row in df.iterrows():
-                col_name = row["collection"]
-                config_json = row.get("config_json")
-                if col_name and config_json:
-                    import json
-
-                    from ..core.schemas import IngestionConfig
-
-                    try:
-                        config_dict = json.loads(config_json)
-                        collection_configs[col_name] = IngestionConfig(**config_dict)
-                    except Exception as e:
-                        logger.warning(
-                            f"Failed to parse config for collection {col_name}: {e}"
-                        )
+            collection_configs = await _load_collection_ingestion_configs(
+                collection_keys, user_id, is_admin
+            )
         except Exception as e:
-            logger.warning(f"Could not load collection configs: {e}")
+            logger.warning("Could not load collection configs: %s", e)
+
+        # Ensure all collections have complete stats
+        for collection in collection_keys:
+            if collection not in stats:
+                stats[collection] = {
+                    "documents": 0,
+                    "parses": 0,
+                    "chunks": 0,
+                    "embeddings": 0,
+                }
+            for key in ["documents", "parses", "chunks", "embeddings"]:
+                if key not in stats[collection]:
+                    stats[collection][key] = 0
 
         collections = [
             CollectionInfo(
@@ -579,7 +747,16 @@ def list_collections(
                     "parses"
                 ],  # Use parses count as processed documents
                 document_names=sorted(document_names[collection]),
+                document_metadata=sorted(
+                    document_metadata[collection],
+                    key=lambda item: (
+                        item.filename,
+                        item.file_id or "",
+                        item.doc_id or "",
+                    ),
+                ),
                 ingestion_config=collection_configs.get(collection),
+                owners=sorted(owners.get(collection, set())),
             )
             for collection in collection_keys
         ]
@@ -629,62 +806,82 @@ def get_document_stats(
     warnings: List[str] = []
 
     try:
-        conn = get_connection_from_env()
-        ensure_documents_table(conn)
-        ensure_parses_table(conn)
-        ensure_chunks_table(conn)
+        # Use storage abstraction for basic aggregation
+        vector_store = get_vector_index_store()
+        raw_stats = vector_store.aggregate_document_stats(
+            collection_name=collection,
+            doc_id=doc_id,
+            user_id=user_id,
+            is_admin=is_admin,
+        )
+
+        document_count = raw_stats["documents"]
+        document_exists = document_count > 0
+        parse_count = raw_stats["parses"]
+        chunk_count = raw_stats["chunks"]
+
+        # Handle model_tag specific embeddings filtering
+        embedding_breakdown: Dict[str, int] = {}
+
+        if model_tag:
+            # When model_tag is specified, only count embeddings for that specific table
+            safe_collection = escape_lancedb_string(collection)
+            safe_doc_id = escape_lancedb_string(doc_id)
+            filters = {"collection": safe_collection, "doc_id": safe_doc_id}
+            table_name = embeddings_table_name(model_tag)
+            embedding_count = vector_store.count_rows(
+                table_name=table_name,
+                filters=filters,
+                user_id=user_id,
+                is_admin=is_admin,
+            )
+            embedding_breakdown[table_name] = embedding_count
+        else:
+            # Use the aggregated count from storage abstraction
+            embedding_count = raw_stats["embeddings"]
+            # Optionally include breakdown by table if needed
+            safe_collection = escape_lancedb_string(collection)
+            safe_doc_id = escape_lancedb_string(doc_id)
+            filters = {"collection": safe_collection, "doc_id": safe_doc_id}
+
+            try:
+                table_names = vector_store.list_table_names()
+            except Exception as exc:  # noqa: BLE001 - convert to warning
+                message = f"Unable to enumerate embeddings tables: {exc}"
+                logger.warning(message)
+                warnings.append(message)
+                table_names = []
+
+            for table_name in table_names:
+                if not table_name.startswith("embeddings_"):
+                    continue
+                count = vector_store.count_rows(
+                    table_name=table_name,
+                    filters=filters,
+                    user_id=user_id,
+                    is_admin=is_admin,
+                )
+                if count:
+                    embedding_breakdown[table_name] = count
+
     except Exception as exc:  # noqa: BLE001 - convert to structured failure
+<<<<<<< HEAD
         logger.error(
             "Failed to initialise vector-store compatibility tables: %s",
             exc,
             exc_info=True,
         )
+=======
+        logger.error("Failed to get document stats: %s", exc, exc_info=True)
+>>>>>>> origin/main
         return DocumentStatsResult(
             status="error",
             data=None,
-            message=f"Failed to initialise LanceDB tables: {exc}",
+            message=f"Failed to get document stats: {exc}",
             warnings=warnings,
         )
 
-    ensure_ingestion_runs_table(conn)
-
-    filters = {"collection": collection, "doc_id": doc_id}
-
-    document_count = _count_rows(conn, "documents", filters, warnings)
-    document_exists = document_count > 0
-    parse_count = _count_rows(conn, "parses", filters, warnings)
-    chunk_count = _count_rows(conn, "chunks", filters, warnings)
-
-    embedding_breakdown: Dict[str, int] = {}
-
-    def _count_embeddings(table_name: str) -> int:
-        return _count_rows(conn, table_name, filters, warnings)
-
-    if model_tag:
-        table_name = embeddings_table_name(model_tag)
-        embedding_count = _count_embeddings(table_name)
-        embedding_breakdown[table_name] = embedding_count
-    else:
-        try:
-            table_names = _list_table_names(conn, warnings)
-        except Exception as exc:  # noqa: BLE001 - convert to warning
-            message = f"Unable to enumerate embeddings tables: {exc}"
-            logger.warning(message)
-            warnings.append(message)
-            table_names = []
-
-        for table_name in table_names:
-            if not table_name.startswith("embeddings_"):
-                continue
-            embedding_count = _count_embeddings(table_name)
-            if embedding_count:
-                embedding_breakdown[table_name] = embedding_count
-
-        embedding_count = sum(embedding_breakdown.values())
-
-    if model_tag:
-        embedding_count = embedding_breakdown.get(embeddings_table_name(model_tag), 0)
-
+    # Load ingestion status
     status_record = None
     status_entries = load_ingestion_status(collection=collection, doc_id=doc_id)
     if status_entries:
@@ -768,74 +965,71 @@ def list_documents(
     warnings: List[str] = []
 
     try:
-        conn = get_connection_from_env()
-        ensure_documents_table(conn)
-        ensure_parses_table(conn)
-        ensure_chunks_table(conn)
-        ensure_ingestion_runs_table(conn)
+        # Use storage abstraction for document records
+        vector_store = get_vector_index_store()
+        doc_records = vector_store.list_document_records(
+            collection_name=collection,
+            user_id=user_id,
+            is_admin=is_admin,
+            max_results=DEFAULT_VECTOR_STORE_EXTENDED_SCAN_LIMIT,  # Higher limit for listing
+        )
+
+        # Collect document info from records
+        document_info: Dict[str, Dict[str, Any]] = {}
+        for record in doc_records:
+            document_info[record.doc_id] = {
+                "source_path": record.source_path,
+                "uploaded_at": None,  # Not available in DocumentRecord
+            }
+
     except Exception as exc:  # noqa: BLE001
+<<<<<<< HEAD
         logger.error(
             "Failed to initialise vector-store compatibility tables: %s",
             exc,
             exc_info=True,
         )
+=======
+        logger.error("Failed to list documents: %s", exc, exc_info=True)
+>>>>>>> origin/main
         return DocumentListResult(
             status="error",
             documents=[],
             total_count=0,
-            message=f"Failed to initialise LanceDB tables: {exc}",
+            message=f"Failed to list documents: {exc}",
             warnings=warnings,
         )
 
-    document_info: Dict[str, Dict[str, Any]] = {}
-    for batch in _iter_batches(
-        conn,
-        "documents",
-        warnings,
-        columns=["collection", "doc_id", "source_path", "uploaded_at"],
+    # Collect chunk counts using storage abstraction
+    chunk_counts = vector_store.aggregate_document_counts(
+        table_name="chunks",
+        doc_id_column="doc_id",
+        collection_name=collection,
         user_id=user_id,
         is_admin=is_admin,
-    ):
-        collection_idx = batch.schema.get_field_index("collection")
-        doc_idx = batch.schema.get_field_index("doc_id")
-        if collection_idx == -1 or doc_idx == -1:
-            continue
-        source_idx = batch.schema.get_field_index("source_path")
-        uploaded_idx = batch.schema.get_field_index("uploaded_at")
-        collection_array = batch.column(collection_idx)
-        doc_array = batch.column(doc_idx)
-        for idx in range(batch.num_rows):
-            collection_raw = collection_array[idx].as_py()
-            if not collection_raw or str(collection_raw) != collection:
-                continue
-            doc_raw = doc_array[idx].as_py()
-            if not doc_raw:
-                continue
-            info: Dict[str, Any] = {}
-            if source_idx != -1:
-                info["source_path"] = batch.column(source_idx)[idx].as_py()
-            if uploaded_idx != -1:
-                info["uploaded_at"] = batch.column(uploaded_idx)[idx].as_py()
-            document_info[str(doc_raw)] = info
-
-    chunk_counts = _collect_doc_counts_for_collection(
-        conn, "chunks", "doc_id", collection, warnings, user_id, is_admin
     )
 
+    # Collect embedding counts
     embedding_counts: Dict[str, int] = defaultdict(int)
-    for table_name in _list_table_names(conn, warnings):
+    for table_name in vector_store.list_table_names():
         if not table_name.startswith("embeddings_"):
             continue
-        table_counts = _collect_doc_counts_for_collection(
-            conn, table_name, "doc_id", collection, warnings, user_id, is_admin
+        table_counts = vector_store.aggregate_document_counts(
+            table_name=table_name,
+            doc_id_column="doc_id",
+            collection_name=collection,
+            user_id=user_id,
+            is_admin=is_admin,
         )
         for doc_id, value in table_counts.items():
             embedding_counts[doc_id] += value
 
+    # Load status records
     status_records = {
         entry["doc_id"]: entry for entry in load_ingestion_status(collection=collection)
     }
 
+    # Combine all doc_ids from various sources
     doc_ids = (
         set(document_info.keys())
         | set(chunk_counts.keys())
@@ -843,6 +1037,7 @@ def list_documents(
         | set(status_records.keys())
     )
 
+    # Build summaries
     summaries: List[DocumentSummary] = []
     for doc_id in sorted(doc_ids):
         info = document_info.get(doc_id, {})
@@ -919,75 +1114,43 @@ def delete_collection(
     warnings: List[str] = []
 
     try:
-        conn = get_connection_from_env()
-        ensure_documents_table(conn)
-        ensure_parses_table(conn)
-        ensure_chunks_table(conn)
-        ensure_ingestion_runs_table(conn)
-    except Exception as exc:  # noqa: BLE001
+        # Use storage abstraction for deletion
+        vector_store = get_vector_index_store()
+
+        # Collect doc_ids before deletion for affected_documents
+        # Use list_document_records which respects user filtering
+        doc_records = vector_store.list_document_records(
+            collection_name=collection,
+            user_id=user_id,
+            is_admin=is_admin,
+            max_results=DEFAULT_VECTOR_STORE_EXTENDED_SCAN_LIMIT,  # Higher limit for collection deletion
+        )
+        doc_ids = sorted({r.doc_id for r in doc_records})
+
+        # Delete all data using storage abstraction
+        deleted_counts = vector_store.delete_collection_data(collection_name=collection)
+
+        # Clear ingestion status for all documents
+        for doc_id in doc_ids:
+            try:
+                clear_ingestion_status(collection, doc_id)
+            except Exception as exc:  # noqa: BLE001
+                warning = f"Failed to clear ingestion status for '{doc_id}': {exc}"
+                logger.warning(warning)
+                warnings.append(warning)
+
+    except Exception as exc:  # noqa: BLE001 - convert to structured failure
         logger.error(
-            "Failed to initialise LanceDB tables for delete_collection: %s",
-            exc,
-            exc_info=True,
+            "Failed to delete collection '%s': %s", collection, exc, exc_info=True
         )
         return CollectionOperationResult(
             status="error",
             collection=collection,
-            message=f"Failed to initialise LanceDB tables: {exc}",
+            message=f"Failed to delete collection: {exc}",
             warnings=warnings,
             affected_documents=[],
             deleted_counts={},
         )
-
-    # Collect doc_ids before deletion for affected_documents
-    doc_ids = sorted(
-        _collect_document_ids(conn, collection, warnings, user_id, is_admin)
-    )
-
-    # Delete all data using direct table.delete() with escaped collection name
-    deleted_counts: Dict[str, int] = defaultdict(int)
-    table_names = _list_table_names(conn, warnings)
-
-    # Delete from core tables
-    for table_name in ["documents", "parses", "chunks"]:
-        if table_name in table_names:
-            try:
-                table = conn.open_table(table_name)
-                original_count = table.count_rows()
-                # Delete all rows for this collection using escaped string
-                table.delete(f"collection = '{escape_lancedb_string(collection)}'")
-                deleted_count = original_count - table.count_rows()
-                if deleted_count > 0:
-                    deleted_counts[table_name] = deleted_count
-            except Exception as exc:  # noqa: BLE001
-                warning = f"Failed to delete from '{table_name}': {exc}"
-                logger.warning(warning)
-                warnings.append(warning)
-
-    # Delete embeddings data
-    embeddings_tables = [t for t in table_names if t.startswith("embeddings_")]
-    for table_name in embeddings_tables:
-        try:
-            table = conn.open_table(table_name)
-            original_count = table.count_rows()
-            # Delete all rows for this collection using escaped string
-            table.delete(f"collection = '{escape_lancedb_string(collection)}'")
-            deleted_count = original_count - table.count_rows()
-            if deleted_count > 0:
-                deleted_counts[table_name] = deleted_count
-        except Exception as exc:  # noqa: BLE001
-            warning = f"Failed to delete from '{table_name}': {exc}"
-            logger.warning(warning)
-            warnings.append(warning)
-
-    # Clear ingestion status for all documents
-    for doc_id in doc_ids:
-        try:
-            clear_ingestion_status(collection, doc_id)
-        except Exception as exc:  # noqa: BLE001
-            warning = f"Failed to clear ingestion status for '{doc_id}': {exc}"
-            logger.warning(warning)
-            warnings.append(warning)
 
     # Construct affected_documents list
     affected: List[CollectionOperationDetail] = [
@@ -1051,6 +1214,8 @@ def delete_document(
         counts = cleanup_document_cascade(
             collection=collection,
             doc_id=doc_id,
+            user_id=user_id,
+            is_admin=is_admin,
             preview_only=False,
             confirm=True,
         )
@@ -1166,29 +1331,31 @@ def cancel_collection(
     warnings: List[str] = []
 
     try:
-        conn = get_connection_from_env()
-        ensure_documents_table(conn)
-        ensure_parses_table(conn)
-        ensure_chunks_table(conn)
-        ensure_ingestion_runs_table(conn)
+        # Use storage abstraction to get document IDs
+        vector_store = get_vector_index_store()
+        doc_records = vector_store.list_document_records(
+            collection_name=collection,
+            user_id=user_id,
+            is_admin=is_admin,
+            max_results=DEFAULT_VECTOR_STORE_EXTENDED_SCAN_LIMIT,  # Higher limit for collection operations
+        )
+        doc_ids = sorted({r.doc_id for r in doc_records})
+
     except Exception as exc:  # noqa: BLE001
         logger.error(
-            "Failed to initialise LanceDB tables for cancel_collection: %s",
+            "Failed to get document IDs for cancel_collection: %s",
             exc,
             exc_info=True,
         )
         return CollectionOperationResult(
             status="error",
             collection=collection,
-            message=f"Failed to initialise LanceDB tables: {exc}",
+            message=f"Failed to get document IDs: {exc}",
             warnings=warnings,
             affected_documents=[],
             deleted_counts={},
         )
 
-    doc_ids = sorted(
-        _collect_document_ids(conn, collection, warnings, user_id, is_admin)
-    )
     cancellation_message = reason or "Cancelled by user."
     affected: List[CollectionOperationDetail] = []
 

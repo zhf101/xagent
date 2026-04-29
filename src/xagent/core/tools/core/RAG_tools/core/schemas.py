@@ -26,6 +26,13 @@ DEFAULT_EMBEDDING_CONCURRENT: int = 10
 DEFAULT_MAX_RETRIES: int = 3
 DEFAULT_RETRY_DELAY_SECONDS: float = 1.0
 
+# LanceDB NULL sentinel values
+# LanceDB doesn't support NULL values in non-nullable columns.
+# We use sentinel values to represent NULL in storage.
+# These are converted back to None on read.
+LANCEDB_NULL_INT_SENTINEL: int = -1  # For integer fields like embedding_dimension
+LANCEDB_NULL_STR_SENTINEL: str = ""  # For string fields like embedding_model_id
+
 # ------------------------- Enums -------------------------
 
 
@@ -799,6 +806,29 @@ class HybridSearchResponse(BaseModel):
     )
 
 
+class IndexResult(BaseModel):
+    """Structured result from index creation operations.
+
+    This model replaces the previous string-based return format for create_index,
+    providing type-safe access to index status, advice, and FTS enabled state.
+
+    Attributes:
+        status: Index creation status (e.g., "index_ready", "readonly", "failed")
+        advice: Optional advice message for further actions
+        fts_enabled: Whether FTS index is actually enabled (separate from vector index)
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    status: str = Field(..., description="Index creation status")
+    advice: Optional[str] = Field(
+        default=None, description="Human-readable index advice"
+    )
+    fts_enabled: bool = Field(
+        default=False, description="Whether FTS index is enabled on text column"
+    )
+
+
 class SearchConfig(BaseModel):
     """Configuration for the unified document search pipeline."""
 
@@ -1235,6 +1265,18 @@ class DocumentProcessingRecord(BaseModel):
     )
 
 
+class CollectionDocumentMetadata(BaseModel):
+    filename: str = Field(..., description="Display filename for the document")
+    file_id: Optional[str] = Field(
+        default=None,
+        description="UploadedFile identifier when available",
+    )
+    doc_id: Optional[str] = Field(
+        default=None,
+        description="Knowledge base document identifier when available",
+    )
+
+
 class CollectionInfo(BaseModel):
     """Aggregate metadata for a single collection with embedding binding."""
 
@@ -1272,6 +1314,16 @@ class CollectionInfo(BaseModel):
     document_names: List[str] = Field(
         default_factory=list,
         description="Distinct source paths for documents within the collection",
+    )
+    document_metadata: List[CollectionDocumentMetadata] = Field(
+        default_factory=list,
+        description="Minimal per-document metadata for UI actions like unambiguous delete",
+    )
+
+    # 👥 Ownership (multi-tenant)
+    owners: List[int] = Field(
+        default_factory=list,
+        description="Distinct user IDs that have documents in this collection",
     )
 
     # ⚙️ Configuration management
@@ -1319,7 +1371,15 @@ class CollectionInfo(BaseModel):
 
     @classmethod
     def from_storage(cls, data: dict) -> "CollectionInfo":
-        """Factory method to load from LanceDB, handling migration automatically."""
+        """Load from storage dict with in-memory schema normalization.
+
+        Legacy rows (e.g. ``schema_version`` missing / ``0.0.0``) are upgraded
+        **in memory only** via :func:`~.migration_utils.migrate_collection_metadata`
+        with ``infer_embedding=False`` so this path does **not** open LanceDB or
+        scan embedding tables (read-side-effect-free). For full migration with
+        embedding inference, call ``migrate_collection_metadata(data)`` explicitly
+        (e.g. admin repair or write pipeline).
+        """
         import json
         import math
 
@@ -1336,38 +1396,60 @@ class CollectionInfo(BaseModel):
                 data["ingestion_config"] = json.loads(raw_ingestion_config)
             else:
                 data["ingestion_config"] = None
+        # Owners are not stored; they are derived at list time from user_id. Ignore stored value.
+        if "owners" in data:
+            data["owners"] = []
 
         # 2. Convert NaN values to None (LanceDB stores NULL as NaN for numeric fields)
         for key, value in data.items():
             if isinstance(value, float) and math.isnan(value):
                 data[key] = None
 
-        # 3. Check version and migrate if needed
+        # Handle empty string fallback for string fields that might have been stored as "" to avoid non-null errors
+        if data.get("embedding_model_id") == LANCEDB_NULL_STR_SENTINEL:
+            data["embedding_model_id"] = None
+
+        if data.get("embedding_dimension") == LANCEDB_NULL_INT_SENTINEL:
+            data["embedding_dimension"] = None
+
+        # 3. Check version and migrate if needed (no DB access on read path)
         current_version = "1.0.0"
         data_version = data.get("schema_version", "0.0.0")
 
         if data_version < current_version:
-            data = migrate_collection_metadata(data)
-            # Note: In LanceDB, we don't auto-save migrated data here
-            # It will be saved when the collection is next updated
+            data = migrate_collection_metadata(data, infer_embedding=False)
 
         return cls(**data)
 
     def to_storage(self) -> dict:
-        """Serialize for LanceDB storage."""
+        """Serialize for LanceDB storage.
+
+        Note: owners are not stored; they are derived at list time from
+        user_id on documents/parses. We write a placeholder '[]' for schema
+        compatibility only.
+        """
         import json
 
-        data = self.model_dump()
+        data = self.model_dump(exclude={"document_metadata"})
 
         # Serialize complex types to JSON strings for LanceDB
         data["extra_metadata"] = json.dumps(data["extra_metadata"])
         data["document_names"] = json.dumps(data["document_names"])
+        # Do not persist owners; they are computed from user_id when listing
+        data["owners"] = "[]"
 
         # Serialize ingestion_config if present
         if data.get("ingestion_config"):
             data["ingestion_config"] = json.dumps(data["ingestion_config"])
         else:
-            data["ingestion_config"] = None
+            # Use empty string sentinel instead of None to prevent LanceDB non-null schema errors
+            data["ingestion_config"] = LANCEDB_NULL_STR_SENTINEL
+
+        if data.get("embedding_model_id") is None:
+            data["embedding_model_id"] = LANCEDB_NULL_STR_SENTINEL
+
+        if data.get("embedding_dimension") is None:
+            data["embedding_dimension"] = LANCEDB_NULL_INT_SENTINEL
 
         return data
 

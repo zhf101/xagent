@@ -22,8 +22,9 @@ from xagent.core.tools.adapters.vibe.javascript_executor import (
 )
 from xagent.core.tools.adapters.vibe.python_executor import PythonExecutorToolForBasic
 from xagent.core.tools.adapters.vibe.sandboxed_tool.sandboxed_tool_wrapper import (
+    _SANDBOX_SRC_ROOT,
+    build_code_mount_volumes,
     create_sandboxed_tool,
-    upload_code_to_sandbox,
 )
 from xagent.sandbox import DEFAULT_SANDBOX_IMAGE
 from xagent.sandbox.base import SandboxConfig
@@ -71,9 +72,9 @@ async def _create_sandbox(service: BoxliteSandboxService, name: str):
     config = SandboxConfig(
         cpus=1,
         memory=1024,
+        volumes=build_code_mount_volumes(),
     )
     sandbox = await service.get_or_create(name, template=template, config=config)
-    await upload_code_to_sandbox(sandbox, contain_tests=True)
     return sandbox
 
 
@@ -292,64 +293,6 @@ class TestSandboxedToolWrapper:
             except Exception:
                 pass
 
-    @pytest.mark.asyncio(loop_scope="module")
-    async def test_upload_code_to_sandbox(self):
-        """Test upload code to sandbox"""
-        print("\n=== Test upload code to sandbox ===")
-
-        service = BoxliteSandboxService(MemBoxliteStore())
-        sandbox_name = "test_upload_code_to_sandbox"
-
-        try:
-            # Cleanup
-            try:
-                await service.delete(sandbox_name)
-            except Exception:
-                pass
-
-            # Create sandbox
-            sandbox = await _create_sandbox(service, sandbox_name)
-
-            # Check if version file exists
-            version_check = await sandbox.exec("cat", "/app/.xagent_version")
-            assert version_check.exit_code == 0, "Version file should exist"
-            version1 = version_check.stdout.strip()
-            print(f"Version hash: {version1}")
-
-            # Create a test file in sandbox (to verify second upload is skipped)
-            print("\nCreating test marker file...")
-            await sandbox.write_file(
-                content="# This is a test marker file",
-                remote_path="/app/src/test_marker.txt",
-                overwrite=True,
-            )
-
-            # Second upload
-            await upload_code_to_sandbox(sandbox, contain_tests=True)
-
-            # Check if version is the same
-            version_check2 = await sandbox.exec("cat", "/app/.xagent_version")
-            assert version_check2.exit_code == 0
-            version2 = version_check2.stdout.strip()
-            assert version1 == version2, "Version should be the same"
-
-            # Test marker file should still exist (proves upload was skipped)
-            check2 = await sandbox.exec("test", "-f", "/app/src/test_marker.txt")
-            assert check2.exit_code == 0, "Test marker file should still exist"
-
-            # Force upload
-            await upload_code_to_sandbox(sandbox, force_upload=True, contain_tests=True)
-            check3 = await sandbox.exec("test", "-f", "/app/src/test_marker.txt")
-            assert check3.exit_code == 1, "Test marker file should not exist"
-
-            print("✓ Version check functionality works correctly")
-
-        finally:
-            try:
-                await service.delete(sandbox_name)
-            except Exception:
-                pass
-
 
 @requires_boxlite
 class TestTools:
@@ -409,7 +352,7 @@ class TestTools:
                 "/app/tests/core/tools/test_python_executor.py",
                 "-v",
                 "--tb=short",
-                env={"PYTHONPATH": "/app/src"},
+                env={"PYTHONPATH": _SANDBOX_SRC_ROOT},
             )
 
             print(f"\n--- pytest stdout ---\n{test_result.stdout}")
@@ -488,7 +431,7 @@ class TestTools:
                 "--tb=short",
                 "-k",
                 "not TestJavaScriptExecutorTool",
-                env={"PYTHONPATH": "/app/src"},
+                env={"PYTHONPATH": _SANDBOX_SRC_ROOT},
             )
 
             print(f"\n--- pytest stdout ---\n{test_result.stdout}")
@@ -564,7 +507,7 @@ class TestTools:
                 "/app/tests/core/tools/test_command_executor.py",
                 "-v",
                 "--tb=short",
-                env={"PYTHONPATH": "/app/src"},
+                env={"PYTHONPATH": _SANDBOX_SRC_ROOT},
             )
 
             print(f"\n--- pytest stdout ---\n{test_result.stdout}")

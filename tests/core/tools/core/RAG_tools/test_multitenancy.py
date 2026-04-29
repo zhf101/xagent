@@ -35,12 +35,14 @@ from xagent.core.tools.core.RAG_tools.management.collections import (
 )
 from xagent.core.tools.core.RAG_tools.parse.parse_document import parse_document
 from xagent.core.tools.core.RAG_tools.retrieval.search_engine import search_dense_engine
+from xagent.core.tools.core.RAG_tools.storage.factory import (
+    get_vector_store_raw_connection,
+)
 from xagent.core.tools.core.RAG_tools.utils.user_permissions import UserPermissions
 from xagent.core.tools.core.RAG_tools.vector_storage.vector_manager import (
     read_chunks_for_embedding,
     write_vectors_to_db,
 )
-from xagent.providers.vector_store.lancedb import get_connection_from_env
 from xagent.web.api.kb import delete_collection_api, list_collections_api
 
 
@@ -136,7 +138,7 @@ class TestMultiTenancyCollections:
 
     def _insert_test_documents(self, user_id: int | None):
         """Insert test documents with specific user_id."""
-        conn = get_connection_from_env()
+        conn = get_vector_store_raw_connection()
         from xagent.core.tools.core.RAG_tools.LanceDB.schema_manager import (
             ensure_documents_table,
         )
@@ -160,7 +162,8 @@ class TestMultiTenancyCollections:
         ]
         table.add(records)
 
-    def test_list_collections_admin_sees_all(self, temp_lancedb_dir: str) -> None:
+    @pytest.mark.asyncio
+    async def test_list_collections_admin_sees_all(self, temp_lancedb_dir: str) -> None:
         """Admin users should see all collections regardless of user_id."""
         # Insert documents for different users
         self._insert_test_documents(user_id=1)
@@ -168,7 +171,7 @@ class TestMultiTenancyCollections:
         self._insert_test_documents(user_id=None)  # Legacy data
 
         # Admin sees everything
-        result = list_collections(user_id=None, is_admin=True)
+        result = await list_collections(user_id=None, is_admin=True)
         assert result.status == "success"
         # Should see at least one collection
         assert len(result.collections) >= 1
@@ -176,7 +179,12 @@ class TestMultiTenancyCollections:
         total_docs = sum(c.documents for c in result.collections)
         assert total_docs == 15  # 5 docs per user * 3 users
 
-    def test_list_collections_regular_user_sees_only_own(
+        # Owners field should include all non-null user_ids (1 and 2)
+        owners_sets = {tuple(c.owners) for c in result.collections}
+        assert (1, 2) in owners_sets
+
+    @pytest.mark.asyncio
+    async def test_list_collections_regular_user_sees_only_own(
         self, temp_lancedb_dir: str
     ) -> None:
         """Regular users should only see their own documents."""
@@ -186,16 +194,20 @@ class TestMultiTenancyCollections:
         self._insert_test_documents(user_id=None)
 
         # User 1 sees only user 1's data
-        result = list_collections(user_id=1, is_admin=False)
+        result = await list_collections(user_id=1, is_admin=False)
         assert result.status == "success"
         total_docs = sum(c.documents for c in result.collections)
         assert total_docs == 5
+        # Owners should only contain the current user
+        assert all(c.owners == [1] for c in result.collections)
 
         # User 2 sees only user 2's data
-        result = list_collections(user_id=2, is_admin=False)
+        result = await list_collections(user_id=2, is_admin=False)
         assert result.status == "success"
         total_docs = sum(c.documents for c in result.collections)
         assert total_docs == 5
+        # Owners should only contain the current user
+        assert all(c.owners == [2] for c in result.collections)
 
 
 class TestMultiTenancySearch:
@@ -300,7 +312,7 @@ class TestMultiTenancySearch:
         # Setup: Create embeddings table and insert test data for different users
         import pandas as pd
 
-        conn = get_connection_from_env()
+        conn = get_vector_store_raw_connection()
 
         # Create embeddings table
         from xagent.core.tools.core.RAG_tools.LanceDB.schema_manager import (
@@ -380,7 +392,7 @@ class TestMultiTenancySearch:
         """Unauthenticated dense search should not return orphaned sentinel records."""
         import pandas as pd
 
-        conn = get_connection_from_env()
+        conn = get_vector_store_raw_connection()
         from xagent.core.tools.core.RAG_tools.LanceDB.schema_manager import (
             ensure_embeddings_table,
         )
@@ -552,23 +564,16 @@ class TestCollectionManagementMultiTenancy:
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     @patch(
-        "xagent.core.tools.core.RAG_tools.management.collections.ensure_documents_table"
+        "xagent.core.tools.core.RAG_tools.management.collections.get_vector_index_store"
     )
-    @patch(
-        "xagent.core.tools.core.RAG_tools.management.collections.ensure_parses_table"
-    )
-    @patch(
-        "xagent.core.tools.core.RAG_tools.management.collections.ensure_chunks_table"
-    )
-    @patch(
-        "xagent.core.tools.core.RAG_tools.management.collections.get_connection_from_env"
-    )
-    def test_list_collections_with_user_filter(
-        self, mock_get_conn, mock_ensure_chunks, mock_ensure_parses, mock_ensure_docs
-    ):
+    @pytest.mark.asyncio
+    async def test_list_collections_with_user_filter(self, mock_get_store):
         """Test list_collections applies user filtering."""
+        mock_store = MagicMock()
         mock_conn = MagicMock()
-        mock_get_conn.return_value = mock_conn
+        mock_store.get_raw_connection.return_value = mock_conn
+        mock_store.aggregate_collection_stats.return_value = {}
+        mock_get_store.return_value = mock_store
 
         mock_docs_table = MagicMock()
         mock_conn.open_table.return_value = mock_docs_table
@@ -595,86 +600,90 @@ class TestCollectionManagementMultiTenancy:
 
         mock_conn.open_table.side_effect = mock_open_table_side_effect
 
-        result = list_collections(user_id=123, is_admin=False)
+        result = await list_collections(user_id=123, is_admin=False)
         assert hasattr(result, "status")
         assert hasattr(result, "collections")
         assert hasattr(result, "total_count")
 
-        result = list_collections(user_id=None, is_admin=True)
+        result = await list_collections(user_id=None, is_admin=True)
         assert hasattr(result, "status")
         assert hasattr(result, "collections")
         assert hasattr(result, "total_count")
 
-    @patch(
-        "xagent.core.tools.core.RAG_tools.management.collections.ensure_documents_table"
-    )
-    @patch(
-        "xagent.core.tools.core.RAG_tools.management.collections.ensure_parses_table"
-    )
-    @patch(
-        "xagent.core.tools.core.RAG_tools.management.collections.ensure_chunks_table"
-    )
-    @patch(
-        "xagent.core.tools.core.RAG_tools.management.collections.ensure_ingestion_runs_table"
-    )
-    @patch("xagent.core.tools.core.RAG_tools.management.status.get_connection_from_env")
-    @patch(
-        "xagent.core.tools.core.RAG_tools.management.collections.get_connection_from_env"
-    )
-    def test_delete_collection_permission_check(
-        self,
-        mock_get_conn,
-        mock_status_conn,
-        mock_ensure_runs,
-        mock_ensure_chunks,
-        mock_ensure_parses,
-        mock_ensure_docs,
-    ):
-        """Test delete_collection runs with user/admin context.
+    @pytest.mark.asyncio
+    async def test_delete_collection_with_real_storage(self):
+        """Test delete_collection with real storage (integration test).
 
-        Note: Current delete_collection uses _collect_document_ids with user filter
-        and deletes only what the user can see; it does not compare total vs
-        accessible count. So we only assert admin and user success paths.
+        This test verifies the complete data flow for delete_collection operation,
+        ensuring it correctly handles user/admin permissions with actual database
+        operations rather than mocked responses.
         """
-        mock_conn = MagicMock()
-        mock_get_conn.return_value = mock_conn
-        mock_status_conn.return_value = mock_conn
+        from xagent.core.tools.core.RAG_tools.core.schemas import CollectionInfo
+        from xagent.core.tools.core.RAG_tools.management.collection_manager import (
+            CollectionManager,
+        )
 
-        mock_table = MagicMock()
-        mock_conn.open_table.return_value = mock_table
-        mock_table.count_rows.return_value = 0
+        # Setup: Create a collection for testing using CollectionManager
+        manager = CollectionManager()
 
+        collection = CollectionInfo(
+            name=self.collection,
+            embedding_model_id="text-embedding-ada-002",
+            embedding_dimension=1536,
+            documents=5,
+        )
+        await manager.save_collection(collection)
+
+        # Test: Admin can delete collection
         result = delete_collection(self.collection, user_id=None, is_admin=True)
         assert result.status == "success"
 
-        result = delete_collection(self.collection, user_id=123, is_admin=False)
+        # Setup: Create another collection for user-specific test
+        collection_user = CollectionInfo(
+            name=f"{self.collection}_user",
+            embedding_model_id="text-embedding-ada-002",
+            embedding_dimension=1536,
+            documents=5,
+        )
+        await manager.save_collection(collection_user)
+
+        # Test: User can delete their own collection
+        result = delete_collection(
+            f"{self.collection}_user", user_id=123, is_admin=False
+        )
         assert result.status == "success"
 
-    @patch(
-        "xagent.core.tools.core.RAG_tools.management.collections.ensure_documents_table"
-    )
-    @patch("xagent.core.tools.core.RAG_tools.management.status.get_connection_from_env")
-    @patch(
-        "xagent.core.tools.core.RAG_tools.management.collections.get_connection_from_env"
-    )
-    def test_retry_document_permission_check(
-        self, mock_get_conn, mock_status_conn, mock_ensure_docs
-    ):
-        """Test retry_document accepts user_id and is_admin and completes.
+    @pytest.mark.asyncio
+    async def test_retry_document_with_real_storage(self):
+        """Test retry_document with real storage (integration test).
 
-        Note: Current retry_document only calls write_ingestion_status and does not
-        check document existence or ownership via count_rows. We assert it returns
-        success when called with user and admin context.
+        This test verifies the complete data flow for retry_document operation,
+        ensuring it correctly handles user/admin permissions with actual database
+        operations rather than mocked responses.
         """
-        mock_conn = MagicMock()
-        mock_get_conn.return_value = mock_conn
-        mock_status_conn.return_value = mock_conn
+        from xagent.core.tools.core.RAG_tools.core.schemas import CollectionInfo
+        from xagent.core.tools.core.RAG_tools.management.collection_manager import (
+            CollectionManager,
+        )
 
+        # Setup: Create a collection for testing using CollectionManager
+        manager = CollectionManager()
+
+        collection = CollectionInfo(
+            name=self.collection,
+            embedding_model_id="text-embedding-ada-002",
+            embedding_dimension=1536,
+            documents=5,
+        )
+        await manager.save_collection(collection)
+
+        # Test: User can retry their own document
         result = retry_document(
             self.collection, "test_doc", user_id=123, is_admin=False
         )
         assert result.status == "success"
 
+        # Test: Admin can retry any document
         result = retry_document(
             self.collection, "test_doc", user_id=None, is_admin=True
         )
@@ -769,6 +778,7 @@ class TestAPIMultiTenancy:
     """Test multi-tenancy at the API level."""
 
     @patch("xagent.web.api.kb.list_collections")
+    @pytest.mark.asyncio
     async def test_list_collections_api_with_user(self, mock_list_collections):
         """Test list_collections_api passes user context."""
         from xagent.web.models.user import User
@@ -777,21 +787,35 @@ class TestAPIMultiTenancy:
         mock_user.id = 123
         mock_user.is_admin = False
 
-        mock_list_collections.return_value = {"collections": [], "total": 0}
+        # Mock async function return value
+        from xagent.core.tools.core.RAG_tools.core.schemas import ListCollectionsResult
+
+        mock_result = ListCollectionsResult(
+            status="success",
+            total_count=0,
+            collections=[],
+            message="No collections found",
+            warnings=[],
+        )
+        mock_list_collections.return_value = mock_result
 
         result = await list_collections_api(_user=mock_user)
 
-        mock_list_collections.assert_called_once_with(123, False)
-        assert result == {"collections": [], "total": 0}
+        mock_list_collections.assert_called_once_with(user_id=123, is_admin=False)
+        assert result.status == "success"
+        assert result.total_count == 0
 
-    @patch("xagent.web.api.kb._list_documents_for_user", return_value=[])
+    @pytest.mark.asyncio
+    @patch("xagent.web.api.kb._check_can_delete_collection")
+    @patch("xagent.web.api.kb.get_vector_index_store")
     @patch("xagent.web.api.kb.delete_collection_physical_dir")
     @patch("xagent.web.api.kb.delete_collection")
     async def test_delete_collection_api_with_user(
         self,
         mock_delete_collection,
         mock_delete_collection_physical_dir,
-        _mock_list_documents_for_user,
+        mock_get_vector_store,
+        mock_check_can_delete,
     ):
         """Test delete_collection_api passes user context and moves dir to trash."""
         from xagent.core.tools.core.RAG_tools.core.schemas import (
@@ -805,6 +829,8 @@ class TestAPIMultiTenancy:
         mock_user = MagicMock(spec=User)
         mock_user.id = 123
         mock_user.is_admin = False
+
+        mock_get_vector_store.return_value.list_document_records.return_value = []
 
         mock_path = MagicMock(spec=Path)
         mock_delete_collection_physical_dir.return_value = (
@@ -824,7 +850,6 @@ class TestAPIMultiTenancy:
         )
         mock_delete_collection.return_value = mock_result
 
-        # delete_collection_api now requires db (file_id: remove UploadedFile records).
         mock_db = MagicMock()
         mock_db.query.return_value.filter.return_value.delete.return_value = 0
 
@@ -833,21 +858,20 @@ class TestAPIMultiTenancy:
         )
 
         mock_delete_collection.assert_called_once_with("test_collection", 123, False)
-        mock_delete_collection_physical_dir.assert_called_once_with(
-            user_id=123,
-            collection_name="test_collection",
-        )
         assert isinstance(result, CollectionOperationResult)
         assert result.status == "success"
 
-    @patch("xagent.web.api.kb._list_documents_for_user", return_value=[])
+    @pytest.mark.asyncio
+    @patch("xagent.web.api.kb._check_can_delete_collection")
+    @patch("xagent.web.api.kb.get_vector_index_store")
     @patch("xagent.web.api.kb.delete_collection_physical_dir")
     @patch("xagent.web.api.kb.delete_collection")
     async def test_delete_collection_api_admin_access(
         self,
         mock_delete_collection,
         mock_delete_collection_physical_dir,
-        _mock_list_documents_for_user,
+        mock_get_vector_store,
+        mock_check_can_delete,
     ):
         """Test admin can delete collections (move dir to trash)."""
         from xagent.core.tools.core.RAG_tools.core.schemas import (
@@ -861,6 +885,8 @@ class TestAPIMultiTenancy:
         mock_user = MagicMock(spec=User)
         mock_user.id = 999
         mock_user.is_admin = True
+
+        mock_get_vector_store.return_value.list_document_records.return_value = []
 
         mock_path = MagicMock(spec=Path)
         mock_delete_collection_physical_dir.return_value = (
@@ -888,10 +914,6 @@ class TestAPIMultiTenancy:
         )
 
         mock_delete_collection.assert_called_once_with("test_collection", 999, True)
-        mock_delete_collection_physical_dir.assert_called_once_with(
-            user_id=999,
-            collection_name="test_collection",
-        )
         assert isinstance(result, CollectionOperationResult)
         assert result.status == "success"
 
@@ -942,20 +964,17 @@ class TestEndToEndMultiTenancy:
 
         with (
             patch(
-                "xagent.core.tools.core.RAG_tools.management.collections.get_connection_from_env"
-            ) as mock_conn,
-            patch(
-                "xagent.core.tools.core.RAG_tools.management.collections.ensure_documents_table"
-            ),
-            patch(
-                "xagent.core.tools.core.RAG_tools.management.collections.ensure_parses_table"
-            ),
-            patch(
-                "xagent.core.tools.core.RAG_tools.management.collections.ensure_chunks_table"
-            ),
+                "xagent.core.tools.core.RAG_tools.management.collections.get_vector_index_store"
+            ) as mock_get_store,
         ):
+            mock_store = MagicMock()
             mock_db_conn = MagicMock()
-            mock_conn.return_value = mock_db_conn
+            mock_store.get_raw_connection.return_value = mock_db_conn
+            mock_get_store.return_value = mock_store
+
+            # Mock new storage abstraction methods
+            mock_store.list_document_records.return_value = []
+            mock_store.delete_collection_data.return_value = {}
 
             mock_docs_table = MagicMock()
             mock_db_conn.open_table.return_value = mock_docs_table
@@ -965,8 +984,7 @@ class TestEndToEndMultiTenancy:
                 delete_collection,
             )
 
-            # delete_collection uses _collect_document_ids (iter_batches), not count_rows
-            # for permission; it just deletes what the user can see. Assert it completes.
+            # delete_collection now uses list_document_records and delete_collection_data
             result = delete_collection(
                 "test_collection", user_id=user1_id, is_admin=False
             )

@@ -11,7 +11,6 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
-from ......providers.vector_store.lancedb import get_connection_from_env
 from ..core.config import (
     DEFAULT_IMAGE_CONTEXT_SIZE,
     DEFAULT_TABLE_CONTEXT_SIZE,
@@ -23,12 +22,9 @@ from ..core.exceptions import (
     DocumentValidationError,
 )
 from ..core.schemas import ChunkStrategy
-from ..LanceDB.schema_manager import ensure_chunks_table
+from ..storage.factory import get_vector_index_store
 from ..utils.hash_utils import compute_chunk_hash
-from ..utils.lancedb_query_utils import query_to_list
 from ..utils.metadata_utils import deserialize_metadata, serialize_metadata
-from ..utils.string_utils import build_lancedb_filter_expression
-from ..utils.user_permissions import UserPermissions
 from .chunk_strategies import (
     apply_fixed_size_strategy,
     apply_markdown_strategy,
@@ -108,14 +104,6 @@ def chunk_document(
     logger.info(
         f"Starting document chunking: doc_id={doc_id}, strategy={chunk_strategy}"
     )
-
-    # Get database connection
-    try:
-        conn = get_connection_from_env()
-        ensure_chunks_table(conn)
-    except Exception as e:
-        logger.error(f"Database connection failed: {e}")
-        raise DatabaseOperationError(f"Failed to connect to database: {e}") from e
 
     # Validate chunk parameters
     _validate_chunk_params(chunk_strategy, params)
@@ -251,8 +239,7 @@ def _chunks_exist(
 ) -> bool:
     """Check if chunk records already exist."""
     try:
-        conn = get_connection_from_env()
-        table = conn.open_table("chunks")
+        vector_store = get_vector_index_store()
 
         # Build safe filter expression using utility function
         query_filters = {
@@ -261,8 +248,7 @@ def _chunks_exist(
             "parse_hash": parse_hash,
             "config_hash": config_hash,
         }
-        filter_expr = build_lancedb_filter_expression(query_filters)
-        return bool(table.count_rows(filter_expr) > 0)
+        return vector_store.count_rows_or_zero("chunks", filters=query_filters) > 0
     except Exception as e:
         logger.error(f"Failed to check chunk existence: {e}")
         raise DatabaseOperationError(f"Database query failed: {e}") from e
@@ -293,8 +279,7 @@ def _get_existing_chunks(
         List of existing chunks accessible to the user
     """
     try:
-        conn = get_connection_from_env()
-        table = conn.open_table("chunks")
+        vector_store = get_vector_index_store()
 
         # Build safe filter expression using utility function
         query_filters = {
@@ -303,25 +288,28 @@ def _get_existing_chunks(
             "parse_hash": parse_hash,
             "config_hash": config_hash,
         }
-        base_filter_expr = build_lancedb_filter_expression(query_filters)
 
-        # Add user permission filter for multi-tenancy
-        user_filter_expr = UserPermissions.get_user_filter(user_id, is_admin)
-
-        # Combine filters
-        if user_filter_expr and base_filter_expr:
-            filter_expr = f"({base_filter_expr}) and ({user_filter_expr})"
-        elif user_filter_expr:
-            filter_expr = user_filter_expr
-        else:
-            filter_expr = base_filter_expr
-
-        # OPTIMIZATION: Use count_rows() for memory-efficient existence check
-        if table.count_rows(filter_expr) == 0:
+        # OPTIMIZATION: Use count_rows_or_zero() for memory-efficient existence check
+        if (
+            vector_store.count_rows_or_zero(
+                "chunks", filters=query_filters, user_id=user_id, is_admin=is_admin
+            )
+            == 0
+        ):
             return []
 
-        # OPTIMIZATION: Use unified query_to_list() with three-tier fallback
-        chunks_data = query_to_list(table.search().where(filter_expr))
+        # Use iter_batches to load chunks
+        chunks_data = []
+        for batch in vector_store.iter_batches(
+            table_name="chunks",
+            filters=query_filters,
+            user_id=user_id,
+            is_admin=is_admin,
+        ):
+            # Convert batch to pandas for easier row-by-row processing
+            batch_df = batch.to_pandas()
+            for _, row in batch_df.iterrows():
+                chunks_data.append(row.to_dict())
 
         # Convert to expected format with metadata deserialization
         # Arrow/to_list() returns None instead of NaN, so direct None check is sufficient
@@ -372,8 +360,7 @@ def _load_paragraphs(
 ) -> List[Dict[str, Any]]:
     """Load parsed content from parses table."""
     try:
-        conn = get_connection_from_env()
-        table = conn.open_table("parses")
+        vector_store = get_vector_index_store()
 
         # Build safe filter expression using utility function
         query_filters = {
@@ -381,26 +368,29 @@ def _load_paragraphs(
             "doc_id": doc_id,
             "parse_hash": parse_hash,
         }
-        base_filter_expr = build_lancedb_filter_expression(query_filters)
 
-        # Add user permission filter for multi-tenancy
-        user_filter_expr = UserPermissions.get_user_filter(user_id, is_admin)
-
-        # Combine filters
-        if user_filter_expr and base_filter_expr:
-            filter_expr = f"({base_filter_expr}) and ({user_filter_expr})"
-        elif user_filter_expr:
-            filter_expr = user_filter_expr
-        else:
-            filter_expr = base_filter_expr
-
-        # First check if any parse exists using efficient count_rows
-        if table.count_rows(filter_expr) == 0:
+        # First check if any parse exists using efficient count_rows_or_zero
+        if (
+            vector_store.count_rows_or_zero(
+                "parses", filters=query_filters, user_id=user_id, is_admin=is_admin
+            )
+            == 0
+        ):
             return []
 
-        # Only load data if parse exists
-        # OPTIMIZATION: Use unified query_to_list() with three-tier fallback
-        records = query_to_list(table.search().where(filter_expr))
+        # Load data using iter_batches
+        records = []
+        for batch in vector_store.iter_batches(
+            table_name="parses",
+            filters=query_filters,
+            user_id=user_id,
+            is_admin=is_admin,
+        ):
+            # Convert batch to pandas for easier row-by-row processing
+            batch_df = batch.to_pandas()
+            for _, row in batch_df.iterrows():
+                records.append(row.to_dict())
+
         if not records:
             return []
         record = records[0]
@@ -445,11 +435,8 @@ def _write_chunks_to_db(
     user_id: Optional[int] = None,
     is_admin: bool = False,
 ) -> bool:
-    """Write chunk records to database."""
+    """Write chunk records to database using abstraction layer."""
     try:
-        conn = get_connection_from_env()
-        table = conn.open_table("chunks")
-
         rows = []
         for chunk in chunks:
             text = chunk["text"]
@@ -477,11 +464,10 @@ def _write_chunks_to_db(
         if not rows:
             return False
 
-        # Use merge_insert for efficient upsert operation
-        # This handles cases where chunks might already exist (idempotent operation)
-        table.merge_insert(
-            ["collection", "doc_id", "parse_hash", "chunk_id"]
-        ).when_matched_update_all().when_not_matched_insert_all().execute(rows)
+        # Use abstraction layer for upsert
+        vector_store = get_vector_index_store()
+        vector_store.upsert_chunks(rows)
+
         logger.info(
             f"Chunk records written to database: doc_id={doc_id}, parse_hash={parse_hash}, config_hash={config_hash}"
         )

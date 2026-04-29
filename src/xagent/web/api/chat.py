@@ -14,6 +14,7 @@ from ...core.agent.service import AgentService
 from ...core.agent.trace import Tracer
 from ...core.model.chat.basic.base import BaseLLM
 from ...core.model.chat.basic.openai import OpenAILLM
+from ...core.model.chat.basic.zhipu import ZhipuLLM
 from ..auth_dependencies import get_current_user
 from ..dynamic_memory_store import get_memory_store
 from ..models.agent import Agent
@@ -35,6 +36,14 @@ from .ws_trace_handlers import WebSocketTraceHandler
 
 logger = logging.getLogger(__name__)
 
+# Execution mode to pattern mapping
+# flash -> single_call, balanced -> react, think -> dag_plan_execute
+EXECUTION_MODE_TO_PATTERN = {
+    "flash": "single_call",
+    "balanced": "react",
+    "think": "dag_plan_execute",
+}
+
 # Create router
 chat_router = APIRouter(prefix="/api/chat", tags=["chat"])
 
@@ -42,11 +51,64 @@ chat_router = APIRouter(prefix="/api/chat", tags=["chat"])
 def create_default_llm() -> Optional[BaseLLM]:
     """Create a default LLM instance based on environment configuration"""
     try:
+        # For OpenAI: allow empty string API key (use is not None check)
+        # For Zhipu: don't allow empty string API key (use truthy check)
         openai_api_key = os.getenv("OPENAI_API_KEY")
-        openai_base_url = os.getenv("OPENAI_BASE_URL")
-        openai_model = os.getenv("OPENAI_MODEL")
+        zhipu_api_key = os.getenv("ZHIPU_API_KEY")
 
-        if openai_api_key is not None:
+        # Similarly for base_url: prefer OPENAI_BASE_URL if it exists (even if empty string)
+        # Only fallback to ZHIPU_BASE_URL if OPENAI_BASE_URL is None
+        openai_base_url = os.getenv("OPENAI_BASE_URL")
+        zhipu_base_url = os.getenv("ZHIPU_BASE_URL")
+
+        # For model_name: prefer OPENAI_MODEL if it exists (even if empty string)
+        # Only fallback to ZHIPU_MODEL_NAME if OPENAI_MODEL is None
+        openai_model = os.getenv("OPENAI_MODEL")
+        zhipu_model = os.getenv("ZHIPU_MODEL_NAME")
+
+        # Check if Zhipu
+        zhipu_models = {
+            "glm-4.7",
+            "glm-4.7-flashx",
+            "glm-4.6",
+            "glm-4.5-air",
+            "glm-4.5-airx",
+            "glm-4-long",
+            "glm-4-flashx-250414",
+            "glm-4.7-flash",
+            "glm-4-Flash-250414",
+        }
+        is_zhipu = (
+            zhipu_base_url
+            and any(
+                domain in zhipu_base_url.lower()
+                for domain in {"zhipu", "bigmodel.cn", "api.z.ai"}
+            )
+        ) or (
+            zhipu_model
+            and any(zhipu_model.lower().strip() in x.lower() for x in zhipu_models)
+        )
+
+        if is_zhipu:
+            if zhipu_api_key:
+                logger.info(f"Using Zhipu LLM with model: {zhipu_model}")
+                # Use automatic thinking mode (None) by default
+                thinking_mode_env = os.getenv("ZHIPU_THINKING_MODE", "auto").lower()
+                thinking_mode = (
+                    None if thinking_mode_env == "auto" else thinking_mode_env == "true"
+                )
+                return ZhipuLLM(
+                    model_name=zhipu_model or "glm-4.7-flash",
+                    api_key=zhipu_api_key,
+                    base_url=zhipu_base_url,
+                    thinking_mode=thinking_mode,
+                )
+            else:
+                logger.error(
+                    "Zhipu API key not found in environment variables. Set ZHIPU_API_KEY to enable Zhipu LLM functionality."
+                )
+                return None
+        elif openai_api_key is not None:
             logger.info(f"Using OpenAI LLM with model: {openai_model}")
             return OpenAILLM(
                 model_name=openai_model or "gpt-4o-mini",
@@ -56,7 +118,7 @@ def create_default_llm() -> Optional[BaseLLM]:
 
         # No LLM available - AgentService will run without DAG pattern
         logger.error(
-            "No API key found in environment variables. Set OPENAI_API_KEY to enable LLM functionality."
+            "No API key found in environment variables. Set OPENAI_API_KEY or ZHIPU_API_KEY to enable LLM functionality."
         )
         return None
 
@@ -97,7 +159,9 @@ async def create_default_tools(
             "base_dir": str(get_uploads_dir() / f"user_{user.id}"),
             "task_id": task_id,
         },
-        include_mcp_tools=True,  # 造数专用运行时默认保留 MCP 能力
+        include_mcp_tools=bool(
+            allowed_tools and any(t.startswith("mcp_") for t in allowed_tools)
+        ),
         task_id=task_id,  # Pass task_id for browser session tracking
         browser_tools_enabled=True,  # Enable browser automation tools
         allowed_collections=allowed_collections,  # Agent Builder knowledge bases
@@ -445,7 +509,9 @@ class AgentServiceManager:
             # Get LLM configuration from task database record
             logger.info(f"Loading LLM configuration for task {task_id} from database")
             agent_config = None  # Initialize agent_config to use later
-            use_dag = True  # Default to DAG pattern
+            # Default standalone tasks to DAG if no execution mode is available.
+            task_pattern = "dag_plan_execute"
+            use_dag = True  # Default to DAG pattern (for backward compatibility)
             try:
                 if db is None:
                     raise ValueError("Database session is required")
@@ -475,6 +541,17 @@ class AgentServiceManager:
                         logger.info(
                             f"❌ Task {task.id} is not Text2SQL, using standard agent creation"
                         )
+
+                    # Get task's execution_mode and map to pattern
+                    task_execution_mode = (
+                        getattr(task, "execution_mode", None) or "think"
+                    )
+                    task_pattern = EXECUTION_MODE_TO_PATTERN.get(
+                        task_execution_mode, "dag_plan_execute"
+                    )
+                    logger.info(
+                        f"Task {task_id} execution_mode={task_execution_mode} -> pattern={task_pattern}"
+                    )
 
                     llm_ids = self._get_task_llm_ids(task, db)
                     logger.info(
@@ -506,9 +583,16 @@ class AgentServiceManager:
                                 task_vision_llm,
                                 task_compact_llm,
                             ) = agent_config["llms"]
-                            use_dag = agent_config["execution_mode"] == "graph"
+                            # Agent Builder execution_mode overrides task pattern
+                            # "flash" -> single_call, "balanced" -> react, "think" -> dag_plan_execute
+                            agent_execution_mode = agent_config.get(
+                                "execution_mode", "balanced"
+                            )
+                            task_pattern = EXECUTION_MODE_TO_PATTERN.get(
+                                agent_execution_mode, "react"
+                            )
                             logger.info(
-                                f"Task {task_id} using execution mode: {agent.execution_mode}"
+                                f"Task {task_id} using Agent Builder execution mode: {agent.execution_mode} -> pattern={task_pattern}"
                             )
 
                     # If no models were resolved, use defaults
@@ -597,13 +681,33 @@ class AgentServiceManager:
                             tool.metadata, "category"
                         ):
                             category = str(tool.metadata.category.value)
+                            tool_name = getattr(tool, "name", None)
+
+                            # Standard category match
                             if category in tool_categories:
-                                tool_name = getattr(tool, "name", None)
                                 if tool_name:
                                     allowed_tools.append(tool_name)
+                            # Support for specific MCP server selection ("mcp:ServerName")
+                            elif category == "mcp" and tool_name:
+                                for tc in tool_categories:
+                                    if tc.startswith("mcp:"):
+                                        # Use the exact raw server name for prefix comparison, just replace spaces with underscores
+                                        # as done in mcp_adapter.py (e.g. "LinkedIn" -> "LinkedIn", "Google Drive" -> "Google_Drive")
+                                        server_name = (
+                                            tc.split(":", 1)[1]
+                                            .replace(" ", "_")
+                                            .replace("-", "_")
+                                        )
+
+                                        # mcp_adapter prefix is f"mcp_{server_name}_" where server_name preserves original case
+                                        if tool_name.lower().startswith(
+                                            f"mcp_{server_name.lower()}_"
+                                        ):
+                                            allowed_tools.append(tool_name)
+                                            break
 
                     logger.info(
-                        f"🔧 Tool categories {tool_categories} mapped to {len(allowed_tools)} tools for task {task_id}"
+                        f"Tool categories {tool_categories} mapped to {len(allowed_tools)} tools for task {task_id}"
                     )
 
                 # Get or create sandbox for this user
@@ -653,7 +757,7 @@ class AgentServiceManager:
                             else {}
                         )
                         logger.info(
-                            f"🔧 Extracting Text2SQL config: {list(config.keys())}"
+                            f"Extracting Text2SQL config: {list(config.keys())}"
                         )
                         agent_kwargs.update(
                             {
@@ -667,20 +771,17 @@ class AgentServiceManager:
                             }
                         )
                         logger.info(
-                            f"✅ Text2SQL kwargs prepared: {list(agent_kwargs.keys())}"
+                            f"Text2SQL kwargs prepared: {list(agent_kwargs.keys())}"
                         )
                         logger.info(
-                            f"🔗 Database URL: {config.get('database_url', 'NOT FOUND')}"
+                            f"Database URL: {config.get('database_url', 'NOT FOUND')}"
                         )
 
                     # Unpack tools and tool_config from create_default_tools
                     tools_list, tool_config = tools
 
                     # Get system prompt from agent config (if available)
-                    from .agents import (
-                        enhance_system_prompt_for_data_production,
-                        enhance_system_prompt_with_kb,
-                    )
+                    from .agents import enhance_system_prompt_with_kb
 
                     system_prompt = (
                         agent_config.get("instructions") if agent_config else None
@@ -690,9 +791,6 @@ class AgentServiceManager:
                     )
                     system_prompt = enhance_system_prompt_with_kb(
                         system_prompt, kb_list
-                    )
-                    system_prompt = enhance_system_prompt_for_data_production(
-                        system_prompt
                     )
 
                     # Extract memory similarity threshold from agent config
@@ -724,7 +822,7 @@ class AgentServiceManager:
                         tools=tools_list,
                         tool_config=tool_config,  # Pass tool_config for proper multi-tenancy
                         memory=get_memory_store(),  # Use dynamic memory store for auto-switching
-                        use_dag_pattern=use_dag,
+                        pattern=task_pattern,  # Use pattern instead of use_dag_pattern
                         tracer=tracer,
                         agent_type=str(task.agent_type)
                         if task and task.agent_type
@@ -1024,7 +1122,7 @@ class AgentServiceManager:
                     tracer=tracer,
                     enable_workspace=True,
                     task_id=str(task.id),
-                    use_dag_pattern=False,  # Text2SQL agent provides its own patterns
+                    pattern="react",  # Text2SQL agent provides its own patterns
                     # Pass Text2SQL-specific configuration
                     database_url=database_url,
                     database_name=database_name,
@@ -1218,7 +1316,6 @@ class AgentServiceManager:
                     task_fast_llm = None
                     task_vision_llm = None
                     task_compact_llm = None
-                use_dag = task_llm is not None
 
                 # Build allowed external directories
                 allowed_external_dirs = []
@@ -1243,7 +1340,7 @@ class AgentServiceManager:
                             if db is None
                             else [],  # Tools loaded separately for reconstructed agents
                             memory=get_memory_store(),  # Use dynamic memory store for auto-switching
-                            use_dag_pattern=use_dag,
+                            pattern="react",  # Default to react for reconstructed agents
                             tracer=tracer,
                             enable_workspace=True,
                             workspace_base_dir=str(
@@ -1556,10 +1653,18 @@ async def create_task(
         if selected_file_ids:
             task_agent_config["selected_file_ids"] = selected_file_ids
 
+        task_execution_mode = request.execution_mode
+        if not task_execution_mode:
+            task_execution_mode = "balanced" if request.agent_id else "think"
+
         # Create task with PENDING status and model configuration
+        task_title = request.title if request.title else task_description
+        if task_title and len(task_title) > 50:
+            task_title = task_title[:50] + "..."
+
         task = Task(
             user_id=user.id,  # Use authenticated user ID
-            title=request.title,
+            title=task_title,
             description=task_description,
             status=TaskStatus.PENDING,
             model_id=default_model_id,
@@ -1571,7 +1676,7 @@ async def create_task(
             visual_model_name=visual_model_name,
             compact_model_name=compact_model_name,
             agent_config=task_agent_config or None,
-            vibe_mode=request.vibe_mode or "task",
+            execution_mode=task_execution_mode,
             process_description=request.process_description,
             examples=examples_data,
             agent_id=request.agent_id,  # Set agent_id if provided
@@ -1610,7 +1715,7 @@ async def create_task(
             small_fast_model_name=task.small_fast_model_name,
             visual_model_name=task.visual_model_name,
             compact_model_name=task.compact_model_name,
-            vibe_mode=task.vibe_mode,
+            execution_mode=task.execution_mode,
             channel_id=task.channel_id,
             channel_name=task.channel_name,
         )
@@ -1627,8 +1732,8 @@ async def get_tasks(
     search: Optional[str] = None,
     agent_type: Optional[str] = None,
     exclude_agent_type: Optional[str] = None,
-    vibe_mode: Optional[str] = None,
-    exclude_vibe_mode: Optional[str] = None,
+    execution_mode: Optional[str] = None,
+    exclude_execution_mode: Optional[str] = None,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> Dict[str, Any]:
@@ -1688,11 +1793,11 @@ async def get_tasks(
                     # Invalid agent type, ignore filter
                     pass
 
-            # Apply vibe mode filter if provided
-            if vibe_mode:
-                query = query.filter(Task.vibe_mode == vibe_mode)
-            elif exclude_vibe_mode:
-                query = query.filter(Task.vibe_mode != exclude_vibe_mode)
+            # Apply execution mode filter if provided
+            if execution_mode:
+                query = query.filter(Task.execution_mode == execution_mode)
+            elif exclude_execution_mode:
+                query = query.filter(Task.execution_mode != exclude_execution_mode)
 
             # Get total count
             total = query.count()
@@ -1737,7 +1842,7 @@ async def get_tasks(
                         "model_name": task.model_name,
                         "small_fast_model_name": task.small_fast_model_name,
                         "visual_model_name": task.visual_model_name,
-                        "vibe_mode": task.vibe_mode,
+                        "execution_mode": task.execution_mode,
                         "input_tokens": task.input_tokens or 0,
                         "output_tokens": task.output_tokens or 0,
                         "total_tokens": task.total_tokens or 0,

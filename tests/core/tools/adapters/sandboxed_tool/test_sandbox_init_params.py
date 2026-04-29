@@ -3,16 +3,24 @@ Test init params extraction, serialization, and script generation for sandbox to
 """
 
 import base64
+import json
 import threading
-from typing import Any, Mapping, Optional, Type
-from unittest.mock import AsyncMock, MagicMock, patch
+from typing import Any, Optional
+from unittest.mock import AsyncMock, MagicMock
 
 import cloudpickle
 import pytest
-from pydantic import BaseModel, Field
 
+from tests.core.tools.adapters.sandboxed_tool.conftest import (
+    FakeBaseTool,
+)
 from xagent.core.tools.adapters.vibe.base import AbstractBaseTool
+from xagent.core.tools.adapters.vibe.function import FunctionTool
+from xagent.core.tools.adapters.vibe.sandboxed_tool.sandbox_config import (
+    sandbox_config,
+)
 from xagent.core.tools.adapters.vibe.sandboxed_tool.sandboxed_tool_wrapper import (
+    _SANDBOX_SRC_ROOT,
     SandboxedToolWrapper,
     _extract_init_params,
     _serialize_init_params,
@@ -20,15 +28,8 @@ from xagent.core.tools.adapters.vibe.sandboxed_tool.sandboxed_tool_wrapper impor
 from xagent.core.workspace import TaskWorkspace
 
 
-class _FakeArgs(BaseModel):
-    code: str = Field(default="")
-
-
-class _FakeResult(BaseModel):
-    output: str = Field(default="")
-
-
-class _FakeToolWithWorkspace(AbstractBaseTool):
+@sandbox_config()
+class _FakeToolWithWorkspace(FakeBaseTool):
     """Fake tool with init params."""
 
     def __init__(self, workspace: Optional[TaskWorkspace] = None) -> None:
@@ -38,28 +39,9 @@ class _FakeToolWithWorkspace(AbstractBaseTool):
     def name(self) -> str:
         return "fake_tool_ws"
 
-    @property
-    def description(self) -> str:
-        return "fake"
 
-    @property
-    def tags(self) -> list[str]:
-        return []
-
-    def args_type(self) -> Type[BaseModel]:
-        return _FakeArgs
-
-    def return_type(self) -> Type[BaseModel]:
-        return _FakeResult
-
-    def run_json_sync(self, args: Mapping[str, Any]) -> Any:
-        return {}
-
-    async def run_json_async(self, args: Mapping[str, Any]) -> Any:
-        return {}
-
-
-class _FakeToolNoParams(AbstractBaseTool):
+@sandbox_config()
+class _FakeToolNoParams(FakeBaseTool):
     """Fake tool with no init params."""
 
     def __init__(self) -> None:
@@ -69,40 +51,40 @@ class _FakeToolNoParams(AbstractBaseTool):
     def name(self) -> str:
         return "fake_tool_nop"
 
-    @property
-    def description(self) -> str:
-        return "fake"
 
-    @property
-    def tags(self) -> list[str]:
-        return []
+@sandbox_config()
+class _AbstractToolMethodOwner(_FakeToolWithWorkspace):
+    """Method owner that is also an AbstractBaseTool subclass."""
 
-    def args_type(self) -> Type[BaseModel]:
-        return _FakeArgs
-
-    def return_type(self) -> Type[BaseModel]:
-        return _FakeResult
-
-    def run_json_sync(self, args: Mapping[str, Any]) -> Any:
-        return {}
-
-    async def run_json_async(self, args: Mapping[str, Any]) -> Any:
-        return {}
+    def say(self, code: str = "") -> dict[str, Any]:
+        return {"output": code}
 
 
-_FAKE_CONFIG_PATH = (
-    "xagent.core.tools.adapters.vibe.sandboxed_tool"
-    ".sandboxed_tool_config.get_sandbox_tool_config"
-)
+@sandbox_config(packages=["sqlalchemy"], env_vars=["DB_URL"])
+class _PlainMethodOwner:
+    """Method owner that is a regular Python class, not a tool subclass."""
+
+    def __init__(self, workspace: Optional[TaskWorkspace] = None) -> None:
+        self.workspace = workspace
+
+    def say(self, code: str = "") -> dict[str, Any]:
+        return {"output": code}
 
 
-def _fake_config():
-    """Return a MagicMock that mimics SandboxToolConfig."""
-    cfg = MagicMock()
-    cfg.packages = []
-    cfg.env_vars = []
-    cfg.tool_class = "some.module:FakeClass"
-    return cfg
+def _make_abstract_tool_bound_method_function_tool(
+    workspace: Optional[TaskWorkspace] = None,
+) -> FunctionTool:
+    """Build a FunctionTool from a bound method on an AbstractBaseTool owner."""
+    composite = _AbstractToolMethodOwner(workspace=workspace)
+    return FunctionTool(composite.say, name="fake_bound_method")
+
+
+def _make_plain_bound_method_function_tool(
+    workspace: Optional[TaskWorkspace] = None,
+) -> FunctionTool:
+    """Build a FunctionTool from a bound method on a regular class owner."""
+    composite = _PlainMethodOwner(workspace=workspace)
+    return FunctionTool(composite.say, name="fake_plain_bound_method")
 
 
 def _make_sandbox(name: str = "sandbox-test") -> MagicMock:
@@ -115,9 +97,21 @@ def _make_sandbox(name: str = "sandbox-test") -> MagicMock:
 
 
 def _create_test_wrapper(tool: AbstractBaseTool) -> SandboxedToolWrapper:
-    """Create a SandboxedToolWrapper with mocked config."""
-    with patch(_FAKE_CONFIG_PATH, return_value=_fake_config()):
-        return SandboxedToolWrapper(tool, _make_sandbox())
+    """Create a SandboxedToolWrapper for a tool."""
+    return SandboxedToolWrapper(tool, _make_sandbox())
+
+
+class TestWrapperSandboxConfig:
+    """Tests for wrapper-level sandbox config resolution."""
+
+    def test_wrapper_uses_plain_owner_sandbox_config(self):
+        """Wrapper should inherit sandbox config from a plain owner."""
+        wrapper = SandboxedToolWrapper(
+            _make_plain_bound_method_function_tool(),
+            _make_sandbox(),
+        )
+        assert "sqlalchemy" in wrapper._requirements
+        assert wrapper._env_vars == ["DB_URL"]
 
 
 class TestExtractInitParams:
@@ -161,25 +155,104 @@ class TestSerializeInitParams:
             _serialize_init_params(params)
 
 
-class TestGenerateExecutionScript:
-    """Tests for _generate_execution_script()."""
+class TestBuildExecutionCommand:
+    """Tests for _build_execution_command()."""
 
     def test_with_init_params(self):
-        """Script should contain pickle deserialization when init params exist."""
+        """Command should include init params when they exist."""
         wrapper = _create_test_wrapper(_FakeToolWithWorkspace(workspace=None))
-        with patch(_FAKE_CONFIG_PATH, return_value=_fake_config()):
-            script = wrapper._generate_execution_script(
-                {"code": "print(1)"}, "/tmp/result.json"
-            )
-        assert "cloudpickle.loads" in script
-        assert "**init_params" in script
+        command = wrapper._build_execution_command(
+            {"code": "print(1)"}, "/tmp/result.json"
+        )
+        assert command[:2] == [
+            "python",
+            f"{_SANDBOX_SRC_ROOT}/xagent/core/tools/adapters/vibe/sandboxed_tool/tool_runner.py",
+        ]
+        assert "--execution-spec-b64" in command
+        spec_idx = command.index("--execution-spec-b64")
+        execution_spec = json.loads(
+            base64.b64decode(command[spec_idx + 1]).decode("utf-8")
+        )
+        assert execution_spec == {
+            "kind": "tool",
+            "tool_class": (
+                f"{_FakeToolWithWorkspace.__module__}:{_FakeToolWithWorkspace.__name__}"
+            ),
+        }
+        assert "--init-params-b64" in command
+        # Verify the b64 value can be deserialized
+        idx = command.index("--init-params-b64")
+        restored = cloudpickle.loads(base64.b64decode(command[idx + 1]))
+        assert restored == {"workspace": None}
 
     def test_without_init_params(self):
-        """Script should use no-arg construction when no init params."""
+        """Command should omit init params for no-arg tools."""
         wrapper = _create_test_wrapper(_FakeToolNoParams())
-        with patch(_FAKE_CONFIG_PATH, return_value=_fake_config()):
-            script = wrapper._generate_execution_script(
-                {"code": "print(1)"}, "/tmp/result.json"
-            )
-        assert "cloudpickle.loads" not in script
-        assert "**init_params" not in script
+        command = wrapper._build_execution_command(
+            {"code": "print(1)"}, "/tmp/result.json"
+        )
+        assert "--init-params-b64" not in command
+
+    def test_functiontool_bound_method_auto_infers_method_execution(self):
+        """Bound methods on tool subclasses should serialize as method execution."""
+        wrapper = _create_test_wrapper(
+            _make_abstract_tool_bound_method_function_tool(workspace=None)
+        )
+        command = wrapper._build_execution_command({"code": "x"}, "/tmp/result.json")
+        spec_idx = command.index("--execution-spec-b64")
+        execution_spec = json.loads(
+            base64.b64decode(command[spec_idx + 1]).decode("utf-8")
+        )
+        assert execution_spec == {
+            "kind": "method",
+            "tool_class": (
+                f"{_AbstractToolMethodOwner.__module__}:"
+                f"{_AbstractToolMethodOwner.__name__}"
+            ),
+            "method_name": "say",
+        }
+
+    def test_plain_functiontool_bound_method_auto_infers_method_execution(self):
+        """Bound methods on regular classes should serialize the same way."""
+        wrapper = _create_test_wrapper(
+            _make_plain_bound_method_function_tool(workspace=None)
+        )
+        command = wrapper._build_execution_command({"code": "x"}, "/tmp/result.json")
+        spec_idx = command.index("--execution-spec-b64")
+        execution_spec = json.loads(
+            base64.b64decode(command[spec_idx + 1]).decode("utf-8")
+        )
+        assert execution_spec == {
+            "kind": "method",
+            "tool_class": (
+                f"{_PlainMethodOwner.__module__}:{_PlainMethodOwner.__name__}"
+            ),
+            "method_name": "say",
+        }
+
+
+class TestBuildExecutionEnv:
+    """Tests for _build_execution_env()."""
+
+    def test_always_includes_pythonpath(self):
+        wrapper = _create_test_wrapper(_FakeToolNoParams())
+        env = wrapper._build_execution_env()
+        assert env["PYTHONPATH"] == _SANDBOX_SRC_ROOT
+
+    def test_picks_up_host_env(self, monkeypatch):
+        monkeypatch.setenv("MY_API_KEY", "secret")
+        wrapper = _create_test_wrapper(_FakeToolNoParams())
+        wrapper._env_vars = ["MY_API_KEY"]
+        env = wrapper._build_execution_env()
+        assert env["MY_API_KEY"] == "secret"
+
+    def test_missing_env_var_warns(self, monkeypatch, caplog):
+        monkeypatch.delenv("NONEXISTENT_VAR", raising=False)
+        wrapper = _create_test_wrapper(_FakeToolNoParams())
+        wrapper._env_vars = ["NONEXISTENT_VAR"]
+        import logging
+
+        with caplog.at_level(logging.WARNING):
+            env = wrapper._build_execution_env()
+        assert "NONEXISTENT_VAR" not in env
+        assert "NONEXISTENT_VAR" in caplog.text

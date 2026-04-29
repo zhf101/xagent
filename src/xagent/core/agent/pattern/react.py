@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 from json_repair import loads as repair_loads
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import ValidationError
 
 from ...memory import MemoryStore
 from ...memory.prompt_builder import build_memory_prompt_sections
@@ -58,12 +58,8 @@ from ..trace import (
 from ..transcript import normalize_transcript_messages
 from ..utils.compact import CompactConfig, CompactUtils
 from ..utils.llm_utils import clean_messages
-from .base import AgentPattern, notify_condition
-from .memory_utils import (
-    enhance_goal_with_bundle,
-    enqueue_memory_extraction_job,
-    store_react_task_memory,
-)
+from .base import Action, AgentPattern, ToolRegistry, notify_condition
+from .memory_utils import enhance_goal_with_memory, store_react_task_memory
 
 logger = logging.getLogger(__name__)
 
@@ -80,121 +76,7 @@ class ReActStepType(Enum):
     FINAL_ANSWER = "final_answer"
 
 
-class Action(BaseModel):
-    """Structured action output from LLM."""
-
-    type: str = Field(description="Type of action: 'tool_call' or 'final_answer'")
-    reasoning: str = Field(description="Reasoning for this action")
-
-    # For tool calls
-    tool_name: Optional[str] = Field(None, description="Name of the tool to call")
-    tool_args: Optional[Dict[str, Any]] = Field(
-        None, description="Arguments for the tool"
-    )
-
-    # For final answer
-    answer: Optional[str] = Field(
-        None, description="Final answer when type is 'final_answer'"
-    )
-    success: Optional[bool] = Field(
-        True, description="Whether the final answer represents success (default: True)"
-    )
-    error: Optional[str] = Field(None, description="Error message if success is False")
-
-    # Allow additional fields for flexibility
-    code: Optional[str] = Field(None, description="Code content for programming tasks")
-
-    class Config:
-        extra = "allow"  # Allow extra fields for flexibility
-
-    @classmethod
-    def get_decision_schema(cls) -> Dict[str, Any]:
-        """
-        Get manually crafted JSON Schema for first-phase decision.
-
-        This is a simple, provider-agnostic schema that works across
-        different LLM providers (OpenAI, Gemini, etc.).
-
-        Returns:
-            OpenAI-compatible JSON Schema dict
-        """
-        return {
-            "type": "json_schema",
-            "json_schema": {
-                "name": "action_decision",
-                "strict": True,
-                "schema": {
-                    "type": "object",
-                    "properties": {
-                        "type": {
-                            "type": "string",
-                            "enum": ["tool_call", "final_answer"],
-                        },
-                        "reasoning": {"type": "string"},
-                        "answer": {"type": "string"},
-                        "success": {"type": "boolean"},
-                        "error": {"type": ["string", "null"]},
-                    },
-                    "required": ["type", "reasoning"],
-                },
-            },
-        }
-
-
-class ToolRegistry:
-    """Registry for managing available tools."""
-
-    def __init__(self) -> None:
-        self._tools: Dict[str, Tool] = {}
-
-    def register(self, tool: Tool) -> None:
-        """Register a tool."""
-        self._tools[tool.metadata.name] = tool
-
-    def register_all(self, tools: List[Tool]) -> None:
-        """Register multiple tools."""
-        for tool in tools:
-            self.register(tool)
-
-    def get(self, tool_name: str) -> Tool:
-        """Get a tool by name."""
-        if tool_name not in self._tools:
-            raise ToolNotFoundError(f"Tool '{tool_name}' not found")
-        return self._tools[tool_name]
-
-    def list_tools(self) -> List[str]:
-        """List all registered tool names."""
-        return list(self._tools.keys())
-
-    def get_tool_schemas(self) -> List[Dict[str, Any]]:
-        """Get schemas for all registered tools."""
-        schemas = []
-        for tool in self._tools.values():
-            schema = {
-                "type": "function",
-                "function": {
-                    "name": tool.metadata.name,
-                    "description": tool.metadata.description,
-                    "parameters": self._get_tool_parameters(tool),
-                },
-            }
-            schemas.append(schema)
-        return schemas
-
-    def _get_tool_parameters(self, tool: Tool) -> Dict[str, Any]:
-        """Extract tool parameters schema."""
-        try:
-            args_type = tool.args_type()
-            if args_type:
-                return args_type.model_json_schema()
-        except Exception as e:
-            logger.warning(f"Failed to get schema for tool {tool.metadata.name}: {e}")
-
-        return {
-            "type": "object",
-            "properties": {},
-            "required": [],
-        }
+# Note: Action class has been moved to base.py for reuse across patterns
 
 
 class ReActPattern(AgentPattern):
@@ -915,7 +797,7 @@ class ReActPattern(AgentPattern):
                         )
 
                     # Second call: Invoke tool using native tool calling
-                    action = await self._invoke_tool_via_native_call(messages)
+                    action = await self._invoke_tool_via_native_call(messages, action)
 
                 # Execute the action
                 result = await self._execute_action(action, messages, task_id, step_id)
@@ -2167,7 +2049,7 @@ Remember: Return ONLY ONE JSON object. No additional text, no multiple objects.
             )
 
     async def _invoke_tool_via_native_call(
-        self, messages: List[Dict[str, str]]
+        self, messages: List[Dict[str, str]], decision: Action
     ) -> Action:
         """
         Second LLM call to invoke tool using native tool calling API.
@@ -2185,18 +2067,23 @@ Remember: Return ONLY ONE JSON object. No additional text, no multiple objects.
                 context={"available_tools": self.tool_registry.list_tools()},
             )
 
-        # Add a system prompt to guide LLM to use native tool calling
+        decision_reasoning = (decision.reasoning or "").strip()
+
+        # Add a system prompt to guide LLM to use native tool calling. Include the
+        # first-phase decision so providers that are sensitive to the latest user
+        # message, such as Qwen, have the concrete intent for this tool call.
         messages_with_prompt = messages + [
             {
                 "role": "user",
                 "content": (
-                    "此步骤的重要提示：\n"
-                    "你表示想要调用工具。现在使用原生函数调用接口"
-                    "来调用相应的工具。\n\n"
-                    "使用与任务相同的语言进行回复。\n\n"
-                    "不要返回 JSON 格式。不要返回结构化的动作 JSON。\n"
-                    "而是使用原生函数调用 API 直接调用工具。\n\n"
-                    "系统将处理工具执行并将结果返回给你。"
+                    "IMPORTANT INSTRUCTION FOR THIS STEP:\n"
+                    "You indicated you want to call a tool. Now use the NATIVE FUNCTION CALLING interface "
+                    "to invoke the appropriate tool.\n\n"
+                    f"Your prior decision/reasoning for this tool call was:\n{decision_reasoning}\n\n"
+                    "Respond in the SAME LANGUAGE as the task.\n\n"
+                    "DO NOT respond with JSON format. DO NOT return a structured action JSON.\n"
+                    "Instead, use the native function calling API to directly invoke the tool.\n\n"
+                    "The system will handle the tool execution and return the result to you."
                 ),
             }
         ]

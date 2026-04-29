@@ -4,6 +4,12 @@ export interface AgentConfig {
   instructions: string;
   skills: string[];
   tool_categories: string[];
+  execution_mode?: "flash" | "balanced" | "think";
+}
+
+export interface ConnectionInfo {
+  name: string;
+  logo?: string;
 }
 
 export interface Template {
@@ -13,6 +19,7 @@ export interface Template {
   featured?: boolean;
   description: string;
   features: string[];
+  connections: ConnectionInfo[];
   setup_time: string;
   tags: string[];
   author: string;

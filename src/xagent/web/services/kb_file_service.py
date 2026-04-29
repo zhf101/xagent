@@ -5,12 +5,16 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from sqlalchemy.orm import Session
 
 from ...config import get_uploads_dir
-from ...core.tools.core.RAG_tools.LanceDB.schema_manager import ensure_documents_table
+from ...core.tools.core.RAG_tools.LanceDB.schema_manager import (
+    _safe_close_table,
+    ensure_documents_table,
+)
+from ...core.tools.core.RAG_tools.storage.contracts import DocumentRecord
 from ...core.tools.core.RAG_tools.utils.lancedb_query_utils import query_to_list
 from ...core.tools.core.RAG_tools.utils.string_utils import (
     build_lancedb_filter_expression,
@@ -69,21 +73,27 @@ def list_documents_for_user(
     """Load KB document metadata rows for a user."""
     conn = get_connection_from_env()
     ensure_documents_table(conn)
-    table = conn.open_table("documents")
+    table = None
+    try:
+        table = conn.open_table("documents")
 
-    base_filter = ""
-    if collection_name:
-        base_filter = build_lancedb_filter_expression({"collection": collection_name})
-    user_filter = UserPermissions.get_user_filter(user_id, is_admin=is_admin)
-    combined_filter = (
-        f"({base_filter}) and ({user_filter})"
-        if user_filter and base_filter
-        else (user_filter or base_filter)
-    )
-    query = table.search()
-    if combined_filter:
-        query = query.where(combined_filter)
-    return query_to_list(query.limit(10000))
+        base_filter = ""
+        if collection_name:
+            base_filter = build_lancedb_filter_expression(
+                {"collection": collection_name}
+            )
+        user_filter = UserPermissions.get_user_filter(user_id, is_admin=is_admin)
+        combined_filter = (
+            f"({base_filter}) and ({user_filter})"
+            if user_filter and base_filter
+            else (user_filter or base_filter)
+        )
+        query = table.search()
+        if combined_filter:
+            query = query.where(combined_filter)
+        return query_to_list(query.limit(10000))
+    finally:
+        _safe_close_table(table)
 
 
 def build_uploaded_filename_map(
@@ -104,9 +114,24 @@ def build_uploaded_filename_map(
     return {str(record.file_id): str(record.filename) for record in records}
 
 
-def get_document_record_file_id(record: Dict[str, Any]) -> Optional[str]:
-    """Extract a normalized ``file_id`` from a KB document record."""
-    raw_file_id = record.get("file_id")
+def get_document_record_file_id(
+    record: Union[Dict[str, Any], DocumentRecord],
+) -> Optional[str]:
+    """Extract a normalized ``file_id`` from a KB document record.
+
+    Args:
+        record: Either a Dict[str, Any] or DocumentRecord dataclass.
+
+    Returns:
+        Normalized file_id string or None.
+    """
+    # Handle both Dict and DocumentRecord types
+    if isinstance(record, dict):
+        raw_file_id = record.get("file_id")
+    else:
+        # Assume DocumentRecord dataclass with file_id attribute
+        raw_file_id = getattr(record, "file_id", None)
+
     if raw_file_id is None:
         return None
     file_id = str(raw_file_id).strip()
@@ -114,15 +139,30 @@ def get_document_record_file_id(record: Dict[str, Any]) -> Optional[str]:
 
 
 def resolve_document_filename(
-    record: Dict[str, Any], filename_map: Dict[str, str]
+    record: Union[Dict[str, Any], DocumentRecord], filename_map: Dict[str, str]
 ) -> Optional[str]:
-    """Resolve a user-facing filename from ``file_id`` first, then legacy path."""
+    """Resolve a user-facing filename from ``file_id`` first, then legacy path.
+
+    Args:
+        record: Either a Dict[str, Any] or DocumentRecord dataclass.
+        filename_map: Mapping from file_id to filename.
+
+    Returns:
+        Resolved filename or None.
+    """
     file_id = get_document_record_file_id(record)
     if file_id and filename_map.get(file_id):
         return filename_map[file_id]
-    source_path = record.get("source_path")
+
+    # Handle both Dict and DocumentRecord types for source_path
+    if isinstance(record, dict):
+        source_path = record.get("source_path")
+    else:
+        source_path = getattr(record, "source_path", None)
+
     if source_path:
         return os.path.basename(str(source_path))
+
     return None
 
 
@@ -133,7 +173,17 @@ def delete_uploaded_file_if_orphaned(
     user_id: int,
     remaining_file_ids: set[str],
 ) -> bool:
-    """Delete uploaded file row and local file when no documents still reference it."""
+    """Delete uploaded file row and local file when no documents still reference it.
+
+    Args:
+        db: Database session.
+        file_id: The ID of the file to check.
+        user_id: User ID for scoping.
+        remaining_file_ids: A set of all file_id values still referenced by other documents.
+
+    Returns:
+        True if the file was deleted, False otherwise.
+    """
     if not file_id or file_id in remaining_file_ids:
         return False
 
@@ -161,6 +211,8 @@ def delete_uploaded_file_if_orphaned(
     else:
         if resolved_path.exists() and resolved_path.is_file():
             resolved_path.unlink()
+            logger.info("Deleted orphaned physical file: %s", resolved_path)
 
     db.delete(file_record)
+    db.flush()
     return True

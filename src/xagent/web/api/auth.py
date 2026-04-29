@@ -1,17 +1,18 @@
-"""认证与初始化 API。
-
-这个模块除了登录/注册，还承担“系统是否已完成初始化”的治理职责。
-因此它不只是普通 auth 接口集合，还决定了两件全局状态：
-- 第一个管理员是否已经创建完成
-- 当前是否允许新用户自行注册
-"""
+"""Authentication API endpoints"""
 
 import asyncio
 import hashlib
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional, cast
 
-from fastapi import APIRouter, Depends, HTTPException, status
+import requests
+
+# Relax token scope verification as Google might add extra scopes (like openid)
+os.environ["OAUTHLIB_RELAX_TOKEN_SCOPE"] = "1"
+
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import HTMLResponse, RedirectResponse
 from jose import JWTError, jwt
 from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
@@ -28,6 +29,7 @@ from ..auth_dependencies import get_current_user
 from ..models.database import get_db
 from ..models.system_setting import SystemSetting
 from ..models.user import User, UserDefaultModel, UserModel
+from ..models.user_oauth import UserOAuth
 
 auth_router = APIRouter(prefix="/api/auth", tags=["Authentication"])
 
@@ -38,10 +40,7 @@ SETUP_COMPLETED_SETTING_KEY = "setup_completed"
 def create_access_token(
     data: Dict[str, Any], expires_delta: Optional[timedelta] = None
 ) -> str:
-    """生成访问令牌。
-
-    这里统一补齐 `type=access`，避免 refresh token 和 access token 在后续校验链路混用。
-    """
+    """Create JWT access token"""
     to_encode = data.copy()
     if expires_delta:
         expire = datetime.now(timezone.utc) + expires_delta
@@ -57,7 +56,7 @@ def create_access_token(
 
 
 def create_refresh_token(data: Dict[str, Any]) -> str:
-    """生成刷新令牌。"""
+    """Create JWT refresh token with longer expiry"""
     to_encode = data.copy()
     expire = datetime.now(timezone.utc) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
     to_encode.update({"exp": expire, "type": "refresh"})
@@ -66,7 +65,7 @@ def create_refresh_token(data: Dict[str, Any]) -> str:
 
 
 def verify_refresh_token(token: str) -> Optional[dict[str, Any]]:
-    """校验刷新令牌，并确保 token type 真的是 refresh。"""
+    """Verify JWT refresh token and return payload"""
     try:
         payload: dict[str, Any] = jwt.decode(
             token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM]
@@ -79,7 +78,7 @@ def verify_refresh_token(token: str) -> Optional[dict[str, Any]]:
 
 
 def verify_token(token: str) -> Optional[dict[str, Any]]:
-    """校验任意 JWT，并返回 payload。"""
+    """Verify JWT token and return payload"""
     try:
         payload: dict[str, Any] = jwt.decode(
             token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM]
@@ -172,32 +171,20 @@ class RefreshTokenResponse(BaseModel):
 
 
 def hash_password(password: str) -> str:
-    """对密码做 SHA-256 摘要。
-
-    当前分支仍沿用现有轻量密码存储方案；
-    如果后续切到更强的 password hasher，应在这里集中替换，而不是散落到路由里。
-    """
+    """Hash password using SHA-256"""
     return hashlib.sha256(password.encode()).hexdigest()
 
 
 def verify_password(password: str, password_hash: str) -> bool:
-    """校验明文密码与存量摘要是否匹配。"""
+    """Verify password against hash"""
     return hash_password(password) == password_hash
 
 
 def has_users(db: Session) -> bool:
-    """判断系统里是否已有用户。
-
-    这里用于区分“首次安装初始化”与“普通注册”。
-    """
     return db.query(User.id).first() is not None
 
 
 def is_registration_enabled(db: Session) -> bool:
-    """判断当前是否允许用户自行注册。
-
-    若系统里还没有写过治理项，则默认允许注册，保持首次部署的可用性。
-    """
     setting = (
         db.query(SystemSetting)
         .filter(SystemSetting.key == REGISTRATION_ENABLED_SETTING_KEY)
@@ -209,7 +196,6 @@ def is_registration_enabled(db: Session) -> bool:
 
 
 def set_registration_enabled(db: Session, enabled: bool) -> None:
-    """更新“是否允许注册”的系统开关。"""
     setting = (
         db.query(SystemSetting)
         .filter(SystemSetting.key == REGISTRATION_ENABLED_SETTING_KEY)
@@ -225,7 +211,6 @@ def set_registration_enabled(db: Session, enabled: bool) -> None:
 
 
 def is_setup_completed(db: Session) -> bool:
-    """判断系统是否已经完成首次初始化。"""
     setting = (
         db.query(SystemSetting)
         .filter(SystemSetting.key == SETUP_COMPLETED_SETTING_KEY)
@@ -236,12 +221,6 @@ def is_setup_completed(db: Session) -> bool:
 
 @auth_router.get("/setup-status", response_model=SetupStatusResponse)
 async def setup_status(db: Session = Depends(get_db)) -> SetupStatusResponse:
-    """返回初始化状态与注册开关。
-
-    前端登录页需要靠这个接口决定：
-    - 应展示首次初始化入口，还是普通登录入口
-    - 是否继续显示注册入口
-    """
     initialized = has_users(db)
     registration_enabled = is_registration_enabled(db)
     return SetupStatusResponse(
@@ -255,11 +234,6 @@ async def setup_status(db: Session = Depends(get_db)) -> SetupStatusResponse:
 async def setup_admin(
     request: RegisterRequest, db: Session = Depends(get_db)
 ) -> RegisterResponse:
-    """创建首个管理员。
-
-    这个动作只允许成功一次。
-    之后再调用时，即使并发触发，也应稳定返回“已完成初始化”。
-    """
     if len(request.password) < PASSWORD_MIN_LENGTH:
         return RegisterResponse(
             success=False,
@@ -749,3 +723,359 @@ async def verify_current_token(
             "is_admin": current_user.is_admin,
         },
     }
+
+
+def generic_oauth_login(
+    provider: str,
+    token: Optional[str] = None,
+    app_id: Optional[str] = None,
+    redirect: Optional[str] = None,
+    db: Optional[Session] = None,
+    db_provider: Optional[Any] = None,
+) -> Any:
+    """Start generic OAuth flow"""
+    if db is None:
+        raise RuntimeError("db session is required")
+    if not db_provider:
+        return HTMLResponse(
+            content="<h1>Error: Provider not configured</h1>", status_code=500
+        )
+
+    from ...core.utils.encryption import decrypt_value
+
+    client_id = decrypt_value(db_provider.client_id)
+    auth_url = db_provider.auth_url
+
+    redirect_uri = None
+    if getattr(db_provider, "redirect_uri", None):
+        redirect_uri = db_provider.redirect_uri
+    if not redirect_uri:
+        redirect_uri = os.environ.get(
+            f"{provider.upper()}_REDIRECT_URI",
+            f"http://localhost:8000/api/auth/{provider}/callback",
+        )
+
+    user_id = None
+    if token:
+        payload = verify_token(token)
+        if payload and payload.get("type") == "access":
+            username = payload.get("sub")
+            user = db.query(User).filter(User.username == username).first()
+            if user:
+                user_id = user.id
+
+    if not user_id:
+        return HTMLResponse(
+            content="<h1>Error: Not authenticated</h1><p>Please provide a valid token.</p>",
+            status_code=401,
+        )
+
+    state_payload = {
+        "type": "oauth_state",
+        "user_id": user_id,
+        "provider": provider,
+        "app_id": app_id,
+        "redirect": redirect,
+    }
+    state = create_access_token(data=state_payload, expires_delta=timedelta(minutes=10))
+
+    scopes = db_provider.default_scopes or []
+    from ..mcp_apps import get_app_by_id
+
+    if app_id:
+        app_info = get_app_by_id(db, app_id)
+        if app_info and "oauth_scopes" in app_info:
+            scopes = list(set(scopes + app_info["oauth_scopes"]))
+
+    scope_str = " ".join(scopes)
+
+    from urllib.parse import urlencode
+
+    params = {
+        "response_type": "code",
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "state": state,
+    }
+    if provider.lower() == "google":
+        params["access_type"] = "offline"
+        params["include_granted_scopes"] = "true"
+        params["prompt"] = "consent"
+    if scope_str:
+        params["scope"] = scope_str
+
+    full_auth_url = f"{auth_url}?{urlencode(params)}"
+    return RedirectResponse(full_auth_url)
+
+
+def _ensure_user_mcp_server(
+    db: Session, user_id: str, app_info: Dict[str, Any]
+) -> None:
+    """Ensure MCPServer and UserMCPServer records exist for an OAuth app."""
+    from sqlalchemy.exc import IntegrityError
+
+    from ..models.mcp import MCPServer, UserMCPServer
+
+    mcp_server = db.query(MCPServer).filter(MCPServer.name == app_info["name"]).first()
+    if not mcp_server:
+        mcp_server = MCPServer(
+            name=app_info["name"],
+            description=app_info["description"],
+            managed="external",
+            transport="oauth",
+        )
+        db.add(mcp_server)
+        try:
+            db.flush()
+        except IntegrityError:
+            db.rollback()
+            mcp_server = (
+                db.query(MCPServer).filter(MCPServer.name == app_info["name"]).first()
+            )
+            if not mcp_server:
+                raise
+
+    user_mcp = (
+        db.query(UserMCPServer)
+        .filter(
+            UserMCPServer.user_id == user_id,
+            UserMCPServer.mcpserver_id == mcp_server.id,
+        )
+        .first()
+    )
+
+    if not user_mcp:
+        user_mcp = UserMCPServer(
+            user_id=user_id, mcpserver_id=mcp_server.id, is_owner=True, is_active=True
+        )
+        db.add(user_mcp)
+
+
+def generic_oauth_callback(
+    provider: str,
+    request: Request,
+    db: Optional[Session] = None,
+    db_provider: Optional[Any] = None,
+) -> Any:
+    """Handle generic OAuth callback"""
+    if db is None:
+        raise RuntimeError("db session is required")
+    code = request.query_params.get("code")
+    state = request.query_params.get("state")
+    error = request.query_params.get("error")
+
+    if error:
+        import html
+
+        return HTMLResponse(
+            content=f"<h1>Error: {html.escape(str(error))}</h1>", status_code=400
+        )
+
+    if not code or not state:
+        return HTMLResponse(
+            content="<h1>Error: Missing code or state</h1>", status_code=400
+        )
+
+    payload = verify_token(state)
+    if (
+        not payload
+        or payload.get("type") != "oauth_state"
+        or payload.get("provider") != provider
+    ):
+        return HTMLResponse(
+            content="<h1>Error: Invalid or expired state</h1>", status_code=400
+        )
+
+    user_id = payload.get("user_id")
+    app_id = payload.get("app_id")
+
+    if not db_provider:
+        return HTMLResponse(
+            content="<h1>Error: Provider not configured</h1>", status_code=500
+        )
+
+    from ...core.utils.encryption import decrypt_value
+
+    client_id = decrypt_value(db_provider.client_id)
+    client_secret = decrypt_value(db_provider.client_secret)
+    token_url = db_provider.token_url
+    userinfo_url = db_provider.userinfo_url
+
+    redirect_uri = None
+    if getattr(db_provider, "redirect_uri", None):
+        redirect_uri = db_provider.redirect_uri
+    if not redirect_uri:
+        redirect_uri = os.environ.get(
+            f"{provider.upper()}_REDIRECT_URI",
+            f"http://localhost:8000/api/auth/{provider}/callback",
+        )
+
+    try:
+        data = {
+            "grant_type": "authorization_code",
+            "code": code,
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "redirect_uri": redirect_uri,
+        }
+        headers = {"Content-Type": "application/x-www-form-urlencoded"}
+
+        token_response = requests.post(
+            token_url, data=data, headers=headers, timeout=10.0
+        )
+        token_data = token_response.json()
+
+        if "error" in token_data:
+            import html
+
+            return HTMLResponse(
+                content=f"<h1>Error exchanging token</h1><p>{html.escape(str(token_data))}</p>",
+                status_code=400,
+            )
+
+        access_token = token_data.get("access_token")
+
+        provider_user_id = None
+        email = None
+
+        if userinfo_url and access_token:
+            info_headers = {"Authorization": f"Bearer {access_token}"}
+            # Replace {{access_token}} placeholder if present
+            actual_url = userinfo_url.replace("{{access_token}}", access_token)
+            info_response = requests.get(actual_url, headers=info_headers, timeout=10.0)
+            if info_response.status_code == 200:
+                info_data = info_response.json()
+                provider_user_id = info_data.get(db_provider.user_id_path or "id")
+                email = info_data.get(db_provider.email_path or "email")
+
+        if user_id:
+            db.query(UserOAuth).filter(
+                UserOAuth.user_id == user_id, UserOAuth.provider == (app_id or provider)
+            ).delete()
+
+            oauth_account = UserOAuth(
+                user_id=user_id,
+                provider=(app_id or provider),
+                provider_user_id=str(provider_user_id) if provider_user_id else None,
+            )
+            db.add(oauth_account)
+
+            oauth_account.access_token = access_token
+            setattr(oauth_account, "token_type", token_data.get("token_type", "Bearer"))
+            setattr(oauth_account, "scope", token_data.get("scope", ""))
+            setattr(oauth_account, "email", email)
+            if "refresh_token" in token_data:
+                oauth_account.refresh_token = token_data.get("refresh_token")
+            if "expires_in" in token_data:
+                setattr(
+                    oauth_account,
+                    "expires_at",
+                    datetime.now(timezone.utc)
+                    + timedelta(seconds=int(token_data["expires_in"])),
+                )
+
+            from ..mcp_apps import get_all_mcp_apps, get_app_by_id
+
+            if app_id:
+                app_info = get_app_by_id(db, app_id)
+                if app_info:
+                    _ensure_user_mcp_server(db, user_id, app_info)
+            else:
+                apps = [
+                    app
+                    for app in get_all_mcp_apps(db)
+                    if app.get("provider") == provider
+                ]
+                for app_info in apps:
+                    _ensure_user_mcp_server(db, user_id, app_info)
+
+            db.commit()
+
+        import json
+        from urllib.parse import urlparse
+
+        redirect_url = payload.get("redirect")
+        target_origin = "window.location.origin"
+        if redirect_url:
+            try:
+                parsed = urlparse(redirect_url)
+                if parsed.scheme and parsed.netloc:
+                    target_origin = json.dumps(f"{parsed.scheme}://{parsed.netloc}")
+            except Exception:
+                pass
+
+        return HTMLResponse(
+            content=f"""
+        <html>
+            <head>
+                <title>Connected</title>
+                <script>
+                    window.opener.postMessage({{
+                        type: 'oauth-success',
+                        email: {json.dumps(email)},
+                        provider: {json.dumps(app_id or provider)}
+                    }}, {target_origin});
+                    window.close();
+                </script>
+            </head>
+            <body>
+                <h1>Connected Successfully</h1>
+                <p>You can close this window now.</p>
+            </body>
+        </html>
+        """
+        )
+    except Exception as e:
+        import html
+        import logging
+
+        logger = logging.getLogger(__name__)
+        logger.exception("Generic OAuth callback failed")
+        return HTMLResponse(
+            content=f"<h1>Authentication Failed</h1><p>{html.escape(str(e))}</p>",
+            status_code=500,
+        )
+
+
+# --- Unified OAuth Routes ---
+
+
+@auth_router.get("/{provider}/login")
+def oauth_login(
+    provider: str,
+    token: Optional[str] = None,
+    app_id: Optional[str] = None,
+    redirect: Optional[str] = None,
+    db: Session = Depends(get_db),
+) -> Any:
+    """Unified entry point for OAuth login"""
+    from ..models.oauth_provider import OAuthProvider
+
+    db_provider = (
+        db.query(OAuthProvider).filter(OAuthProvider.provider_name == provider).first()
+    )
+    if not db_provider:
+        return HTMLResponse(
+            content=f"<h1>Unsupported provider: {provider}</h1>", status_code=400
+        )
+
+    # But now everything can be routed through generic
+    return generic_oauth_login(provider, token, app_id, redirect, db, db_provider)
+
+
+@auth_router.get("/{provider}/callback")
+def oauth_callback(
+    provider: str, request: Request, db: Session = Depends(get_db)
+) -> Any:
+    """Unified entry point for OAuth callback"""
+    from ..models.oauth_provider import OAuthProvider
+
+    db_provider = (
+        db.query(OAuthProvider).filter(OAuthProvider.provider_name == provider).first()
+    )
+    if not db_provider:
+        return HTMLResponse(
+            content=f"<h1>Unsupported provider: {provider}</h1>", status_code=400
+        )
+
+    return generic_oauth_callback(provider, request, db, db_provider)

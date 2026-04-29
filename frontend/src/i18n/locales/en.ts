@@ -26,6 +26,9 @@ const en = {
     noOptions: "No options available",
     rename: "Rename",
     clear: "Clear",
+    or: "Or",
+    add: "Add",
+    customPlaceholder: "Custom...",
     errors: {
       unknown: "Unknown error",
     },
@@ -42,6 +45,7 @@ const en = {
     knowledgeBase: "Knowledge Base",
     knowledgeBaseDetail: "KB Detail",
     userManagement: "User Management",
+    adminMcp: "Public MCP Apps",
     login: "Login",
     register: "Register",
     agentStore: "Agent Store",
@@ -276,6 +280,25 @@ Build when you need.`
       },
     },
   },
+  widgetChat: {
+    title: "AI Assistant",
+    status: {
+      initializing: "Initializing...",
+      connecting: "Connecting...",
+      online: "Online"
+    },
+    messages: {
+      welcome: "Hello! How can I help you today?",
+      error_init: "Error initializing chat. Please try again later.",
+      error_prefix: "Error:"
+    },
+    input: {
+      placeholder: "Type your message..."
+    },
+    footer: {
+      powered_by: "Powered by {appName}"
+    }
+  },
   channels: {
     page_title: "Channels Management",
     page_description: "Manage your communication channels and bots.",
@@ -302,6 +325,8 @@ Build when you need.`
       platform: "Platform",
       telegram_bot: "Telegram Bot",
       feishu_bot: "Feishu Bot",
+      name: "Channel Name",
+      name_placeholder: "e.g. My Customer Service",
       bot_token: "Bot Token",
       app_id: "App ID",
       app_secret: "App Secret",
@@ -441,8 +466,10 @@ Build when you need.`
         paused: "Paused",
       },
       mode: {
-        task: "Task",
-        process: "Process",
+        flash: "Flash",
+        balanced: "Balanced",
+        think: "Think",
+        unknown: "Unknown",
       },
     },
   },
@@ -583,7 +610,7 @@ Build when you need.`
       all: "All Tools",
       webSearch: "Web Search",
       databaseConnections: "Database Connections",
-      mcp: "MCP Servers",
+      connectors: "Connectors",
     },
     policy: {
       enabled: "Enabled",
@@ -709,12 +736,50 @@ Build when you need.`
     mcp: {
       title: "MCP Server Management",
       description: "Manage your Model Context Protocol (MCP) server configurations",
-      addServer: "Add Server",
-      badge: "MCP Server",
+      addConnector: "Add Connector",
+      badge: "Connector",
       dialog: {
         addTitle: "Add MCP Server",
         editTitle: "Edit MCP Server",
         description: "Configure MCP server connection parameters",
+        connector: "Connector",
+        browseLibrary: "Apps",
+        customMcp: "Custom MCP",
+        customApi: "Custom API",
+        addCustomApi: "Add Custom API",
+        editCustomApi: "Edit Custom API",
+        customApiDescription: "Use Custom API connector to integrate any external service that supports secret or token authorization.",
+        customApiName: "Name",
+        customApiNamePlaceholder: "My Custom API",
+        customApiNote: "Note (Optional)",
+        customApiNotePlaceholder: "Provide API documentation or description to tell the assistant how and when to use this API",
+        customApiSecrets: "Secrets (Environment Variables)",
+        customApiSecretName: "Secret Name",
+        customApiSecretValue: "Value",
+        customApiSecretValuePlaceholder: "Value of the secret, such as sk-example-1234",
+        customApiAddSecret: "Add Secret",
+        location: "Location",
+        remote: "Remote",
+        local: "Local",
+        status: "Status",
+        verified: "Verified",
+        categories: "Categories",
+        all: "All",
+        searchPlaceholder: "Search MCPs...",
+        serversFound: "{count} apps found",
+        noServersFound: "No MCP apps found",
+        selected: "{count} selected",
+        connect: "Connect",
+        configure: "Configure",
+        disconnect: "Disconnect",
+        disconnectSuccess: "Disconnected from {name}",
+        disconnectFailed: "Failed to disconnect from {name}",
+        errorDisconnecting: "Error disconnecting from {name}",
+        deleteService: "Delete Service",
+        deleteSuccess: "Successfully deleted {name}",
+        deleteFailed: "Failed to delete {name}",
+        fetchFailed: "Failed to fetch MCP apps",
+        fetchError: "An error occurred while fetching MCP apps",
       },
       form: {
         nameLabel: "Server Name *",
@@ -739,7 +804,7 @@ Build when you need.`
       },
       empty: {
         title: "No MCP server configuration",
-        description: "Click \"Add Server\" to start configuration",
+        description: "Click \"Add Connector\" to start configuration",
       },
       list: {
         defaultBadge: "Default",
@@ -747,10 +812,15 @@ Build when you need.`
       },
       alerts: {
         nameRequired: "Server name cannot be empty",
+        nameInvalidFormat: "Name can only contain letters, numbers, hyphens and underscores",
         saveFailed: "Save failed",
         deleteFailed: "Delete failed",
         toggleFailed: "Toggle status failed",
+        atLeastOneSecret: "At least one valid secret is required",
       },
+      mcpUnavailable: "MCP unavailable",
+      notConnected: "Not connected, please click connector to configure",
+      notSupported: "Platform does not support this app yet",
       delete: {
         confirm: "Are you sure to delete server \"{name}\"?",
       },
@@ -867,6 +937,7 @@ Build when you need.`
       errors: {
         loadFailed: "Failed to load file",
         docxRenderFailed: "Failed to render DOCX preview",
+        excelRenderFailed: "Failed to render Excel preview",
         cors: "CORS error: Unable to access the file. This might be a browser cache issue, please try refreshing the page.",
         networkErrorWithMsg: "Network error: {msg}",
       },
@@ -1071,6 +1142,9 @@ Build when you need.`
     categoryTitles: {
       featured: "Featured Templates",
       all: "All",
+      sales: "Sales",
+      marketing: "Marketing",
+      support: "Support",
       healthcare_fitness: "Healthcare & Fitness",
       general_productivity: "General & Productivity",
       customer_service: "Customer Service",
@@ -1377,6 +1451,8 @@ Build when you need.`
       owner: "Owner",
       shared: "Shared",
       inactive: "Inactive",
+      connectToUse: "Connect to use models from this provider.",
+      usedBy: "{count} models",
       fields: {
         provider: "Provider",
         name: "Name",
@@ -1395,6 +1471,7 @@ Build when you need.`
         edit: "Edit",
         setDefault: "Set Default",
         connect: "Connect",
+        manage: "Manage",
       },
       status: {
         connected: "Connected",
@@ -1422,11 +1499,28 @@ Build when you need.`
       noModelsConfigured: "No models configured.",
       availableModels: "Available Models",
       refreshModels: "Refresh Models",
-      setDefaultConfirm: {
-        title: "Set as Default Model",
-        description: "No default {type} model detected. Would you like to set {model} as default?",
-        confirm: "Yes, set as default",
-        cancel: "No, create only",
+      connect: {
+        title: "Connect an AI Model",
+        description: "Add a new AI provider to your workspace",
+        step1: "Choose provider",
+        step2: "API key",
+        step3: "Test & activate",
+        step4: "Settings",
+        searchPlaceholder: "Search providers... e.g. OpenAI",
+        next: "Next",
+        apiKeyTitle: "Your {provider} API Key",
+        apiKeyPlaceholder: "sk-...",
+        apiKeyHint: "Go to provider settings → API keys → Create new secret key → paste above.",
+        advancedSettings: "Advanced settings",
+        testConnection: "Test Model Connection",
+        testSuccess: "Connection successful! The model is working correctly.",
+        selectModelWarning: "Please select a model",
+        activate: "Activate",
+        defaultModels: "Default Models",
+        defaultModelsDesc: "Select which default roles this model should fill.",
+        currentDefaults: "Current Default Models",
+        sharing: "Sharing",
+        sharingDesc: "Make this model available to everyone in the workspace."
       },
     },
     form: {
@@ -1451,7 +1545,9 @@ Build when you need.`
       abilitiesPlaceholder: "Select abilities...",
       update: "Update Model",
       create: "Create Model",
-      enterModelName: "Enter model name",
+      enterModelName: "Enter model name manually...",
+      customModel: "Custom...",
+      addCustom: "Add",
     },
     abilities: {
       chat: "Chat",
@@ -1525,11 +1621,14 @@ Build when you need.`
       webIngestFailed: "Website import failed",
       deleteFailed: "Failed to delete knowledge base: {name}",
       deleteFailedGeneric: "Failed to delete knowledge base",
+      batchDeleteFailed: "Failed to batch delete knowledge bases",
       unsupportedFileType: "Some file formats are not supported and have been skipped",
       failedAtStep: "Failed at step: {step}",
     },
     actions: {
       deleteConfirm: "Are you sure you want to delete knowledge base {name}? This action cannot be undone.",
+      deleteConfirmWithName: "Are you sure you want to delete knowledge base \"{name}\"? This action cannot be undone.",
+      batchDeleteConfirm: "Are you sure you want to delete {count} selected knowledge bases? This action cannot be undone.",
     },
     loading: {
       loadingKB: "Loading knowledge base...",
@@ -1538,6 +1637,8 @@ Build when you need.`
       title: "Knowledge Base Management",
       description: "Manage document collections and search indices",
       new: "New Knowledge Base",
+      totalCount: "Total {total}",
+      matchCount: "Matched {matched} / Total {total}",
     },
     training: {
       searchPlaceholder: "Search title, content, or table name...",
@@ -1634,14 +1735,29 @@ Build when you need.`
     search: {
       placeholder: "Search knowledge base...",
     },
+    manage: {
+      enter: "Manage",
+      exit: "Done",
+      selectAll: "Select all",
+      deselectAll: "Deselect all",
+      deleteSelected: "Delete selected ({count})",
+    },
+    messages: {
+      deleteSuccess: "Knowledge base deleted",
+      batchDeleteSuccess: "Deleted {count} knowledge bases",
+      batchDeleteFailedCount: "{count} failed to delete",
+    },
     card: {
       documentsLabel: "Documents",
       chunksLabel: "Text Chunks",
       embeddingsLabel: "Vectors",
       parsesLabel: "Parses",
       noDescription: "No description",
+      ownerLabel: "Owners: {owners}",
+      ownerFallbackLabel: "Owners (name load failed, showing IDs): {owners}",
       actions: {
         viewDetail: "View Details",
+        delete: "Delete knowledge base",
       },
       status: {
         active: "Active",
@@ -1687,6 +1803,10 @@ Build when you need.`
           accountLabel: "Account {id}",
           accountProviderLabel: "{email} - {provider}",
           success: "Connected successfully",
+          deleteAccount: "Delete Account",
+          deleteConfirm: "Are you sure you want to delete account {email}? This action cannot be undone.",
+          deleteSuccess: "Account deleted successfully",
+          deleteFailed: "Failed to delete account",
         },
         error: {
           fetchFailed: "Failed to load files",
@@ -1949,6 +2069,16 @@ Build when you need.`
         edit: "Edit",
         deleteConfirm: "Are you sure you want to delete this agent?",
       },
+      createModal: {
+        title: "How would you like to create an agent?",
+        describeTitle: "By Describing It",
+        describeDesc: "Tell us what you want — {appName} will pre-fill the configuration for you",
+        placeholder: "e.g. A customer support agent that answers product questions, handles refund requests, and escalates complex issues to human agents...",
+        buildBtn: "Build Agent",
+        manualTitle: "Manually",
+        manualDesc: "Open a blank form and configure each field yourself from scratch",
+        manualBtn: "Go to Builder",
+      },
       chat: {
         welcome: "Hello! I'm {name}. {description}\n\nYou can start a conversation directly, or select a suggested prompt below.",
         inputPlaceholder: "Type your message...",
@@ -1990,6 +2120,8 @@ Build when you need.`
         unpublishFailed: "Failed to unpublish agent",
         kbToolsNotEnabled: "Knowledge bases are selected but the Knowledge tool category is not enabled. Please enable the Knowledge tools before saving.",
         unknown: "An unknown error occurred",
+        notFound: "Agent not found",
+        notFoundDesc: "The agent you are looking for does not exist or has been deleted.",
       },
       kbToolWarning: {
         title: "Knowledge Tools Required",
@@ -2025,13 +2157,17 @@ Build when you need.`
       },
       executionMode: {
         label: "Execution Mode",
-        react: {
-          title: "Standard Mode (Recommended)",
-          description: "Quick response, flexible handling. Suitable for most daily tasks.",
+        flash: {
+          title: "Flash",
+          description: "Simple, quick tasks",
         },
-        graph: {
-          title: "Planning Mode",
-          description: "Systematic breakdown, step-by-step execution. Ideal for complex multi-step tasks.",
+        balanced: {
+          title: "Balanced",
+          description: "Most everyday tasks",
+        },
+        think: {
+          title: "Think",
+          description: "Complex, multi-step tasks",
         },
       },
       model: {
@@ -2111,13 +2247,22 @@ Build when you need.`
       },
       suggestedPrompts: {
         label: "Suggested Prompts",
-        description: "Provide example prompts that users can click to use directly",
+        description: "Provide some example prompts for users to click and use directly",
         placeholder: "Example prompt {index}",
         add: "+ Add Prompt",
         delete: "Delete",
       },
+      chat: {
+        title: "{appName} Assistant",
+        subtitle: "Chat to configure your agent",
+        initialMessage: "Hello! I am your {appName} Assistant. Describe what kind of agent you want to create, and I'll help you configure it.",
+        defaultReply: "I have updated the configuration based on your request.",
+        errorCommunicate: "Failed to communicate with {appName} Assistant.",
+        errorConnection: "Connection error. Please try again.",
+        errorInit: "Failed to initialize connection.",
+      },
       actions: {
-        save: "Save Configuration",
+        save: "Save Config",
         reset: "Reset",
       }
     },
@@ -2290,19 +2435,25 @@ Build when you need.`
     },
     vibeMode: {
       tabs: {
-        task: "Task Mode",
-        process: "Process Mode",
+        flash: "Flash",
+        flashSubtitle: "Simple, quick tasks",
+        balanced: "Balanced",
+        balancedSubtitle: "Most everyday tasks",
+        think: "Think",
+        thinkSubtitle: "Complex, multi-step tasks",
       },
       descriptions: {
-        task: {
-          title: "Task Mode",
-          text: "One-off task mode to quickly achieve specific goals. Suitable for exploration and experimentation.",
-          examplesTitle: "Examples:",
-          examplesText: "Complete PPT writing, generate posters, build websites, etc.",
+        flash: {
+          title: "Flash Mode",
+          text: "Simple, quick tasks that require direct tool calls without complex reasoning.",
         },
-        process: {
-          title: "Process Mode",
-          text: "Reusable agent workflows suitable for Build and Deploy. Requires defining a process description and input/output examples.",
+        balanced: {
+          title: "Balanced Mode",
+          text: "Most everyday tasks that benefit from step-by-step reasoning and tool execution.",
+        },
+        think: {
+          title: "Think Mode - Process Description",
+          text: "Define the process workflow for building reusable agents. Describe how the agent should approach complex tasks.",
           examplesTitle: "Examples:",
           examplesText: "Describe customer service bot process, audit assistant, etc.",
           examples: {
@@ -2505,6 +2656,7 @@ Build when you need.`
           unknown: "Unknown Operation",
         },
         actions: {
+          dag_execution: "DAG Execution Start",
           dag_step_start: "Step Start",
           dag_step_end: "Step Completed",
           dag_step_failed: "Step Failed",
@@ -2517,6 +2669,7 @@ Build when you need.`
           tool_execution_end: "Tool Call Completed",
           tool_execution_failed: "Tool Call Failed",
           tool_using: "Use Tool",
+          ai_message: "AI Message",
           trace_error: "Step Error Log",
           react_task_start: "ReAct Task Start",
           react_task_end: "ReAct Task Completed",
@@ -2814,6 +2967,141 @@ Build when you need.`
     bashPrefix: "Bash:",
     searchPrefix: "Search:"
   },
+  deploy_agent: {
+    title: "Deploy Agent",
+    tabs: {
+      options: "Deploy Options",
+      api: "API",
+      logs: "Logs"
+    },
+    options: {
+      embed: {
+        title: "Embed Widget",
+        desc: "Add a chat widget to any website with a single script tag",
+        action: "Get snippet"
+      },
+      rest_api: {
+        title: "REST API",
+        desc: "Call the agent programmatically from your backend or app",
+        action: "View endpoints"
+      },
+      shareable_link: {
+        title: "Shareable Link",
+        desc: "Generate a public URL anyone can open to chat with this agent",
+        action: "Generate link"
+      },
+      webhook: {
+        title: "Webhook",
+        desc: "Trigger agent runs via webhook events from external systems",
+        action: "Configure"
+      }
+    },
+    api_coming_soon: "REST API documentation coming soon...",
+    logs_coming_soon: "Deployment logs coming soon...",
+    back_to_options: "Back to Deploy Options",
+    access_control: {
+      widget_enabled: "Widget Enabled",
+      widget_enabled_desc: "Allow this widget to be accessed externally.",
+      allowed_domains: "Allowed Domains",
+      allowed_domains_desc: "Restrict widget access to specific domains. Use * for any domain.",
+      domain_placeholder: "e.g. example.com",
+      add_btn: "Add",
+      no_domains: "No domains configured. Widget will block all requests unless * is added."
+    },
+    embed_snippet: {
+      title: "Embed Snippet",
+      desc: "Copy and paste this script tag into the <body> of your website.",
+      copy_btn: "Copy Snippet"
+    },
+    messages: {
+      update_success: "Widget configuration updated",
+      update_failed: "Failed to update widget configuration",
+      copied: "Copied to clipboard"
+    }
+  },
+  adminMcp: {
+    pageTitle: "Public MCP Configuration",
+    pageDescription: "Manage OAuth providers and the public MCP apps that depend on them.",
+    addProvider: "Add OAuth Provider",
+    addApp: "Add Public MCP App",
+    adminRequired: "Admin access required",
+    providers: {
+      title: "OAuth Providers",
+      description: "Identity sources used by your apps",
+      add: "Add Provider",
+      edit: "Edit Provider",
+      new: "New Provider",
+      deleteConfirm: "Are you sure you want to delete this provider?",
+      deleteSuccess: "Provider deleted",
+      deleteFailed: "Failed to delete provider",
+      saveSuccess: "Provider saved",
+      saveFailed: "Failed to save provider",
+      noData: "No providers configured",
+      linkedApps: "{count} linked app",
+      linkedAppsPlural: "{count} linked apps",
+      form: {
+        selectLabel: "Select Provider",
+        selectPlaceholder: "Select provider",
+        noOAuth: "No OAuth required (stdio/sse)",
+        orCreateNew: "Or create a new provider configuration",
+        addNew: "Add New Provider",
+        providerId: "Provider ID (e.g. google)",
+        displayName: "Display Name",
+        clientId: "Client ID",
+        clientSecret: "Client Secret",
+        authUrl: "Auth URL",
+        tokenUrl: "Token URL",
+        redirectUri: "Redirect URI (Optional)",
+        redirectUriPlaceholder: "Leave blank to use environment default",
+        userinfoUrl: "UserInfo URL (Optional)",
+        userIdPath: "User ID Path (e.g. sub)",
+        emailPath: "Email Path",
+        defaultScopes: "Default Scopes (comma separated)"
+      }
+    },
+    apps: {
+      title: "Public MCP Apps",
+      description: "Apps registered in your workspace",
+      searchPlaceholder: "Search apps...",
+      deleteConfirm: "Are you sure you want to delete this app?",
+      deleteSuccess: "App deleted",
+      deleteFailed: "Failed to delete app",
+      saveSuccess: "App saved",
+      saveFailed: "Failed to save app",
+      noData: "No apps configured",
+      columns: {
+        appId: "APP ID",
+        provider: "PROVIDER",
+        transport: "TRANSPORT"
+      },
+      form: {
+        appId: "App ID (e.g. gmail)",
+        displayName: "Display Name",
+        description: "Description",
+        iconUrl: "Icon URL",
+        category: "Category",
+        transport: "Transport",
+        oauthScopes: "OAuth Scopes (comma separated)",
+        launchConfig: "Launch Config (JSON)",
+        invalidJson: "Invalid JSON in launch_config"
+      }
+    },
+    modal: {
+      step1: "Step 1: OAuth Provider",
+      step1Desc: "Select an existing provider or configure a new one.",
+      step2: "Step 2: MCP App Details",
+      step2Desc: "Configure the application parameters.",
+      step3: "Step 3: Test & Finish",
+      step3Desc: "App created successfully. You can now test it.",
+      next: "Next Step",
+      back: "Back",
+      saveProvider: "Save Provider",
+      saveApp: "Save Application",
+      finish: "Finish",
+      successTitle: "Configuration Saved!",
+      successDesc: "The MCP application has been added to the public registry. Users can now see and connect to this app from their Tools menu."
+    }
+  }
 } as const
 
 export default en

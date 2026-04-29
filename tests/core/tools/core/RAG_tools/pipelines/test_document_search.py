@@ -14,8 +14,12 @@ import requests
 from xagent.core.model.embedding.base import BaseEmbedding
 from xagent.core.storage import initialize_storage_manager
 from xagent.core.tools.core.RAG_tools.chunk.chunk_document import chunk_document
+from xagent.core.tools.core.RAG_tools.core.config import IndexPolicy
 from xagent.core.tools.core.RAG_tools.core.schemas import (
     ChunkEmbeddingData,
+    FusionConfig,
+    HybridSearchResponse,
+    IndexStatus,
     ParseMethod,
     SearchConfig,
     SearchPipelineResult,
@@ -23,19 +27,19 @@ from xagent.core.tools.core.RAG_tools.core.schemas import (
     SearchType,
 )
 from xagent.core.tools.core.RAG_tools.file.register_document import register_document
-from xagent.core.tools.core.RAG_tools.LanceDB.model_tag_utils import to_model_tag
 from xagent.core.tools.core.RAG_tools.parse.parse_document import parse_document
 from xagent.core.tools.core.RAG_tools.pipelines import document_search
 from xagent.core.tools.core.RAG_tools.pipelines.document_search import (
     _apply_rerank_if_needed,
     _resolve_dashscope_rerank,
 )
-from xagent.core.tools.core.RAG_tools.vector_storage import index_manager as idx_module
+from xagent.core.tools.core.RAG_tools.storage.factory import (
+    get_vector_index_store,
+)
 from xagent.core.tools.core.RAG_tools.vector_storage.vector_manager import (
     read_chunks_for_embedding,
     write_vectors_to_db,
 )
-from xagent.providers.vector_store.lancedb import get_connection_from_env
 
 
 class _FakeEmbeddingAdapter(BaseEmbedding):
@@ -113,16 +117,11 @@ def test_document_search_end_to_end(
             else CollectionInfo(name=collection_name)
         ),
     )
-    # Ensure index manager creates FTS indices
-    idx_policy = idx_module.IndexPolicy(fts_enabled=True)
-    idx_instance = idx_module.IndexManager(idx_policy)
+    # Ensure FTS indices are created via storage abstraction layer
+    # Patch the IndexPolicy to enable FTS
     monkeypatch.setattr(
-        idx_module, "_default_index_manager", idx_instance, raising=False
-    )
-    monkeypatch.setattr(
-        idx_module,
-        "get_index_manager",
-        lambda policy=None: idx_instance,
+        "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.IndexPolicy",
+        lambda **kwargs: IndexPolicy(fts_enabled=True),
     )
 
     # -------- Pipeline execution --------
@@ -205,10 +204,10 @@ def test_document_search_end_to_end(
         query_text.lower() in result.text.lower() for result in search_result.results
     )
 
-    # FTS index should have been created without config errors
-    conn = get_connection_from_env()
-    table = conn.open_table(f"embeddings_{to_model_tag(embedding_model_id)}")
-    assert idx_instance.get_fts_index_status(table) is True
+    # FTS index should have been created via storage abstraction layer
+    vector_store = get_vector_index_store()
+    index_result = vector_store.create_index(embedding_model_id, readonly=True)
+    assert index_result.fts_enabled is True
 
 
 @pytest.mark.integration
@@ -246,16 +245,11 @@ def test_chinese_sparse_search(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
         ),
     )
 
-    # Ensure index manager creates FTS indices
-    idx_policy = idx_module.IndexPolicy(fts_enabled=True)
-    idx_instance = idx_module.IndexManager(idx_policy)
+    # Ensure FTS indices are created via storage abstraction layer
+    # Patch the IndexPolicy to enable FTS
     monkeypatch.setattr(
-        idx_module, "_default_index_manager", idx_instance, raising=False
-    )
-    monkeypatch.setattr(
-        idx_module,
-        "get_index_manager",
-        lambda policy=None: idx_instance,
+        "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.IndexPolicy",
+        lambda **kwargs: IndexPolicy(fts_enabled=True),
     )
 
     # -------- Create Chinese test document --------
@@ -390,9 +384,9 @@ def test_chinese_sparse_search(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
             print("  ⚠️  使用了子串匹配回退（FTS 可能不支持中文分词）")
 
     # Verify FTS index status
-    conn = get_connection_from_env()
-    table = conn.open_table(f"embeddings_{to_model_tag(embedding_model_id)}")
-    fts_enabled = idx_instance.get_fts_index_status(table)
+    vector_store = get_vector_index_store()
+    index_result = vector_store.create_index(embedding_model_id, readonly=True)
+    fts_enabled = index_result.fts_enabled
     print(f"\nFTS 索引状态: {fts_enabled}")
     print("=" * 60)
 
@@ -680,3 +674,42 @@ def test_apply_rerank_rrf_fallback_with_scores(
     # RRF should reorder based on ranks
     # Both results should be present, order may vary based on RRF calculation
     assert all(r.text in ["doc1", "doc2"] for r in reranked)
+
+
+def test_hybrid_partial_success_uses_warning_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hybrid partial_success should not claim unconditional success."""
+    monkeypatch.setattr(
+        "xagent.core.tools.core.RAG_tools.management.collection_manager.resolve_effective_embedding_model_sync",
+        lambda collection, model_id=None: "resolved-embed",
+    )
+    _patch_embedding_adapter(monkeypatch, "resolved-embed")
+    monkeypatch.setattr(
+        document_search,
+        "search_hybrid",
+        lambda **kwargs: HybridSearchResponse(
+            results=[],
+            total_count=0,
+            status="partial_success",
+            warnings=[],
+            fusion_config=kwargs["fusion_config"] or FusionConfig(),
+            dense_count=0,
+            sparse_count=0,
+            index_status=IndexStatus.INDEX_READY,
+            index_advice=None,
+        ),
+    )
+
+    result = document_search.search_documents(
+        collection="kb1",
+        query_text="test query",
+        config=SearchConfig(
+            search_type=SearchType.HYBRID,
+            top_k=5,
+            embedding_model_id="placeholder-model",
+        ),
+    )
+
+    assert result.status == "partial_success"
+    assert result.message == "Hybrid search completed with warnings"

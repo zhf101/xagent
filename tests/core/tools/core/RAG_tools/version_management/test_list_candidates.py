@@ -21,14 +21,16 @@ class TestListCandidates:
     """Test cases for list_candidates function."""
 
     def _patch_get_connection_from_env(self, mock_conn):
-        """Helper method to patch get_connection_from_env in the list_candidates module."""
+        """Helper method to patch get_vector_store_raw_connection in the list_candidates module."""
         import importlib
 
         list_candidates_module = importlib.import_module(
             "xagent.core.tools.core.RAG_tools.version_management.list_candidates"
         )
         return patch.object(
-            list_candidates_module, "get_connection_from_env", return_value=mock_conn
+            list_candidates_module,
+            "get_vector_store_raw_connection",
+            return_value=mock_conn,
         )
 
     def setup_method(self):
@@ -62,7 +64,7 @@ class TestListCandidates:
         )
 
         with patch.object(
-            list_candidates_module, "get_connection_from_env"
+            list_candidates_module, "get_vector_store_raw_connection"
         ) as mock_get_db:
             mock_get_db.return_value = mock_conn
 
@@ -85,7 +87,7 @@ class TestListCandidates:
         )
 
         with patch.object(
-            list_candidates_module, "get_connection_from_env"
+            list_candidates_module, "get_vector_store_raw_connection"
         ) as mock_get_db:
             mock_get_db.return_value = mock_conn
 
@@ -139,7 +141,7 @@ class TestListCandidates:
         )
 
         with patch.object(
-            list_candidates_module, "get_connection_from_env"
+            list_candidates_module, "get_vector_store_raw_connection"
         ) as mock_get_db:
             mock_get_db.return_value = mock_conn
 
@@ -207,7 +209,7 @@ class TestListCandidates:
         )
 
         with patch.object(
-            list_candidates_module, "get_connection_from_env"
+            list_candidates_module, "get_vector_store_raw_connection"
         ) as mock_get_db:
             mock_get_db.return_value = mock_conn
 
@@ -267,7 +269,7 @@ class TestListCandidates:
         )
 
         with patch.object(
-            list_candidates_module, "get_connection_from_env"
+            list_candidates_module, "get_vector_store_raw_connection"
         ) as mock_get_db:
             mock_get_db.return_value = mock_conn
 
@@ -509,9 +511,13 @@ class TestListCandidates:
             result = list_candidates(collection_name, malicious_doc_id, StepType.PARSE)
 
             # Assert that the where clause was called with the correctly escaped string
-            # The escape_lancedb_string function converts ' to '' and \ to \\.
-            # The build_lancedb_filter_expression will wrap the escaped value in single quotes.
-            expected_where_clause = f"collection == '{collection_name}' AND doc_id == 'test_doc'' OR 1=1 --'"
+            # Updated for Phase 1A: filter builder adds parentheses for better operator precedence
+            # Updated for PR #128 security: uses stable no-access filter
+            from xagent.core.tools.core.RAG_tools.core.config import (
+                UNAUTHENTICATED_NO_ACCESS_FILTER,
+            )
+
+            expected_where_clause = f"((collection == '{collection_name}') AND (doc_id == 'test_doc'' OR 1=1 --')) AND ({UNAUTHENTICATED_NO_ACCESS_FILTER})"
 
             mock_table.search.assert_called_once()
             mock_table.search.return_value.where.assert_called_once_with(

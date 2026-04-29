@@ -1,16 +1,8 @@
-"""统一工具工厂。
+"""
+Tool Factory for xagent
 
-这个模块是“运行时到底能拿到哪些工具”的最终收口点。
-
-它不关心调用入口来自哪里，而只做三件事：
-1. 发现所有已注册的工具构造器
-2. 根据配置过滤出当前上下文真正允许使用的工具
-3. 在需要时补上 workspace / sandbox 等运行时绑定
-
-为什么这里必须作为统一收口点？
-- 前端页面隐藏某个工具，并不等于后端运行时真的拿不到它
-- Agent Builder、正式任务、预览任务都在复用同一套工具创建逻辑
-- 只有在这里做最终过滤，管理员禁用、allowed_tools、沙箱包装等策略才能全局一致
+Provides a unified interface for creating tools with proper workspace binding
+and configuration management.
 """
 
 # mypy: ignore-errors
@@ -22,55 +14,21 @@ from sqlalchemy.orm import Session
 
 from .....config import get_uploads_dir
 from .....core.workspace import TaskWorkspace
-from .base import Tool
+from .base import AbstractBaseTool, Tool
 from .config import BaseToolConfig
+from .output_filter_wrapper import OutputFilteredToolWrapper
 
 logger = logging.getLogger(__name__)
 
 __all__ = ["ToolFactory", "ToolRegistry", "register_tool"]
 
-# 当前分支的产品定位已经不是“通用智能体”，而是“造数/资产调用专用系统”。
-# 因此这里维护一份后端运行时硬白名单，确保无论入口来自：
-# - 普通聊天
-# - WebSocket 预览
-# - Agent Builder
-# - 历史任务重建
-# 最终都只能拿到这批专业能力。
-#
-# 其中 MCP 工具不放在这个静态名单里，因为它们的名字由运行时动态加载决定，
-# 后面会按 `ToolCategory.MCP` 统一放行。
-PROFESSIONAL_RUNTIME_FIXED_TOOL_NAMES = {
-    # `api_call` 必须和 GDP HTTP 资产工具并存，而不是互斥。
-    #
-    # 业务边界是：
-    # - `api_call`：用户已经明确给出目标接口，要直连一个具体 HTTP API
-    # - `query_http_resource` / `execute_http_resource`：用户只描述业务意图，要先在资产库里找候选能力
-    #
-    # 如果这里不把 `api_call` 放进运行时白名单，模型即使已经被正确提示，
-    # 也根本不可能选中它，最终只能被迫错走资产流。
-    "api_call",
-    "query_http_resource",
-    "execute_http_resource",
-    "query_vanna_sql_asset",
-    "execute_vanna_sql_asset",
-    "knowledge_search",
-    "list_knowledge_bases",
-    "read_skill_doc",
-    "list_skill_docs",
-    "fetch_skill_file",
-}
-
 
 class ToolRegistry:
-    """工具构造器注册表。
+    """
+    Global registry for tool creators using decorator pattern.
 
-    每个工具模块通过 `@register_tool` 把自己的 creator 挂进来，
-    工厂在运行时统一遍历这些 creator 构造工具实例。
-
-    这套模式的价值在于：
-    - 新增工具时，不需要维护一份巨大的手工清单
-    - 每个工具模块自己负责注册，边界更清晰
-    - 运行时入口只依赖注册结果，不依赖具体工具文件名
+    Tools are registered using @register_tool decorator and automatically
+    discovered during create_all_tools().
     """
 
     _tool_creators: List[Callable] = []
@@ -94,38 +52,29 @@ class ToolRegistry:
 
     @classmethod
     def _import_tool_modules(cls):
-        """导入工具模块并触发注册副作用。
-
-        这里的 import 看起来像“未使用”，但它们的核心价值就是副作用：
-        模块 import 后，`@register_tool` 才会执行，creator 才会进入注册表。
-        """
+        """Import tool modules to trigger @register_tool decorator registration."""
         if cls._modules_imported:
             return
 
         try:
             # Import tool modules in priority order - these imports trigger @register_tool decorators
-            # 这里不要把 import 当成“没用的死代码”。
-            # 在本项目里，很多工具模块的注册副作用就发生在 import 阶段。
             from . import (  # noqa: F401 - imports trigger @register_tool decorators
                 agent_tool,
+                audio_tool,
                 basic_tools,
                 browser_tools,
+                custom_api_factory,
+                image_tool,
                 knowledge_tools,
                 mcp_tools,
                 pptx_tool,
                 skill_tools,
+                special_image_tools,
                 sql_tool,
                 translate_json,
                 vision_tool,
                 workspace_file_tool,
             )
-            # 为什么现在要“这样导入”？
-            #   - 以前工具文件就在 src/xagent/core/tools/adapters/vibe/ 包里，所以 factory.py 可以直接：
-            #     from . import basic_tools, browser_tools, ...
-            #   - 现在把 HTTP/Vanna 相关工具主实现搬到了 src/xagent/gdp/** 它们已经不在 vibe 包下面了
-            #   - 所以 factory.py 只能额外显式 import 新位置的模块，才能继续触发注册
-            from .....gdp.hrun.adapter import gdp_http_tools  # noqa: F401
-            from .....gdp.vanna.adapter import vanna_sql_tools  # noqa: F401
 
             cls._modules_imported = True
             logger.info("Tool modules imported and registered")
@@ -134,7 +83,7 @@ class ToolRegistry:
 
     @classmethod
     async def create_registered_tools(cls, config: BaseToolConfig) -> List[Tool]:
-        """执行所有已注册 creator，拿到原始工具集合。"""
+        """Create tools from all registered creators."""
         # Import tool modules on first call to trigger decorator registration
         cls._import_tool_modules()
 
@@ -198,117 +147,41 @@ class ToolRegistry:
 register_tool = ToolRegistry.register
 
 
-def _get_runtime_tool_name(tool: Tool) -> str:
-    """稳定提取运行时工具名。
-
-    对外排障、白名单治理、日志打印都依赖“最终暴露给模型的工具名”，
-    所以这里优先读取 `metadata.name`；只有极少数对象没有 metadata 时，
-    才回退到实例属性 `name`。
-    """
-    metadata = getattr(tool, "metadata", None)
-    if metadata is not None and getattr(metadata, "name", None):
-        return str(metadata.name)
-
-    raw_name = getattr(tool, "name", None)
-    if raw_name:
-        return str(raw_name)
-
-    return type(tool).__name__
-
-
 class ToolFactory:
-    """统一工具工厂。
+    """
+    Unified tool factory that handles tool creation with proper workspace binding.
 
-    对上层来说，`create_all_tools()` 是唯一应该依赖的入口。
-    它返回的不是“系统里理论存在的全部工具”，而是：
-    当前用户、当前任务、当前治理策略、当前运行环境共同作用后的最终工具集。
+    Tool categories are self-describing - each tool declares its own category
+    via the metadata.category field. No need for manual category mapping.
     """
 
     @staticmethod
     async def create_all_tools(config: BaseToolConfig) -> List[Tool]:
-        """根据配置创建当前运行时真正可用的工具集合。
+        """
+        Create all tools based on configuration.
 
-        过滤顺序有意固定为：
-        1. 先发现全部可注册工具
-        2. 再做产品级硬裁剪（例如当前分支不开放 image/audio）
-        3. 再做造数专用运行时硬白名单（只保留 HTTP/SQL/KB/skills/MCP）
-        4. 再做调用上下文白名单过滤（`allowed_tools`）
-        5. 最后做管理员治理策略过滤（全局禁用）
+        This is the unified entry point for tool creation. All tools are discovered
+        automatically via @register_tool decorators based on the provided configuration.
 
-        这样能保证：
-        - 治理策略永远作用在“最终候选集”上
-        - 任何入口都不会绕开最后的禁用过滤
+        Args:
+            config: Tool configuration object
+
+        Returns:
+            List of configured tools
         """
         # Auto-discover tools from @register_tool decorators
         tools = await ToolRegistry.create_registered_tools(config)
 
-        # 当前分支只保留文本类能力，显式移除图片生成和音频相关工具。
-        from .base import ToolCategory
-
-        disabled_categories = {ToolCategory.IMAGE, ToolCategory.AUDIO}
-        tools = [
-            tool
-            for tool in tools
-            if tool.metadata.category not in disabled_categories
-        ]
-
-        # 造数专用运行时硬白名单：
-        # - 固定保留项目内显式声明的核心工具名
-        # - MCP 工具按类别整体放行，因为这批工具名是运行时动态加载的
-        tools = [
-            tool
-            for tool in tools
-            if _get_runtime_tool_name(tool) in PROFESSIONAL_RUNTIME_FIXED_TOOL_NAMES
-            or tool.metadata.category == ToolCategory.MCP
-        ]
-        logger.info(
-            "Applied professional runtime whitelist, remaining tools: %s",
-            [_get_runtime_tool_name(tool) for tool in tools],
-        )
-
         # Filter tools by allowed_tools if specified
         allowed_tools = config.get_allowed_tools()
         if allowed_tools is not None and len(allowed_tools) > 0:
-            # Agent Builder 等入口可能带着一份历史的 allowed_tools 进来，
-            # 但在当前定制分支里，核心资产工具不能再被这些旧配置误裁掉，
-            # 否则模型会重新退回“没有工具可用”的错误行为。
-            protected_tool_names = {
-                _get_runtime_tool_name(tool)
-                for tool in tools
-                if _get_runtime_tool_name(tool) in PROFESSIONAL_RUNTIME_FIXED_TOOL_NAMES
-                or tool.metadata.category == ToolCategory.MCP
-            }
-            effective_allowed_names = set(allowed_tools) | protected_tool_names
-            tools = [
-                tool
-                for tool in tools
-                if _get_runtime_tool_name(tool) in effective_allowed_names
-            ]
+            tools = [tool for tool in tools if tool.name in allowed_tools]
             logger.info(
-                "Applied caller allowed_tools on top of professional whitelist: %s",
-                [_get_runtime_tool_name(tool) for tool in tools],
+                f"Filtered tools to {len(tools)} allowed tools: {[t.name for t in tools]}"
             )
         elif allowed_tools is not None and len(allowed_tools) == 0:
-            logger.info(
-                "allowed_tools is empty list; keeping professional runtime whitelist only"
-            )
-
-        # 运行时最后再执行一层“管理员禁用策略”过滤，确保：
-        # 1. 前端页面即便遗漏了按钮禁用，后端也不会把工具交给普通用户
-        # 2. 已保存的 Agent / 历史任务在重建执行上下文时，同样拿不到被停用的工具
-        # 3. 工具治理不依赖某个具体页面，而是后端统一生效
-        disabled_tool_names = set(config.get_disabled_tool_names())
-        if config.should_enforce_tool_policy() and disabled_tool_names:
-            original_count = len(tools)
-            tools = [
-                tool
-                for tool in tools
-                if _get_runtime_tool_name(tool) not in disabled_tool_names
-            ]
-            logger.info(
-                "Filtered tools by disabled tool policy: %s -> %s",
-                original_count,
-                len(tools),
+            logger.warning(
+                "⚠️ allowed_tools is empty list - this will filter out all tools! If you want to allow all tools, set allowed_tools to None"
             )
 
         # Wrap sandbox-enabled tools if sandbox is available
@@ -323,24 +196,68 @@ class ToolFactory:
                 await create_workspace_in_sandbox(sandbox, workspace)
             tools = await ToolFactory._wrap_sandbox_tools(tools, sandbox)
 
+        # Apply output filtering to all tools
+        tools = ToolFactory._apply_output_filters(tools, config)
+
         logger.info(f"Created {len(tools)} tools from configuration")
         return tools
 
     @staticmethod
-    async def _wrap_sandbox_tools(tools: List[Tool], sandbox: Any) -> List[Tool]:
-        """为需要沙箱隔离的工具补一层 SandboxedToolWrapper。
+    def _apply_output_filters(tools: List[Tool], config: BaseToolConfig) -> List[Tool]:
+        """Apply output filtering to all tools.
 
-        这里不是“有 sandbox 就全包一遍”，而是只包装显式声明需要沙箱的工具。
-        这样可以避免：
-        - 没必要的工具也被强行走远端执行
-        - 某个包装失败时把整个工具集都拖垮
+        Args:
+            tools: Original tool list
+            config: Tool configuration
+
+        Returns:
+            Tool list with output filtering applied
         """
-        from .sandboxed_tool.sandboxed_tool_config import is_sandbox_enabled
+        max_chars = config.get_max_output_length()
+        max_fields = config.get_max_field_count()
+        max_recursion = config.get_max_recursion_depth()
+
+        filtered_tools: List[Tool] = []
+        for tool in tools:
+            # Only wrap AbstractBaseTool instances
+            if isinstance(tool, AbstractBaseTool):
+                wrapper = OutputFilteredToolWrapper(
+                    target_tool=tool,
+                    max_chars=max_chars,
+                    max_fields=max_fields,
+                    max_recursion=max_recursion,
+                )
+                filtered_tools.append(wrapper)
+            else:
+                # For non-AbstractBaseTool tools, keep as is
+                filtered_tools.append(tool)
+
+        if filtered_tools:
+            logger.debug(
+                f"Applied output filtering to {len(filtered_tools)} tools "
+                f"(max_chars={max_chars}, max_fields={max_fields}, max_recursion={max_recursion})"
+            )
+
+        return filtered_tools
+
+    @staticmethod
+    async def _wrap_sandbox_tools(tools: List[Tool], sandbox: Any) -> List[Tool]:
+        """Wrap sandbox-enabled tools with SandboxedToolWrapper.
+
+        Args:
+            tools: Original tool list
+            sandbox: Sandbox instance
+
+        Returns:
+            Tool list with sandbox-enabled tools wrapped
+        """
+        from .sandboxed_tool.sandbox_config import resolve_sandbox_config
         from .sandboxed_tool.sandboxed_tool_wrapper import create_sandboxed_tool
 
         wrapped_tools: List[Tool] = []
         for tool in tools:
-            if is_sandbox_enabled(tool.name):
+            sb_config = resolve_sandbox_config(tool)
+            if sb_config is not None and sb_config.enabled:
                 try:
                     wrapped = await create_sandboxed_tool(
                         tool=tool,
@@ -363,11 +280,10 @@ class ToolFactory:
     def _create_workspace(
         workspace_config: Optional[Dict[str, Any]],
     ) -> Optional[TaskWorkspace]:
-        """根据配置构造 workspace。
+        """Create workspace from configuration.
 
-        这里区分真实任务和“仅列举工具”的场景：
-        - 真任务：创建实际 workspace，供文件工具和沙箱同步使用
-        - 列表页：使用 MockWorkspace，避免光看工具列表就创建一堆磁盘目录
+        Uses MockWorkspace for tool listing scenarios to avoid creating
+        unnecessary directories on disk.
         """
         if not workspace_config:
             return None
@@ -409,6 +325,7 @@ class ToolFactory:
 
             # Convert configs to connection format
             connections = {}
+
             for config in mcp_configs:
                 connection_config = {
                     "transport": config["transport"],
@@ -438,7 +355,10 @@ class ToolFactory:
 
             # Load MCP tools
             mcp_tools = await load_mcp_tools_as_agent_tools(connections)  # type: ignore[arg-type]
-            return mcp_tools if mcp_tools else []  # type: ignore[return-value]
+            if not mcp_tools:
+                mcp_tools = []
+
+            return mcp_tools  # type: ignore[return-value]
         except Exception as e:
             logger.warning(f"Failed to create MCP tools: {e}")
             return []
@@ -469,16 +389,24 @@ class ToolFactory:
                         UserMCPServer, MCPServer.id == UserMCPServer.mcpserver_id
                     ).filter(UserMCPServer.user_id == user_id, UserMCPServer.is_active)
 
-                connections = manager.get_connections(filter_by_user)
+                all_connections = manager.get_connections(filter_by_user)
             else:
-                connections = manager.get_connections()
+                all_connections = manager.get_connections()
 
-            if not connections:
+            if not all_connections:
                 return []
 
+            connections = {}
+
+            for name, config in all_connections.items():
+                connections[name] = config
+
             # Load MCP tools
-            mcp_tools = await load_mcp_tools_as_agent_tools(connections)
-            return mcp_tools if mcp_tools else []
+            mcp_tools = (
+                await load_mcp_tools_as_agent_tools(connections) if connections else []
+            )
+
+            return mcp_tools
         except Exception as e:
             logger.warning(f"Failed to create MCP tools from database: {e}")
             return []

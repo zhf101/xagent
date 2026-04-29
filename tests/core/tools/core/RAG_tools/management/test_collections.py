@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List
 
@@ -31,10 +31,13 @@ from src.xagent.core.tools.core.RAG_tools.management import (
     delete_collection,
     get_document_stats,
     list_collections,
+    list_documents,
     retry_document,
 )
 from src.xagent.core.tools.core.RAG_tools.management.status import load_ingestion_status
+from src.xagent.core.tools.core.RAG_tools.storage import get_vector_index_store
 from src.xagent.providers.vector_store.lancedb import get_connection_from_env
+from xagent.core.tools.core.RAG_tools.file.register_document import register_document
 
 
 @pytest.fixture()
@@ -43,6 +46,9 @@ def temp_lancedb_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> str:
 
     original = os.environ.get("LANCEDB_DIR")
     monkeypatch.setenv("LANCEDB_DIR", str(tmp_path))
+    from src.xagent.core.tools.core.RAG_tools.storage.factory import StorageFactory
+
+    StorageFactory.get_factory().reset_all()
     yield str(tmp_path)
     if original is None:
         monkeypatch.delenv("LANCEDB_DIR", raising=False)
@@ -51,7 +57,7 @@ def temp_lancedb_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> str:
 
 
 def _insert_documents(records: List[Dict[str, object]]) -> None:
-    conn = get_connection_from_env()
+    conn = get_vector_index_store().get_raw_connection()
     ensure_documents_table(conn)
     table = conn.open_table("documents")
 
@@ -76,7 +82,7 @@ def _insert_documents(records: List[Dict[str, object]]) -> None:
 
 
 def _insert_parses(records: List[Dict[str, object]]) -> None:
-    conn = get_connection_from_env()
+    conn = get_vector_index_store().get_raw_connection()
     ensure_parses_table(conn)
     table = conn.open_table("parses")
     table.add(records)
@@ -94,14 +100,14 @@ def _insert_parses(records: List[Dict[str, object]]) -> None:
 
 
 def _insert_chunks(records: List[Dict[str, object]]) -> None:
-    conn = get_connection_from_env()
+    conn = get_vector_index_store().get_raw_connection()
     ensure_chunks_table(conn)
     table = conn.open_table("chunks")
     table.add(records)
 
 
 def _insert_embeddings(model_name: str, records: List[Dict[str, object]]) -> None:
-    conn = get_connection_from_env()
+    conn = get_vector_index_store().get_raw_connection()
     ensure_embeddings_table(conn, to_model_tag(model_name), vector_dim=3)
     table = conn.open_table(embeddings_table_name(model_name))
     table.add(records)
@@ -118,10 +124,11 @@ def _insert_embeddings(model_name: str, records: List[Dict[str, object]]) -> Non
         )
 
 
-def test_list_collections_empty(temp_lancedb_dir: str) -> None:
+@pytest.mark.asyncio
+async def test_list_collections_empty(temp_lancedb_dir: str) -> None:
     """When no data exists the result should be empty but successful."""
 
-    result = list_collections(user_id=None, is_admin=True)
+    result = await list_collections(user_id=None, is_admin=True)
 
     assert result.status == "success"
     assert result.total_count == 0
@@ -129,12 +136,13 @@ def test_list_collections_empty(temp_lancedb_dir: str) -> None:
     assert result.warnings == []
 
 
-def test_list_collections_with_data(temp_lancedb_dir: str) -> None:
+@pytest.mark.asyncio
+async def test_list_collections_with_data(temp_lancedb_dir: str) -> None:
     """Aggregate statistics should include counts per collection and document names."""
 
     collection = "demo_collection"
     doc_id = "doc-1"
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     _insert_documents(
         [
@@ -193,7 +201,7 @@ def test_list_collections_with_data(temp_lancedb_dir: str) -> None:
         ],
     )
 
-    result = list_collections(user_id=None, is_admin=True)
+    result = await list_collections(user_id=None, is_admin=True)
 
     assert result.status == "success"
     assert result.total_count == 1
@@ -206,6 +214,51 @@ def test_list_collections_with_data(temp_lancedb_dir: str) -> None:
     # document_names now contains source_path values
     assert sorted(collection_info.document_names) == sorted(["other.pdf", "sample.pdf"])
     assert result.warnings == []
+
+
+@pytest.mark.asyncio
+async def test_list_collections_admin_includes_config_from_other_user(
+    temp_lancedb_dir: str,
+) -> None:
+    """Admin listing should attach ingestion_config stored under a tenant user_id."""
+
+    import json
+
+    from src.xagent.core.tools.core.RAG_tools.storage.factory import (
+        get_metadata_store,
+    )
+
+    collection = "cfg_tenant_collection"
+    doc_id = "doc-cfg"
+    now = datetime.now(timezone.utc)
+
+    _insert_documents(
+        [
+            {
+                "collection": collection,
+                "doc_id": doc_id,
+                "source_path": "/path/x.pdf",
+                "file_type": "pdf",
+                "content_hash": "h1",
+                "uploaded_at": now,
+                "title": "T",
+                "language": "zh",
+            }
+        ]
+    )
+
+    await get_metadata_store().save_collection_config(
+        collection,
+        json.dumps({}),
+        user_id=99,
+    )
+
+    result = await list_collections(user_id=None, is_admin=True)
+
+    assert result.status == "success"
+    assert result.total_count == 1
+    info = next(c for c in result.collections if c.name == collection)
+    assert info.ingestion_config is not None
 
 
 def test_get_document_stats_missing_document(temp_lancedb_dir: str) -> None:
@@ -227,7 +280,7 @@ def test_get_document_stats_with_embeddings(temp_lancedb_dir: str) -> None:
 
     collection = "demo_collection"
     doc_id = "doc-embed"
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     _insert_documents(
         [
@@ -276,7 +329,7 @@ def test_cancel_collection_updates_all_documents(temp_lancedb_dir: str) -> None:
     """Collection-level cancel should update status for all discoverable documents."""
 
     collection = "demo"
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     _insert_documents(
         [
@@ -307,7 +360,7 @@ def test_delete_collection_invokes_cleanup_all_documents(
     """Collection delete should cascade cleanup for each document variant."""
 
     collection = "demo"
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     _insert_documents(
         [
@@ -339,3 +392,186 @@ def test_delete_collection_invokes_cleanup_all_documents(
 
     assert result.status == "success"
     assert "documents" in result.deleted_counts
+
+
+def test_e2e_register_and_list_documents_with_legacy_empty_string_file_id(
+    tmp_path: Path, temp_lancedb_dir: str
+) -> None:
+    """E2E: ingestion remains visible when legacy rows contain empty string file_id."""
+    conn = get_connection_from_env()
+    ensure_documents_table(conn)
+    table = conn.open_table("documents")
+
+    # Simulate legacy row created by previous PR's backfill (NULL -> "")
+    table.add(
+        [
+            {
+                "collection": "xagent",
+                "doc_id": "legacy-doc",
+                "file_id": "",  # Empty string from previous backfill
+                "source_path": "/legacy/README.md",
+                "file_type": "md",
+                "content_hash": "legacy-hash",
+                "uploaded_at": datetime.now(timezone.utc),
+                "title": "legacy",
+                "language": "en",
+                "user_id": None,
+            }
+        ]
+    )
+
+    # Trigger schema ensure path again (startup/runtime behavior) to backfill.
+    ensure_documents_table(conn)
+
+    new_file = tmp_path / "README.md"
+    new_file.write_text("# hello\n\nworld", encoding="utf-8")
+    reg_result = register_document(
+        collection="xagent",
+        source_path=str(new_file),
+        file_id=None,
+        user_id=58,
+    )
+    assert reg_result["doc_id"]
+
+    list_result = list_documents(collection="xagent", user_id=58, is_admin=False)
+    assert list_result.status == "success"
+    listed_ids = {doc.doc_id for doc in list_result.documents}
+    assert reg_result["doc_id"] in listed_ids
+
+
+# --- list_collections force_realtime Tests ---
+
+
+@pytest.mark.asyncio
+async def test_list_collections_force_realtime_bypasses_cache(
+    temp_lancedb_dir: str,
+) -> None:
+    """force_realtime=True should skip metadata cache and use realtime aggregation."""
+    now = datetime.now(timezone.utc)
+    collection = "realtime_test"
+
+    _insert_documents(
+        [
+            {
+                "collection": collection,
+                "doc_id": "doc-1",
+                "source_path": "/path/doc.pdf",
+                "file_type": "pdf",
+                "content_hash": "hash-1",
+                "uploaded_at": now,
+                "title": "Doc",
+                "language": "en",
+            }
+        ]
+    )
+
+    result = await list_collections(user_id=None, is_admin=True, force_realtime=True)
+
+    assert result.status == "success"
+    assert result.total_count == 1
+    assert result.collections[0].name == collection
+    assert result.collections[0].documents == 1
+
+
+@pytest.mark.asyncio
+async def test_list_collections_cache_filled_by_subsequent_call(
+    temp_lancedb_dir: str,
+) -> None:
+    """After a force_realtime call fills the cache, subsequent call should use it."""
+    now = datetime.now(timezone.utc)
+    collection = "cache_fill_test"
+
+    _insert_documents(
+        [
+            {
+                "collection": collection,
+                "doc_id": "doc-1",
+                "source_path": "/path/doc.pdf",
+                "file_type": "pdf",
+                "content_hash": "hash-1",
+                "uploaded_at": now,
+                "title": "Doc",
+                "language": "en",
+            }
+        ]
+    )
+
+    # First call with force_realtime fills the metadata cache
+    result1 = await list_collections(user_id=None, is_admin=True, force_realtime=True)
+    assert result1.status == "success"
+    assert result1.total_count == 1
+
+    # Second normal call should hit the cache
+    result2 = await list_collections(user_id=None, is_admin=True)
+    assert result2.status == "success"
+    assert result2.total_count == 1
+    assert result2.collections[0].name == collection
+    assert result2.collections[0].documents == 1
+
+
+@pytest.mark.asyncio
+async def test_list_collections_cache_miss_uses_realtime(
+    temp_lancedb_dir: str,
+) -> None:
+    """When metadata cache misses (no cached data), list_collections falls back to realtime aggregation."""
+    collection = "miss_test"
+
+    _insert_documents(
+        [
+            {
+                "collection": collection,
+                "doc_id": "doc-1",
+                "source_path": "/path/doc.pdf",
+                "file_type": "pdf",
+                "content_hash": "hash-1",
+                "uploaded_at": datetime.now(timezone.utc),
+                "title": "Doc",
+                "language": "en",
+            }
+        ]
+    )
+
+    # No prior cache population — should fallback to realtime successfully
+    result = await list_collections(user_id=None, is_admin=True)
+    assert result.status == "success"
+    assert result.total_count >= 1
+
+    names = [c.name for c in result.collections]
+    assert collection in names
+
+
+# --- delete_collection metadata cleanup Tests ---
+
+
+@pytest.mark.asyncio
+async def test_delete_collection_clears_metadata_cache(temp_lancedb_dir: str) -> None:
+    """After deleting a collection, metadata cache should not return it."""
+    now = datetime.now(timezone.utc)
+    collection = "to_delete_test"
+
+    _insert_documents(
+        [
+            {
+                "collection": collection,
+                "doc_id": "doc-1",
+                "source_path": "/path/doc.pdf",
+                "file_type": "pdf",
+                "content_hash": "hash-1",
+                "uploaded_at": now,
+                "title": "Doc",
+                "language": "en",
+            }
+        ]
+    )
+
+    # Populate metadata cache first
+    await list_collections(user_id=None, is_admin=True, force_realtime=True)
+
+    # Delete the collection
+    del_result = delete_collection(collection, user_id=None, is_admin=True)
+    assert del_result.status == "success"
+
+    # Metadata cache should no longer include the deleted collection
+    result = await list_collections(user_id=None, is_admin=True)
+    remaining = [c.name for c in result.collections]
+    assert collection not in remaining

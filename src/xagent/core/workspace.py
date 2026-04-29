@@ -55,7 +55,9 @@ class TaskWorkspace:
         self.id = id
         if base_dir is None:
             base_dir = str(get_uploads_dir())
-        self.base_dir = Path(base_dir)
+        self.base_dir = (
+            Path(base_dir).expanduser().resolve()
+        )  # Resolve base_dir to absolute path for consistent workspace reconstruction
         self.db_session = None  # Optional database session for file registration
         self._recently_registered_files: Dict[str, str] = {}  # path -> file_id mapping
         self._file_id_to_path: Dict[str, Path] = {}  # file_id -> path reverse mapping
@@ -194,7 +196,7 @@ class TaskWorkspace:
                 db.rollback()
             raise  # Re-raise so caller knows registration failed
         finally:
-            if should_close:
+            if should_close and db is not None:
                 db.close()
 
     def _get_file_id_from_db(
@@ -743,21 +745,24 @@ class TaskWorkspace:
         from ..web.models.uploaded_file import UploadedFile
         from .storage.manager import create_db_session
 
-        # Use existing session or create temporary one
-        db = self.db_session if self.db_session else create_db_session()
-        should_close = self.db_session is None
+        # Extract user_id from workspace id (e.g., 'web_task_265' -> 265)
+        task_id = None
+        user_id = None
+        try:
+            task_id = int(self.id.split("_")[-1])
+        except (ValueError, IndexError):
+            task_id = None
+
+        # Only open a database session when this workspace can actually map to a task.
+        db = None
+        should_close = False
+        if task_id is not None:
+            db = self.db_session if self.db_session else create_db_session()
+            should_close = self.db_session is None
 
         try:
-            # Extract user_id from workspace id (e.g., 'web_task_265' -> 265)
-            task_id = None
-            user_id = None
-            try:
-                task_id = int(self.id.split("_")[-1])
-            except (ValueError, IndexError):
-                task_id = None
-
-            # Try to get user_id from task if we have a valid task_id
-            if task_id:
+            # Try to get user_id from task if we have a valid task_id and db session
+            if task_id and db is not None:
                 task = db.query(Task).filter(Task.id == task_id).first()
                 if task:
                     user_id = task.user_id
@@ -766,7 +771,7 @@ class TaskWorkspace:
             result_files = []
             total_count = 0
 
-            if user_id:
+            if user_id and db is not None:
                 # Query uploaded files for this user
                 query = db.query(UploadedFile).filter(UploadedFile.user_id == user_id)
                 total_count = query.count()
@@ -845,7 +850,7 @@ class TaskWorkspace:
             }
 
         finally:
-            if should_close:
+            if should_close and db is not None:
                 db.close()
 
     def __enter__(self) -> "TaskWorkspace":

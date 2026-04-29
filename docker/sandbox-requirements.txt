@@ -1,5 +1,4 @@
 # Sandbox tool dependencies
-# From sandboxed_tool_config.yml
 
 # ============================================
 # Base dependencies

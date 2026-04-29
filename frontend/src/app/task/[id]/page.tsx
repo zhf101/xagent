@@ -352,7 +352,7 @@ function TaskDetailContent() {
         <div className="flex-1 overflow-y-auto">
           <main className={`container max-w-4xl mx-auto px-4 py-8 relative z-0 transition-all`}>
             <div className="space-y-6 pb-4">
-              {state.isHistoryLoading ? (
+              {state.isHistoryLoading || combinedItems.length === 0 ? (
                 <div className="flex flex-col items-center justify-center min-h-[60vh] py-16 text-center">
                   <div className="relative mb-6">
                     <div className="w-16 h-16 rounded-2xl bg-muted/30 flex items-center justify-center animate-pulse">
@@ -446,9 +446,11 @@ function TaskDetailContent() {
                 model: state.currentTask.modelId || state.currentTask.modelName,
                 smallFastModel: state.currentTask.smallFastModelId,
                 visualModel: state.currentTask.visualModelId,
-                compactModel: state.currentTask.compactModelId
+                compactModel: state.currentTask.compactModelId,
+                executionMode: state.currentTask.executionMode
               } : undefined}
               readOnlyConfig={true}
+              autoFocus={true}
             />
           </div>
         </div>
@@ -481,7 +483,7 @@ function TaskDetailContent() {
             }}
             title={
               state.filePreview.isOpen ? <>{state.filePreview.fileName}</> :
-              t("chatPage.executionPlan.title")
+                t("chatPage.executionPlan.title")
             }
             actions={state.filePreview.isOpen ? (
               <FilePreviewActionButtons

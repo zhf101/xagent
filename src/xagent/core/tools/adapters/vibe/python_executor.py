@@ -13,6 +13,7 @@ from ....workspace import TaskWorkspace
 from ...core.python_executor import PythonExecutorCore
 from .base import AbstractBaseTool, ToolCategory, ToolVisibility
 from .function import FunctionTool
+from .sandboxed_tool.sandbox_config import sandbox_config
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +116,7 @@ class PythonExecutorTool(AbstractBaseTool):
         }
 
 
+@sandbox_config(packages=["pandas>=1.3.0", "numpy>=1.21.0", "matplotlib>=3.5.0"])
 class PythonExecutorToolForBasic(PythonExecutorTool):
     """Python executor tool with BASIC category."""
 

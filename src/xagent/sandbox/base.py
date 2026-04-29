@@ -16,9 +16,22 @@ CodeType = Literal["python", "javascript"]
 """Supported code execution types."""
 
 
+class SandboxNotFoundError(Exception):
+    """Raised when a requested sandbox resource no longer exists."""
+
+
 class SandboxTemplate(BaseModel):
     """
     Template for creating a sandbox.
+
+    `type="image"` creates a sandbox from a container image.
+
+    `type="snapshot"` creates a sandbox from a previously committed filesystem
+    snapshot. A snapshot is only a creation template for the new sandbox's
+    initial filesystem contents; runtime configuration such as working
+    directory, environment variables, volume mounts, network isolation, and
+    port mappings still comes from `SandboxConfig` on the current
+    `get_or_create()` call.
     """
 
     type: Optional[TemplateType] = Field(default="image", description="Template type")

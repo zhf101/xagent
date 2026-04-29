@@ -9,6 +9,16 @@ class UserPermissions:
     """Handle user permissions and data access control."""
 
     @staticmethod
+    def get_no_access_filter() -> str:
+        """Return a stable LanceDB filter expression that always matches no rows."""
+        return UNAUTHENTICATED_NO_ACCESS_FILTER
+
+    @staticmethod
+    def is_no_access_filter(filter_expr: Optional[str]) -> bool:
+        """Check whether a filter expression is the internal no-access marker."""
+        return filter_expr == UNAUTHENTICATED_NO_ACCESS_FILTER
+
+    @staticmethod
     def get_user_filter(
         user_id: Optional[int], is_admin: bool = False
     ) -> Optional[str]:
@@ -32,20 +42,10 @@ class UserPermissions:
         elif user_id is not None:
             # Regular users can ONLY see their own data
             # Legacy data (NULL user_id) is NOT visible to regular users
-            return f"user_id == {user_id}"
+            return f"user_id == {int(user_id)}"
         else:
             # Unauthenticated users cannot see any data
             return UserPermissions.get_no_access_filter()
-
-    @staticmethod
-    def get_no_access_filter() -> str:
-        """Return a stable LanceDB filter expression that always matches no rows."""
-        return UNAUTHENTICATED_NO_ACCESS_FILTER
-
-    @staticmethod
-    def is_no_access_filter(filter_expr: Optional[str]) -> bool:
-        """Check whether a filter expression is the internal no-access marker."""
-        return filter_expr == UNAUTHENTICATED_NO_ACCESS_FILTER
 
     @staticmethod
     def can_access_data(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Final, Mapping, Sequence
@@ -55,13 +56,54 @@ DEFAULT_LANCEDB_BATCH_DELAY_MS: Final[int] = 0
 Set to 0 to disable any artificial throttling.
 """
 
+DEFAULT_LANCEDB_BATCH_SIZE: Final[int] = 1000
+"""Default batch size for embedding writes to LanceDB (env: LANCEDB_BATCH_SIZE)."""
+
+DEFAULT_VECTOR_STORE_SCAN_LIMIT: Final[int] = 10_000
+"""Default max rows scanned in vector-store document listing operations."""
+
+DEFAULT_VECTOR_STORE_EXTENDED_SCAN_LIMIT: Final[int] = 1_000_000
+"""Higher limit for operations like listing all documents in a collection or deleting a collection."""
+
+DEFAULT_BACKFILL_BATCH_SIZE: Final[int] = 1000
+"""Default batch size for backfill operations (rows per iteration).
+
+Used when backfilling legacy data (e.g., NULL user_id recovery from source_path).
+"""
+
+DEFAULT_BACKFILL_MAX_ITERATIONS: Final[int] = 100
+"""Maximum iterations for backfill loops to prevent infinite loops.
+
+Safety limit for backfill operations that process data in batches.
+"""
+
 # Reserved int64 lower bound for internal system sentinel values.
 MIN_INT64: Final[int] = -(2**63)
+"""Minimum 64-bit integer, used as internal sentinel value."""
 
 # Stable expression that always matches no rows for unauthenticated reads.
 UNAUTHENTICATED_NO_ACCESS_FILTER: Final[str] = (
     "(user_id IS NULL and user_id IS NOT NULL)"
 )
+"""A stable LanceDB filter expression that always matches no rows."""
+
+ENABLE_AUTO_EMBEDDINGS_MIGRATION: Final[bool] = (
+    os.getenv("ENABLE_AUTO_EMBEDDINGS_MIGRATION", "false").lower() == "true"
+)
+"""
+Enable automatic forward migration of legacy embeddings tables.
+
+When disabled (default), the system will not automatically migrate data from
+legacy table names (embeddings_{model_name}) to new Hub ID-based names
+(embeddings_{hub_id}). This prevents unexpected data movement and performance
+impact during normal operations.
+
+To enable automatic migration, set the environment variable:
+    ENABLE_AUTO_EMBEDDINGS_MIGRATION=true
+
+Automatic migration should only be enabled during controlled maintenance windows
+or when explicitly executing migration tools.
+"""
 
 # Parameters that affect parse hash
 PARSE_PARAM_WHITELIST: Final[Sequence[str]] = (

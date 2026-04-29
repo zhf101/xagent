@@ -253,6 +253,13 @@ const getUserMenuItemsForUser = (user: any): NavigationItem[] => {
       icon: Users,
       color: "text-blue-400"
     })
+    menuItems.splice(-1, 0, {
+      name: "Public MCP Apps",
+      nameKey: "nav.adminMcp",
+      href: "/admin-mcp/",
+      icon: Server,
+      color: "text-blue-400"
+    })
   }
 
   return menuItems
@@ -378,6 +385,7 @@ export function Sidebar({ className }: SidebarProps) {
   const [showUserMenu, setShowUserMenu] = useState(false)
   const [isAboutOpen, setIsAboutOpen] = useState(false)
   const sidebarRef = useRef<HTMLDivElement | null>(null)
+  const taskListRef = useRef<HTMLDivElement | null>(null)
   const userMenuRef = useRef<HTMLDivElement | null>(null)
 
   // Handle click outside for user menu
@@ -645,7 +653,7 @@ export function Sidebar({ className }: SidebarProps) {
   useEffect(() => {
     if (!navRef.current || !isHistoryExpanded || isTaskListUnavailable) return
 
-    const { scrollHeight, clientHeight } = navRef.current
+    const { scrollHeight, clientHeight } = taskListRef.current
     // If content height is less than or equal to container height (plus a buffer), and there is more data, and not loading
     if (scrollHeight <= clientHeight + 20 && hasMore && !isLoadingMore && !isLoadingTasks) {
       // Use setTimeout to avoid continuous state updates in one render cycle
@@ -696,8 +704,11 @@ export function Sidebar({ className }: SidebarProps) {
   // agent 详情页之外的 /agent 页面仍沿用历史行为：默认只显示一条窄边，点击后临时展开。
   const isAgentChatPage = pathname.match(/^\/agent\/\d+$/)
   const isAgentPage = pathname.startsWith('/agent') && !pathname.startsWith('/agent/vibe') && !isAgentChatPage
-  // 普通页面走全局折叠开关；agent 页面走“默认收起 + 临时展开”的旧逻辑。
+  // 普通页面走全局折叠开关；agent 页面走”默认收起 + 临时展开”的旧逻辑。
   const isSidebarVisible = isAgentPage ? isExpanded : !isSidebarCollapsed
+
+  // Allow user to manually collapse the sidebar
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true)
 
   // agent 页临时展开时，点击外部自动收起，保持之前“主工作区优先”的体验。
   useEffect(() => {
@@ -764,7 +775,14 @@ export function Sidebar({ className }: SidebarProps) {
 
   if (!isSidebarVisible) {
     return (
-      <div className="flex items-center justify-center w-12 bg-card border-r border-border">
+      <div className="flex flex-col items-center justify-start py-4 w-[60px] bg-card border-r border-border shrink-0 h-full relative">
+        <Link href="/task" className="flex items-center justify-center mb-8">
+          <img
+            src={branding.logoPath}
+            alt={branding.logoAlt}
+            className="h-8 w-8 rounded-lg"
+          />
+        </Link>
         <button
           type="button"
           onClick={() => {
@@ -772,14 +790,45 @@ export function Sidebar({ className }: SidebarProps) {
               setIsExpanded(true)
               return
             }
-            setIsSidebarCollapsed(false)
+            setIsSidebarOpen(true)
           }}
           className="p-2 text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition-colors"
           aria-label="展开侧边栏"
           title="展开侧边栏"
         >
-          <Menu className="h-5 w-5" />
+          <ChevronRight className="h-4 w-4" />
         </button>
+        <div className="flex flex-col gap-2 w-full px-2">
+          {navigationGroups.map((group) => (
+            group.items.map((item) => {
+              const isActive = isPathActive(item.href)
+              return (
+                <Link
+                  key={item.name}
+                  href={item.href}
+                  title={item.nameKey ? t(item.nameKey) : item.name}
+                  className={cn(
+                    "flex items-center justify-center p-2 rounded-lg transition-colors",
+                    isActive ? "bg-primary/10 text-primary" : "text-muted-foreground hover:bg-accent hover:text-foreground"
+                  )}
+                >
+                  <item.icon className="h-5 w-5" />
+                </Link>
+              )
+            })
+          ))}
+        </div>
+        <div className="mt-auto w-full px-2">
+          <button
+            onClick={() => isAgentPage ? setIsExpanded(true) : setIsSidebarOpen(true)}
+            className="flex items-center justify-center w-full p-2 hover:bg-accent/50 rounded-lg transition-colors"
+            title={user?.username || t('sidebar.user.defaultName')}
+          >
+            <div className="h-8 w-8 rounded-full bg-primary flex items-center justify-center text-xs font-medium text-primary-foreground uppercase shrink-0 shadow-sm">
+              {(user?.username || t('sidebar.user.defaultName')).charAt(0)}
+            </div>
+          </button>
+        </div>
       </div>
     )
   }
@@ -792,7 +841,7 @@ export function Sidebar({ className }: SidebarProps) {
       className
     )}>
       {/* Logo */}
-      <div className="flex h-16 items-center justify-between px-6 mt-2">
+      <div className="flex h-16 items-center justify-between px-6 mt-2 relative">
         <Link href="/task" className="flex items-center gap-2">
           <img
             src={branding.logoPath}
@@ -808,7 +857,7 @@ export function Sidebar({ className }: SidebarProps) {
               setIsExpanded(false)
               return
             }
-            setIsSidebarCollapsed(true)
+            setIsSidebarOpen(false)
           }}
           className="p-1 text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition-colors"
           aria-label="收起侧边栏"
@@ -928,11 +977,12 @@ export function Sidebar({ className }: SidebarProps) {
             )
           })}
         </div>
+      </nav>
 
         {/* History Section */}
-        <div>
+        <div className="mt-auto flex flex-col overflow-hidden shrink-0">
           <div
-            className="px-4 py-2 text-xs font-bold text-slate-400 uppercase tracking-wider mb-1 flex items-center justify-between transition-colors group h-8"
+            className="px-4 py-2 text-xs font-bold text-slate-400 uppercase tracking-wider mb-1 flex items-center justify-between transition-colors group h-8 shrink-0"
           >
             {(isSearchVisible || isSearchFocused || searchQuery) ? (
               <div className="flex-1 relative mr-2 h-full flex items-center">
@@ -996,7 +1046,11 @@ export function Sidebar({ className }: SidebarProps) {
           </div>
 
           {isHistoryExpanded && (
-            <div className="space-y-1">
+            <div
+              ref={taskListRef}
+              className="space-y-1 overflow-y-auto [&::-webkit-scrollbar]:hidden [-ms-overflow-style:'none'] [scrollbar-width:'none'] max-h-[304px]"
+              onScroll={handleScroll}
+            >
               {isLoadingTasks ? (
                 <div className="flex items-center justify-center py-4">
                   <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
@@ -1114,11 +1168,10 @@ export function Sidebar({ className }: SidebarProps) {
             </div>
           )}
         </div>
-      </nav>
-
+      </div>
 
       {/* User Profile */}
-      <div className="p-4 relative mt-auto" ref={userMenuRef}>
+      <div className="p-4 relative mt-auto shrink-0" ref={userMenuRef}>
         {showUserMenu && (
           <div className="absolute bottom-full left-4 right-4 mb-2 bg-popover border border-border rounded-lg shadow-lg overflow-hidden animate-in fade-in zoom-in-95 duration-200 z-50">
             <div className="py-1">
@@ -1161,8 +1214,8 @@ export function Sidebar({ className }: SidebarProps) {
           onClick={() => setShowUserMenu(!showUserMenu)}
           className="flex w-full items-center gap-2 hover:bg-accent/50 p-2 -ml-2 rounded-lg transition-colors text-left"
         >
-          <div className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center">
-            <User className="h-4 w-4 text-primary" />
+          <div className="h-8 w-8 rounded-full bg-primary flex items-center justify-center text-xs font-medium text-primary-foreground uppercase shrink-0">
+            {(user?.username || t('sidebar.user.defaultName')).charAt(0)}
           </div>
           <div className="ml-3 flex-1">
             <p className="text-sm font-medium text-foreground">{user?.username || t('sidebar.user.defaultName')}</p>
@@ -1255,6 +1308,6 @@ export function Sidebar({ className }: SidebarProps) {
         onConfirm={confirmDeleteTask}
         isLoading={isDeletingTask}
       />
-    </div>
+    </div >
   )
 }

@@ -152,7 +152,7 @@ interface Task {
   modelName?: string
   smallFastModelName?: string
   visualModelName?: string
-  vibeMode?: "task" | "process"
+  executionMode?: "flash" | "balanced" | "think"
 }
 
 interface StepExecution {
@@ -733,7 +733,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                 compactModelId: taskData.compact_model_id,
                 modelName: taskData.model_name,
                 smallFastModelName: taskData.small_fast_model_name,
-                vibeMode: taskData.vibe_mode,
+                executionMode: taskData.execution_mode,
               }
             })
           } else if (eventType === "dag_execution") {
@@ -2962,15 +2962,16 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
         // For task mode, message is user input
         const taskDescription = message
         const taskTitle = message.length > 50 ? `${message.substring(0, 50)}...` : message
+        const executionMode = config?.executionMode?.mode || (config?.agentId ? "balanced" : "think")
 
         const requestBody: any = {
           title: taskTitle,
           description: taskDescription,
           llm_ids: llmIds,
           memory_similarity_threshold: config?.memorySimilarityThreshold ?? 1.5,
-          vibe_mode: config?.vibeMode?.mode || "task",
-          process_description: config?.vibeMode?.processDescription,
-          examples: config?.vibeMode?.examples,
+          execution_mode: executionMode,
+          process_description: config?.executionMode?.processDescription,
+          examples: config?.executionMode?.examples,
         }
 
         // Upload files first if present
@@ -2981,7 +2982,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
           if (filesToUpload.length > 0) {
             const formData = new FormData()
             filesToUpload.forEach(f => formData.append('files', f))
-            formData.append('task_type', config?.vibeMode?.mode || 'task')
+            formData.append('task_type', executionMode)
 
             try {
               const uploadResponse = await apiRequest(`${apiUrl}/api/files/upload`, {
@@ -3044,7 +3045,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
             compactModelId: taskData.compact_model_id,
             modelName: taskData.model_name || taskData.modelName, // API response field
             smallFastModelName: taskData.small_fast_model_name || taskData.smallFastModelName, // API response field
-            vibeMode: taskData.vibe_mode,
+            executionMode: taskData.execution_mode,
           }
           dispatch({ type: "SET_CURRENT_TASK", payload: newTask })
 

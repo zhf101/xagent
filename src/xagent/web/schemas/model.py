@@ -10,7 +10,7 @@ def _validate_abilities_for_category(abilities: List[str], category: str) -> Lis
 
     Args:
         abilities: List of abilities to validate
-        category: Model category (e.g., 'embedding', 'rerank', 'llm')
+        category: Model category (e.g., 'image', 'embedding', 'speech', 'llm')
 
     Returns:
         The validated abilities list
@@ -18,7 +18,20 @@ def _validate_abilities_for_category(abilities: List[str], category: str) -> Lis
     Raises:
         ValueError: If abilities are invalid for the category or empty
     """
-    if category == "embedding":
+    if category == "image":
+        # Image models can only have "generate" and "edit" abilities
+        valid_image_abilities: Set[str] = {"generate", "edit"}
+        invalid_abilities = set(abilities) - valid_image_abilities
+
+        if invalid_abilities:
+            raise ValueError(
+                f"Invalid abilities for image model: {invalid_abilities}. "
+                f"Valid abilities are: {valid_image_abilities}"
+            )
+
+        if not abilities:
+            raise ValueError("Image model must have at least one ability")
+    elif category == "embedding":
         # Embedding models can only have "embedding" ability
         valid_embedding_abilities: Set[str] = {"embedding"}
         invalid_abilities = set(abilities) - valid_embedding_abilities
@@ -31,6 +44,19 @@ def _validate_abilities_for_category(abilities: List[str], category: str) -> Lis
 
         if not abilities:
             raise ValueError("Embedding model must have at least one ability")
+    elif category == "speech":
+        # Speech models can have "asr", "tts" abilities
+        valid_speech_abilities: Set[str] = {"asr", "tts"}
+        invalid_abilities = set(abilities) - valid_speech_abilities
+
+        if invalid_abilities:
+            raise ValueError(
+                f"Invalid abilities for speech model: {invalid_abilities}. "
+                f"Valid abilities are: {valid_speech_abilities}"
+            )
+
+        if not abilities:
+            raise ValueError("Speech model must have at least one ability")
 
     return abilities
 
@@ -42,13 +68,19 @@ class ModelCreate(BaseModel):
     category: str = "llm"
     model_provider: str
     model_name: str
-    api_key: str
+    api_key: Optional[str] = None
     base_url: Optional[str] = None
     temperature: Optional[float] = None
     dimension: Optional[int] = None
     abilities: Optional[List[str]] = None
     description: Optional[str] = None
     share_with_users: bool = False  # Admin only: share this model with all users
+    # Speech-specific parameters (for ASR and TTS)
+    language: Optional[str] = None  # Default language code (e.g., 'zh', 'en')
+    voice: Optional[str] = None  # TTS voice/speaker (e.g., 'female', 'male')
+    format: Optional[str] = None  # TTS audio format (e.g., 'mp3', 'wav', 'pcm')
+    sample_rate: Optional[int] = None  # TTS sample rate in Hz (e.g., 24000, 48000)
+
     @field_validator("model_id", "model_name", "base_url", "api_key", mode="before")
     @classmethod
     def strip_string_fields(cls, v: Any) -> Any:
@@ -83,6 +115,12 @@ class ModelUpdate(BaseModel):
     description: Optional[str] = None
     abilities: Optional[List[str]] = None
     share_with_users: Optional[bool] = None  # Admin only: update sharing status
+    # Speech-specific parameters (for ASR and TTS)
+    language: Optional[str] = None  # Default language code (e.g., 'zh', 'en')
+    voice: Optional[str] = None  # TTS voice/speaker (e.g., 'female', 'male')
+    format: Optional[str] = None  # TTS audio format (e.g., 'mp3', 'wav', 'pcm')
+    sample_rate: Optional[int] = None  # TTS sample rate in Hz (e.g., 24000, 48000)
+
     @field_validator("model_name", "base_url", "api_key", mode="before")
     @classmethod
     def strip_string_fields(cls, v: Any) -> Any:
@@ -158,40 +196,24 @@ class ModelTestResponse(BaseModel):
     error: Optional[str]
 
 
-class EncryptApiKeyRequest(BaseModel):
-    """公开加密接口的请求体。"""
+class ModelConnectionTestRequest(BaseModel):
+    """Request schema for testing an unsaved model connection"""
 
-    api_key: str
-
-    @field_validator("api_key", mode="before")
-    @classmethod
-    def strip_and_validate_api_key(cls, v: Any) -> Any:
-        """统一清理输入，避免把纯空白字符串误当成有效 key。
-
-        这个接口的职责非常单一：把“真实可用的明文 key”转换成后端落库密文。
-        如果这里允许空字符串或纯空格进入后端加密流程，调用方拿到的密文虽然能生成，
-        但业务上没有任何意义，后续还会把排障复杂度转嫁到数据库数据层。
-        """
-
-        if isinstance(v, str):
-            stripped = v.strip()
-            if not stripped:
-                raise ValueError("api_key cannot be empty")
-            return stripped
-        return v
-
-
-class EncryptApiKeyResponse(BaseModel):
-    """公开加密接口的响应体。"""
-
-    encrypted_api_key: str
+    model_provider: str
+    model_name: str
+    api_key: Optional[str] = None
+    base_url: Optional[str] = None
+    category: str = "llm"
+    temperature: Optional[float] = None
+    dimension: Optional[int] = None
+    abilities: Optional[List[str]] = None
 
 
 class UserDefaultModelCreate(BaseModel):
     """User default model configuration creation schema"""
 
     model_id: int
-    config_type: str  # 'general', 'small_fast', 'visual', 'compact', 'embedding', 'rerank'
+    config_type: str  # 'general', 'small_fast', 'visual', 'compact', 'embedding', 'image', 'image_edit', 'asr', 'tts', 'speech'
 
     @field_validator("config_type")
     @classmethod
@@ -202,7 +224,11 @@ class UserDefaultModelCreate(BaseModel):
             "visual",
             "compact",
             "embedding",
-            "rerank",
+            "image",
+            "image_edit",
+            "asr",
+            "tts",
+            "speech",
         }
         if v not in valid_types:
             raise ValueError(

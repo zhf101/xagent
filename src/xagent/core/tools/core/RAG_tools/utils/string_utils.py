@@ -6,7 +6,7 @@ import hashlib
 import re
 import uuid
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 # Pattern for sanitizing document IDs and filenames
 # Only allows: letters, numbers, underscore, hyphen
@@ -32,21 +32,137 @@ def escape_lancedb_string(input_string: Any) -> str:
     return input_string.replace("\\", "\\\\").replace("'", "''")
 
 
-def build_lancedb_filter_expression(filters: Dict[str, Any]) -> str:
+def build_lancedb_filter_expression(
+    filters: Dict[str, Any],
+    *,
+    user_id: Optional[int] = None,
+    is_admin: bool = False,
+    skip_user_filter: bool = False,
+) -> str:
     """
     Builds a safe LanceDB filter expression from a dictionary of filters.
 
+    This function uses the abstract filter layer internally for better backend
+    compatibility, while maintaining the same interface for backward compatibility.
+
+    **Important:** Every value is emitted as a **single-quoted string literal**
+    (``column == 'value'``). Do **not** use this for Arrow/Lance columns whose
+    physical type is integer (notably ``user_id``, stored as int64 in this
+    codebase). For ``user_id`` filters, use :func:`build_user_id_filter_for_table` or
+    ``UserPermissions.get_user_filter`` (integer literal, not quoted).
+
     Args:
         filters: A dictionary where keys are column names and values are the filter values.
+        user_id: Optional user ID for multi-tenancy filtering.
+        is_admin: Whether the user has admin privileges.
+        skip_user_filter: If True, bypasses user permission filter.
 
     Returns:
         A string representing the safely constructed LanceDB filter expression.
     """
-    filter_parts = []
+    from ..storage.contracts import (
+        FilterCondition,
+        FilterExpression,
+        FilterOperator,
+    )
+    from ..storage.factory import get_vector_index_store
+
+    # Convert to FilterCondition list
+    conditions: List[FilterCondition] = []
     for key, value in filters.items():
-        escaped_value = escape_lancedb_string(value)
-        filter_parts.append(f"{key} == '{escaped_value}'")
-    return " AND ".join(filter_parts)
+        conditions.append(
+            FilterCondition(field=key, operator=FilterOperator.EQ, value=value)
+        )
+
+    # Use abstract filter builder
+    vector_store = get_vector_index_store()
+
+    # Combine conditions with AND (tuple convention)
+    # Type: FilterExpression can be FilterCondition or tuple of FilterConditions
+    if len(conditions) == 1:
+        filter_expr: FilterExpression = conditions[0]
+    else:
+        filter_expr = tuple(conditions)
+
+    # Get backend-specific syntax
+    backend_filter = vector_store.build_filter_expression(
+        filters=filter_expr,
+        user_id=user_id if not skip_user_filter else None,
+        is_admin=is_admin or skip_user_filter,
+    )
+
+    return backend_filter or ""
+
+
+# Columns that are integer-typed in Lance schemas here; ``build_lancedb_filter_expression``
+# always emits quoted string literals and must not be used for these keys.
+LANCEDB_INTEGER_FILTER_KEYS: frozenset[str] = frozenset(
+    {
+        "user_id",
+        "vector_dimension",
+        "index",
+        "page_number",
+    }
+)
+
+
+def split_lancedb_filters_for_string_equality(
+    filters: Dict[str, Any],
+) -> Tuple[Dict[str, Any], frozenset[str]]:
+    """Return filters safe for :func:`build_lancedb_filter_expression` (string literals).
+
+    Drops keys in :data:`LANCEDB_INTEGER_FILTER_KEYS`. For ``user_id``, tenant
+    scoping must use :func:`build_user_id_filter_for_table` or
+    ``UserPermissions.get_user_filter``; other dropped keys need typed literals
+    or a schema-aware builder, not this helper.
+
+    Args:
+        filters: Arbitrary column -> value map from a caller (e.g. search ``filters``).
+
+    Returns:
+        ``(safe_filters, dropped_integer_column_names)``. ``safe_filters`` is always a
+        new ``dict`` (never the input reference), even when nothing is dropped.
+    """
+    dropped = frozenset(k for k in filters if k in LANCEDB_INTEGER_FILTER_KEYS)
+    if not dropped:
+        return dict(filters), frozenset()
+    stripped = {
+        k: v for k, v in filters.items() if k not in LANCEDB_INTEGER_FILTER_KEYS
+    }
+    return stripped, dropped
+
+
+def build_user_id_filter_for_table(table: Any | None, user_id: int) -> str:
+    """Build a type-safe LanceDB filter expression for ``user_id``.
+
+    This inspects the target table schema and chooses the correct literal type.
+    In strict mode, unknown schemas also default to integer literals.
+
+    Args:
+        table: LanceDB table object with optional ``schema`` metadata.
+        user_id: User ID value used for filtering.
+
+    Returns:
+        A safe filter expression for the ``user_id`` column.
+    """
+    user_id_int = int(user_id)
+    try:
+        schema = getattr(table, "schema", None)
+        if schema is not None:
+            field = schema.field("user_id")
+            field_type = str(getattr(field, "type", "")).lower()
+            if "int" in field_type:
+                return f"user_id == {user_id_int}"
+            if "string" in field_type or "utf8" in field_type:
+                raise ValueError(
+                    f"Incompatible user_id type '{field_type}'. Expected int64 schema."
+                )
+    except ValueError:
+        raise
+    except Exception:
+        # Best-effort schema introspection. Use int literal by default.
+        pass
+    return f"user_id == {user_id_int}"
 
 
 def sanitize_for_doc_id(text: str, max_length: int = 64) -> str:
@@ -189,7 +305,7 @@ def generate_deterministic_doc_id(collection: str, source_path: str) -> str:
 
 
 # Security validation patterns
-_COLLECTION_NAME_PATTERN: re.Pattern[str] = re.compile(r"^[a-zA-Z0-9_-]+$")
+_COLLECTION_NAME_PATTERN: re.Pattern[str] = re.compile(r"^[\w -]+$")
 _DOC_ID_PATTERN: re.Pattern[str] = re.compile(r"^[a-zA-Z0-9_.-]+$")
 
 
@@ -197,9 +313,9 @@ def validate_collection_name(name: str) -> str:
     """
     Validate collection name for safe use in LanceDB queries.
 
-    Only allows alphanumeric characters, underscores, and hyphens.
-    This prevents injection attacks while being restrictive enough
-    to avoid problematic characters in collection names.
+    Allows Unicode word characters (letters, numbers, underscore), spaces,
+    and hyphens. This prevents injection attacks while remaining compatible
+    with internationalized collection names.
 
     Args:
         name: Collection name to validate
@@ -212,12 +328,13 @@ def validate_collection_name(name: str) -> str:
     """
     if not isinstance(name, str):
         raise ValueError(f"Collection name must be a string, got {type(name)}")
-    if not name:
+    if not name or not name.strip():
         raise ValueError("Collection name cannot be empty")
+    name = name.strip()
     if not _COLLECTION_NAME_PATTERN.match(name):
         raise ValueError(
             f"Invalid collection name '{name}'. "
-            "Only letters, numbers, underscores, and hyphens are allowed."
+            "Only letters, numbers, spaces, underscores, and hyphens are allowed."
         )
     return name
 

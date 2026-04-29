@@ -4,7 +4,6 @@ import logging
 from typing import TYPE_CHECKING, Any, List
 
 from .factory import register_tool
-from ...core.document_search import list_knowledge_bases, ListKnowledgeBasesArgs
 
 if TYPE_CHECKING:
     from .config import BaseToolConfig
@@ -23,47 +22,26 @@ async def create_knowledge_tools(config: "BaseToolConfig") -> List[Any]:
             get_list_knowledge_bases_tool,
         )
 
-        embedding_model = config.get_embedding_model()
         allowed_collections = config.get_allowed_collections()
         user_id = config.get_user_id()
         is_admin = config.is_admin()
 
-        # Add list knowledge bases tool
-        list_tool = get_list_knowledge_bases_tool(
-            allowed_collections=allowed_collections,
-            user_id=user_id,
-            is_admin=is_admin,
-        )
-        tools.append(list_tool)
+        if allowed_collections is not None and len(allowed_collections) == 0:
+            return []
 
-        # 检查知识库是否有内容
-        has_content = False
-        try:
-            result = await list_knowledge_bases(
-                ListKnowledgeBasesArgs(allowed_collections=allowed_collections),
+        if allowed_collections is None:
+            list_tool = get_list_knowledge_bases_tool(
+                allowed_collections=allowed_collections,
                 user_id=user_id,
                 is_admin=is_admin,
             )
-            # 检查是否有任何集合包含 embeddings
-            for kb in result.knowledge_bases:
-                if kb.get("embeddings", 0) > 0:
-                    has_content = True
-                    break
-        except Exception as e:
-            logger.warning(f"Failed to check knowledge base content: {e}")
-            has_content = False
+            tools.append(list_tool)
 
-        # Add search tool
         knowledge_tool = get_knowledge_search_tool(
-            embedding_model_id=embedding_model,
             allowed_collections=allowed_collections,
             user_id=user_id,
             is_admin=is_admin,
         )
-        #无内容时设置不可用，提示词不拼接工具
-        if not has_content:
-            knowledge_tool.set_available(False)
-
         tools.append(knowledge_tool)
     except Exception as e:
         logger.warning(f"Failed to create knowledge tools: {e}")

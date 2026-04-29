@@ -13,6 +13,7 @@ from ....workspace import TaskWorkspace
 from ...core.command_executor import CommandExecutorCore
 from .base import AbstractBaseTool, ToolCategory, ToolVisibility
 from .function import FunctionTool
+from .sandboxed_tool.sandbox_config import sandbox_config
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +90,7 @@ class CommandExecutorTool(AbstractBaseTool):
         return None
 
 
+@sandbox_config()
 class CommandExecutorToolForBasic(CommandExecutorTool):
     """Command executor tool with BASIC category."""
 

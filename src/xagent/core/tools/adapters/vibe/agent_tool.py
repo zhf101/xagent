@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Mapping, Optional, Type
 from pydantic import BaseModel, Field
 
 from .....config import get_uploads_dir
+from ....utils.type_check import ensure_list
 from .base import AbstractBaseTool, ToolCategory, ToolVisibility
 
 logger = logging.getLogger(__name__)
@@ -16,18 +17,26 @@ logger = logging.getLogger(__name__)
 class CreateAgentToolArgs(BaseModel):
     """Arguments for creating a new agent."""
 
-    name: str = Field(description="要创建的 agent 名称")
+    name: str = Field(description="Name of the agent to create")
     description: str = Field(
-        description="重要：说明这个 agent 适用于什么场景（例如：用于处理 CSV 数据分析任务），帮助用户理解什么时候该调用它。"
+        description="IMPORTANT: Description of when to use this agent (e.g., 'Use this agent for data analysis tasks involving CSV files'). This helps users understand the agent's purpose and when to call it."
     )
-    instructions: str = Field(description="该 agent 的 system instructions/prompt")
+    instructions: str = Field(description="System instructions/prompt for the agent")
     tool_categories: Optional[list[str]] = Field(
         default=None,
-        description="允许使用的工具分类列表（例如 ['file', 'knowledge']）。如果为 None，则允许所有工具。",
+        description="List of tool categories to allow (e.g., ['file', 'knowledge']). If None, all tools are available",
+    )
+    knowledge_bases: Optional[list[str]] = Field(
+        default=None,
+        description="List of knowledge base names or IDs to associate with this agent. (optional)",
     )
     skills: Optional[list[str]] = Field(
         default=None,
-        description="允许使用的 skill 名称列表。如果为 None，则允许所有 skills。",
+        description="List of skill names to allow. If None, all skills are available",
+    )
+    execution_mode: Optional[str] = Field(
+        default="balanced",
+        description="Execution mode for the agent: 'flash', 'balanced' (default), or 'think'.",
     )
 
 
@@ -46,6 +55,91 @@ class CreateAgentToolResult(BaseModel):
     message: str = Field(description="Detailed message about the created agent")
 
 
+class UpdateAgentToolArgs(BaseModel):
+    """Arguments for updating an existing agent."""
+
+    agent_id: int = Field(description="ID of the agent to update")
+    name: Optional[str] = Field(
+        default=None, description="New name for the agent (optional)"
+    )
+    description: Optional[str] = Field(
+        default=None,
+        description="New description of when to use this agent (optional)",
+    )
+    instructions: Optional[str] = Field(
+        default=None,
+        description="New system instructions/prompt for the agent (optional)",
+    )
+    tool_categories: Optional[list[str]] = Field(
+        default=None,
+        description="New list of tool categories to allow (optional). If None, existing value is kept",
+    )
+    knowledge_bases: Optional[list[str]] = Field(
+        default=None,
+        description="New list of knowledge base IDs or names to associate with this agent. (optional). If None, existing value is kept",
+    )
+    skills: Optional[list[str]] = Field(
+        default=None,
+        description="New list of skill names to allow (optional). If None, existing value is kept",
+    )
+    execution_mode: Optional[str] = Field(
+        default=None,
+        description="New execution mode for the agent: 'flash', 'balanced', or 'think'.",
+    )
+
+
+class UpdateAgentToolResult(BaseModel):
+    """Result from updating an agent."""
+
+    agent_id: int = Field(description="The ID of the updated agent")
+    agent_name: str = Field(description="The name of the updated agent")
+    tool_name: str = Field(
+        description="The tool name that can be used to call this agent"
+    )
+    markdown_link: str = Field(
+        description="Markdown link to the agent (e.g., '[Agent Name](agent://123)')"
+    )
+    status: str = Field(description="Update status")
+    message: str = Field(description="Detailed message about the updated agent")
+
+
+class ListAgentsToolArgs(BaseModel):
+    """Arguments for listing agents."""
+
+    status_filter: Optional[str] = Field(
+        default=None,
+        description="Filter by agent status: 'draft', 'published', or 'archived'. If None, shows all agents",
+    )
+
+
+class AgentInfo(BaseModel):
+    """Information about a single agent."""
+
+    agent_id: int = Field(description="Agent ID")
+    name: str = Field(description="Agent name")
+    description: str = Field(description="Agent description")
+    status: str = Field(description="Agent status: draft, published, or archived")
+    tool_name: str = Field(description="Tool name to call this agent")
+    markdown_link: str = Field(description="Markdown link to the agent")
+    execution_mode: str = Field(description="Execution mode: flash, balanced, or think")
+    knowledge_bases: Optional[list[str]] = Field(
+        default=None, description="Associated knowledge bases"
+    )
+    tool_categories: Optional[list[str]] = Field(
+        default=None, description="Allowed tool categories"
+    )
+    skills: Optional[list[str]] = Field(default=None, description="Allowed skills")
+
+
+class ListAgentsToolResult(BaseModel):
+    """Result from listing agents."""
+
+    agents: list[AgentInfo] = Field(description="List of agents")
+    total_count: int = Field(description="Total number of agents")
+    status: str = Field(description="List status")
+    message: str = Field(description="Detailed message")
+
+
 class AgentToolArgs(BaseModel):
     """Arguments for agent tool."""
 
@@ -56,6 +150,110 @@ class AgentToolResult(BaseModel):
     """Result from agent tool execution."""
 
     response: str = Field(description="The agent's response")
+
+
+class ListAvailableSkillsArgs(BaseModel):
+    query: Optional[str] = Field(
+        default=None, description="Optional search query to filter skills"
+    )
+
+
+class ListAvailableSkillsResult(BaseModel):
+    skills: list[str] = Field(description="List of available skill names")
+
+
+class ListAvailableSkillsTool(AbstractBaseTool):
+    """Tool for listing available skills."""
+
+    category: ToolCategory = ToolCategory.AGENT
+
+    def __init__(
+        self,
+        db: Any = None,
+        user_id: Optional[int] = None,
+        task_id: Optional[str] = None,
+        workspace_base_dir: Optional[str] = None,
+    ):
+        self._visibility = ToolVisibility.PUBLIC
+
+    @property
+    def name(self) -> str:
+        return "list_available_skills"
+
+    @property
+    def description(self) -> str:
+        return "List all available skills that can be assigned to an agent."
+
+    def args_type(self) -> Type[BaseModel]:
+        return ListAvailableSkillsArgs
+
+    def return_type(self) -> Type[BaseModel]:
+        return ListAvailableSkillsResult
+
+    def run_json_sync(self, args: Mapping[str, Any]) -> Any:
+        raise NotImplementedError("Only supports async execution.")
+
+    async def run_json_async(self, args: Mapping[str, Any]) -> Any:
+        import os
+
+        skills_dir = os.path.join(
+            os.path.dirname(__file__), "../../../../skills/builtin"
+        )
+        available_skills = []
+        if os.path.exists(skills_dir):
+            for skill_dir in os.listdir(skills_dir):
+                skill_path = os.path.join(skills_dir, skill_dir)
+                if os.path.isdir(skill_path):
+                    available_skills.append(skill_dir)
+        return ListAvailableSkillsResult(skills=available_skills).model_dump()
+
+
+class ListToolCategoriesArgs(BaseModel):
+    query: Optional[str] = Field(
+        default=None, description="Optional search query to filter categories"
+    )
+
+
+class ListToolCategoriesResult(BaseModel):
+    categories: list[str] = Field(description="List of available tool categories")
+
+
+class ListToolCategoriesTool(AbstractBaseTool):
+    """Tool for listing available tool categories."""
+
+    category: ToolCategory = ToolCategory.AGENT
+
+    def __init__(
+        self,
+        db: Any = None,
+        user_id: Optional[int] = None,
+        task_id: Optional[str] = None,
+        workspace_base_dir: Optional[str] = None,
+    ):
+        self._visibility = ToolVisibility.PUBLIC
+
+    @property
+    def name(self) -> str:
+        return "list_tool_categories"
+
+    @property
+    def description(self) -> str:
+        return "List all available tool categories that can be assigned to an agent."
+
+    def args_type(self) -> Type[BaseModel]:
+        return ListToolCategoriesArgs
+
+    def return_type(self) -> Type[BaseModel]:
+        return ListToolCategoriesResult
+
+    def run_json_sync(self, args: Mapping[str, Any]) -> Any:
+        raise NotImplementedError("Only supports async execution.")
+
+    async def run_json_async(self, args: Mapping[str, Any]) -> Any:
+        from .base import ToolCategory
+
+        available_categories = [cat.value for cat in ToolCategory]
+        return ListToolCategoriesResult(categories=available_categories).model_dump()
 
 
 class CreateAgentTool(AbstractBaseTool):
@@ -123,25 +321,27 @@ class CreateAgentTool(AbstractBaseTool):
         categories_list = ", ".join(available_categories)
 
         return (
-            "在任务执行过程中创建一个具备特定能力的新 agent。"
-            "该 agent 会以 DRAFT 状态创建，并且可以通过返回的 tool name 立即调用。\n\n"
-            "参数：\n"
-            "- name：简短且有辨识度的 agent 名称（例如 'researcher'、'data_analyzer'）\n"
-            "- description：重要，明确说明这个 agent 何时使用（例如“用于处理 CSV 数据分析任务”），帮助用户理解其用途。\n"
-            f"- tool_categories（可选）：可用分类有：{categories_list}\n"
-            f"  示例：['file', 'knowledge', 'basic']\n"
-            f"- skills（可选）：可用 skills 有：{skills_list}\n"
-            f"  示例：['presentation-generator', 'poster-design']\n"
-            "- instructions：定义该 agent 行为和专长的 system prompt/instructions\n\n"
-            "返回值：\n"
-            "- agent_id：新建 agent 的数据库 ID\n"
-            "- agent_name：agent 名称\n"
-            "- tool_name：调用该 agent 时要使用的工具名\n"
-            "- markdown_link：格式为 [Agent Name](agent://agent_id) 的 Markdown 链接，请在回复中使用这个格式\n"
-            "- status：'success' 或 'error'\n"
-            "- message：关于创建结果的详细说明\n\n"
-            "重要：当成功创建 agent 时，你的回复里必须包含 markdown_link。"
-            "格式必须是：[Agent Name](agent://agent_id)"
+            "Create a new agent with specific capabilities during task execution. "
+            "The agent will be created in DRAFT status and can be called immediately using the returned tool name.\n\n"
+            "Parameters:\n"
+            "- name: A short, descriptive name for the agent (e.g., 'researcher', 'data_analyzer')\n"
+            "- description: IMPORTANT - Clear description of when to use this agent (e.g., 'Use this agent for data analysis tasks involving CSV files'). This helps users understand the agent's purpose.\n"
+            f"- tool_categories (optional): Available categories: {categories_list}\n"
+            f"  Example: ['file', 'knowledge', 'basic']\n"
+            f"- knowledge_bases (optional): List of knowledge base names or IDs to link to this agent.\n"
+            f"- skills (optional): Available skills: {skills_list}\n"
+            f"  Example: ['presentation-generator', 'poster-design']\n"
+            "- instructions: System prompt/instructions defining the agent's behavior and expertise\n"
+            "- execution_mode (optional): 'flash', 'balanced' (default), or 'think'\n\n"
+            "Returns:\n"
+            "- agent_id: Database ID of the created agent\n"
+            "- agent_name: Name of the agent\n"
+            "- tool_name: Tool name that can be used to call this agent\n"
+            "- markdown_link: Markdown link in format [Agent Name](agent://agent_id) - USE THIS FORMAT in your response\n"
+            "- status: 'success' or 'error'\n"
+            "- message: Detailed information about the created agent\n\n"
+            "IMPORTANT: Always include the markdown_link in your response when creating an agent successfully. "
+            "Use the format: [Agent Name](agent://agent_id)"
         )
 
     @property
@@ -164,7 +364,7 @@ class CreateAgentTool(AbstractBaseTool):
     async def run_json_async(self, args: Mapping[str, Any]) -> Any:
         """Create a new agent with the given configuration."""
         from .....web.models.agent import Agent, AgentStatus
-        from .....web.services.llm_utils import UserAwareModelStorage
+        from .....web.models.user import UserDefaultModel, UserModel
 
         try:
             agent_name = args.get("name", "").strip()
@@ -218,29 +418,52 @@ class CreateAgentTool(AbstractBaseTool):
                 ).model_dump()
 
             # Get user's default model configuration
-            storage = UserAwareModelStorage(self._db)
-            default_llm, fast_llm, vision_llm, compact_llm = (
-                storage.get_configured_defaults(self._user_id)
+            user_defaults = (
+                self._db.query(UserDefaultModel)
+                .join(UserModel, UserDefaultModel.model_id == UserModel.model_id)
+                .filter(
+                    UserDefaultModel.user_id == self._user_id,
+                    UserModel.user_id == self._user_id,
+                )
+                .all()
             )
 
             # Prepare models configuration
             models_config = {}
-            if default_llm:
-                models_config["general"] = (
-                    default_llm.model_id if hasattr(default_llm, "model_id") else None
+            for default in user_defaults:
+                if default.config_type in [
+                    "general",
+                    "small_fast",
+                    "visual",
+                    "compact",
+                ]:
+                    models_config[default.config_type] = default.model_id
+
+            missing_types = [
+                t
+                for t in ["general", "small_fast", "visual", "compact"]
+                if t not in models_config
+            ]
+            if missing_types:
+                # Fill missing with admin shared defaults
+                admin_defaults = (
+                    self._db.query(UserDefaultModel)
+                    .join(UserModel, UserDefaultModel.model_id == UserModel.model_id)
+                    .filter(
+                        UserDefaultModel.config_type.in_(missing_types),
+                        UserModel.is_shared,
+                    )
+                    .all()
                 )
-            if fast_llm:
-                models_config["small_fast"] = (
-                    fast_llm.model_id if hasattr(fast_llm, "model_id") else None
-                )
-            if vision_llm:
-                models_config["visual"] = (
-                    vision_llm.model_id if hasattr(vision_llm, "model_id") else None
-                )
-            if compact_llm:
-                models_config["compact"] = (
-                    compact_llm.model_id if hasattr(compact_llm, "model_id") else None
-                )
+                for admin_default in admin_defaults:
+                    if admin_default.config_type not in models_config:
+                        models_config[admin_default.config_type] = (
+                            admin_default.model_id
+                        )
+
+            execution_mode = args.get("execution_mode", "balanced")
+            if execution_mode not in ["flash", "balanced", "think"]:
+                execution_mode = "balanced"
 
             # Create the agent in DRAFT status
             agent = Agent(
@@ -248,11 +471,11 @@ class CreateAgentTool(AbstractBaseTool):
                 name=agent_name,
                 description=agent_description,
                 instructions=instructions,
-                execution_mode="graph",
+                execution_mode=execution_mode,
                 models=models_config if models_config else None,
-                knowledge_bases=None,  # No KB by default
-                skills=args.get("skills"),
-                tool_categories=args.get("tool_categories"),
+                knowledge_bases=ensure_list(args.get("knowledge_bases")),
+                skills=ensure_list(args.get("skills")),
+                tool_categories=ensure_list(args.get("tool_categories")),
                 suggested_prompts=[],
                 status=AgentStatus.DRAFT,  # Create as DRAFT, not PUBLISHED
             )
@@ -297,6 +520,448 @@ class CreateAgentTool(AbstractBaseTool):
                 agent_name="",
                 tool_name="",
                 markdown_link="",
+                status="error",
+                message=error_msg,
+            ).model_dump()
+
+
+class UpdateAgentTool(AbstractBaseTool):
+    """
+    Tool for updating an existing draft agent during task execution.
+
+    This allows agents to dynamically update agents with specific capabilities
+    by modifying their name, description, instructions, and allowed tools/skills.
+    """
+
+    # Agent tools belong to the AGENT category
+    category: ToolCategory = ToolCategory.AGENT
+
+    def __init__(
+        self,
+        db: Any,
+        user_id: int,
+        task_id: Optional[str] = None,
+        workspace_base_dir: Optional[str] = None,
+    ):
+        """
+        Initialize the update agent tool.
+
+        Args:
+            db: Database session for updating the agent
+            user_id: User ID for ownership and access control
+            task_id: Task ID for context
+            workspace_base_dir: Base directory for workspace files
+        """
+        self._db = db
+        self._user_id = user_id
+        self._task_id = task_id
+        if workspace_base_dir is None:
+            workspace_base_dir = str(get_uploads_dir())
+        self._workspace_base_dir = workspace_base_dir
+        self._visibility = ToolVisibility.PUBLIC
+
+    @property
+    def name(self) -> str:
+        """Tool name."""
+        return "update_agent"
+
+    @property
+    def description(self) -> str:
+        """Tool description."""
+        # Get available tool categories
+        from .base import ToolCategory
+
+        available_categories = [cat.value for cat in ToolCategory]
+
+        # Get available skills (from builtin skills directory)
+        import os
+
+        skills_dir = os.path.join(
+            os.path.dirname(__file__), "../../../../skills/builtin"
+        )
+        available_skills = []
+        if os.path.exists(skills_dir):
+            for skill_dir in os.listdir(skills_dir):
+                skill_path = os.path.join(skills_dir, skill_dir)
+                if os.path.isdir(skill_path):
+                    available_skills.append(skill_dir)
+
+        skills_list = ", ".join(available_skills) if available_skills else "none"
+        categories_list = ", ".join(available_categories)
+
+        return (
+            "Update an existing agent with specific capabilities during task execution. "
+            "Only DRAFT agents can be updated - PUBLISHED agents must be edited through the web interface.\n\n"
+            "Parameters:\n"
+            "- agent_id: The ID of the agent to update (required)\n"
+            "- name (optional): New name for the agent\n"
+            "- description (optional): New description of when to use this agent\n"
+            f"- tool_categories (optional): Available categories: {categories_list}\n"
+            f"  Example: ['file', 'knowledge', 'basic']\n"
+            f"- knowledge_bases (optional): New list of knowledge base names or IDs to link to this agent.\n"
+            f"- skills (optional): Available skills: {skills_list}\n"
+            f"  Example: ['presentation-generator', 'poster-design']\n"
+            "- instructions (optional): New system prompt/instructions defining the agent's behavior\n"
+            "- execution_mode (optional): 'flash', 'balanced', or 'think'\n\n"
+            "Returns:\n"
+            "- agent_id: Database ID of the updated agent\n"
+            "- agent_name: Name of the agent\n"
+            "- tool_name: Tool name that can be used to call this agent\n"
+            "- markdown_link: Markdown link in format [Agent Name](agent://agent_id)\n"
+            "- status: 'success' or 'error'\n"
+            "- message: Detailed information about the updated agent\n\n"
+            "IMPORTANT: Only agents in DRAFT status can be updated. "
+            "If you need to modify a PUBLISHED agent, create a new one or edit it through the web interface."
+        )
+
+    @property
+    def tags(self) -> list[str]:
+        """Tool tags."""
+        return ["agent", "update"]
+
+    def args_type(self) -> Type[BaseModel]:
+        """Argument type."""
+        return UpdateAgentToolArgs
+
+    def return_type(self) -> Type[BaseModel]:
+        """Return type."""
+        return UpdateAgentToolResult
+
+    def run_json_sync(self, args: Mapping[str, Any]) -> Any:
+        """Sync execution not supported."""
+        raise NotImplementedError("UpdateAgentTool only supports async execution.")
+
+    async def run_json_async(self, args: Mapping[str, Any]) -> Any:
+        """Update an existing agent with the given configuration."""
+        from .....web.models.agent import Agent, AgentStatus
+
+        try:
+            agent_id = args.get("agent_id")
+
+            if not agent_id:
+                return UpdateAgentToolResult(
+                    agent_id=0,
+                    agent_name="",
+                    tool_name="",
+                    markdown_link="",
+                    status="error",
+                    message="Error: Agent ID is required",
+                ).model_dump()
+
+            # Find the agent
+            agent = (
+                self._db.query(Agent)
+                .filter(Agent.id == agent_id, Agent.user_id == self._user_id)
+                .first()
+            )
+
+            if not agent:
+                return UpdateAgentToolResult(
+                    agent_id=0,
+                    agent_name="",
+                    tool_name="",
+                    markdown_link="",
+                    status="error",
+                    message=f"Error: Agent with ID {agent_id} not found",
+                ).model_dump()
+
+            # Check if agent is in DRAFT status
+            if agent.status != AgentStatus.DRAFT:
+                return UpdateAgentToolResult(
+                    agent_id=agent_id,
+                    agent_name=agent.name,
+                    tool_name=gen_agent_tool_name(agent.name),
+                    markdown_link=f"[{agent.name}](agent://{agent.id})",
+                    status="error",
+                    message=f"Error: Only DRAFT agents can be updated. This agent is {agent.status.value.upper()}. "
+                    f"To modify a published agent, please edit it through the web interface or create a new one.",
+                ).model_dump()
+
+            # Track changes
+            changes = []
+
+            # Update name if provided
+            new_name = args.get("name", "").strip() if args.get("name") else None
+            if new_name:
+                # Check for duplicate name (exclude current agent)
+                existing = (
+                    self._db.query(Agent)
+                    .filter(
+                        Agent.user_id == self._user_id,
+                        Agent.name == new_name,
+                        Agent.id != agent_id,
+                    )
+                    .first()
+                )
+                if existing:
+                    return UpdateAgentToolResult(
+                        agent_id=0,
+                        agent_name="",
+                        tool_name="",
+                        markdown_link="",
+                        status="error",
+                        message=f"Error: Agent with name '{new_name}' already exists",
+                    ).model_dump()
+                agent.name = new_name
+                changes.append(f"name → '{new_name}'")
+
+            # Update description if provided
+            new_description = (
+                args.get("description", "").strip() if args.get("description") else None
+            )
+            if new_description:
+                agent.description = new_description
+                changes.append("description updated")
+
+            # Update instructions if provided
+            new_instructions = (
+                args.get("instructions", "").strip()
+                if args.get("instructions")
+                else None
+            )
+            if new_instructions:
+                agent.instructions = new_instructions
+                changes.append("instructions updated")
+
+            # Update tool_categories if provided
+            new_tool_categories = ensure_list(args.get("tool_categories"))
+            if new_tool_categories is not None:
+                agent.tool_categories = new_tool_categories
+                changes.append(f"tool_categories → {new_tool_categories}")
+
+            # Update knowledge_bases if provided
+            new_knowledge_bases = ensure_list(args.get("knowledge_bases"))
+            if new_knowledge_bases is not None:
+                agent.knowledge_bases = new_knowledge_bases
+                changes.append(f"knowledge_bases → {new_knowledge_bases}")
+
+            # Update skills if provided
+            new_skills = ensure_list(args.get("skills"))
+            if new_skills is not None:
+                agent.skills = new_skills
+                changes.append(f"skills → {new_skills}")
+
+            # Update execution_mode if provided
+            new_execution_mode = args.get("execution_mode")
+            if new_execution_mode in ["flash", "balanced", "think"]:
+                agent.execution_mode = new_execution_mode
+                changes.append(f"execution_mode → {new_execution_mode}")
+
+            # Check if there were any changes
+            if not changes:
+                return UpdateAgentToolResult(
+                    agent_id=agent_id,
+                    agent_name=agent.name,
+                    tool_name=gen_agent_tool_name(agent.name),
+                    markdown_link=f"[{agent.name}](agent://{agent.id})",
+                    status="success",
+                    message=f"ℹ️ No updates were made to agent '{agent.name}' (ID: {agent_id}). "
+                    f"All fields were the same or no values were provided.",
+                ).model_dump()
+
+            # Commit changes to database
+            self._db.commit()
+            self._db.refresh(agent)
+
+            # Generate the tool name and markdown link
+            tool_name = gen_agent_tool_name(agent.name)
+            markdown_link = f"[{agent.name}](agent://{agent.id})"
+
+            logger.info(
+                f"Updated DRAFT agent '{agent.name}' (ID: {agent.id}) for user {self._user_id}: {', '.join(changes)}"
+            )
+
+            return UpdateAgentToolResult(
+                agent_id=agent.id,
+                agent_name=agent.name,
+                tool_name=tool_name,
+                markdown_link=markdown_link,
+                status="success",
+                message=(
+                    f"✅ Agent updated successfully\n\n"
+                    f"**Agent Details:**\n"
+                    f"- Agent ID: {agent.id}\n"
+                    f"- Agent Name: {agent.name}\n"
+                    f"- Tool Name: {tool_name}\n"
+                    f"- Status: DRAFT\n\n"
+                    f"**Changes Applied:**\n"
+                    + "\n".join(f"- {change}" for change in changes)
+                    + f"\n\n**How to use this agent:**\n"
+                    f"Include this link in your response: {markdown_link}\n"
+                    f"Or use the tool: {tool_name}\n\n"
+                    f"*The agent will reflect the updated changes on next execution.*"
+                ),
+            ).model_dump()
+
+        except Exception as e:
+            error_msg = f"Error updating agent: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            return UpdateAgentToolResult(
+                agent_id=0,
+                agent_name="",
+                tool_name="",
+                markdown_link="",
+                status="error",
+                message=error_msg,
+            ).model_dump()
+
+
+class ListAgentsTool(AbstractBaseTool):
+    """
+    Tool for listing all agents belonging to the current user.
+
+    This allows users to see all their agents, their status, and get agent IDs
+    for use with other agent management tools.
+    """
+
+    # Agent tools belong to the AGENT category
+    category: ToolCategory = ToolCategory.AGENT
+
+    def __init__(
+        self,
+        db: Any,
+        user_id: int,
+        task_id: Optional[str] = None,
+        workspace_base_dir: Optional[str] = None,
+    ):
+        """
+        Initialize the list agents tool.
+
+        Args:
+            db: Database session for querying agents
+            user_id: User ID for filtering user's agents
+            task_id: Task ID for context
+            workspace_base_dir: Base directory for workspace files
+        """
+        self._db = db
+        self._user_id = user_id
+        self._task_id = task_id
+        if workspace_base_dir is None:
+            workspace_base_dir = str(get_uploads_dir())
+        self._workspace_base_dir = workspace_base_dir
+        self._visibility = ToolVisibility.PUBLIC
+
+    @property
+    def name(self) -> str:
+        """Tool name."""
+        return "list_agents"
+
+    @property
+    def description(self) -> str:
+        """Tool description."""
+        return (
+            "List all agents belonging to the current user with their details.\n\n"
+            "Parameters:\n"
+            "- status_filter (optional): Filter by agent status: 'draft', 'published', or 'archived'. "
+            "If None, shows all agents\n\n"
+            "Returns:\n"
+            "- agents: List of agent information including:\n"
+            "  - agent_id: Database ID (use this for update_agent)\n"
+            "  - name: Agent name\n"
+            "  - description: When to use this agent\n"
+            "  - status: draft, published, or archived\n"
+            "  - tool_name: Tool name to call this agent\n"
+            "  - markdown_link: Markdown link [Agent Name](agent://id)\n"
+            "  - execution_mode: flash, balanced, or think\n"
+            "  - tool_categories: Allowed tool categories\n"
+            "  - skills: Allowed skills\n"
+            "- total_count: Total number of agents\n"
+            "- status: 'success' or 'error'\n"
+            "- message: Detailed information\n\n"
+            "Use this tool to discover available agents and get agent IDs for updating agents."
+        )
+
+    @property
+    def tags(self) -> list[str]:
+        """Tool tags."""
+        return ["agent", "list"]
+
+    def args_type(self) -> Type[BaseModel]:
+        """Argument type."""
+        return ListAgentsToolArgs
+
+    def return_type(self) -> Type[BaseModel]:
+        """Return type."""
+        return ListAgentsToolResult
+
+    def run_json_sync(self, args: Mapping[str, Any]) -> Any:
+        """Sync execution not supported."""
+        raise NotImplementedError("ListAgentsTool only supports async execution.")
+
+    async def run_json_async(self, args: Mapping[str, Any]) -> Any:
+        """List all agents for the current user."""
+        from .....web.models.agent import Agent
+
+        try:
+            status_filter = args.get("status_filter", "").strip().lower()
+            if status_filter and status_filter not in [
+                "draft",
+                "published",
+                "archived",
+            ]:
+                return ListAgentsToolResult(
+                    agents=[],
+                    total_count=0,
+                    status="error",
+                    message=f"Error: Invalid status_filter '{status_filter}'. Must be 'draft', 'published', or 'archived'",
+                ).model_dump()
+
+            # Build query
+            query = self._db.query(Agent).filter(Agent.user_id == self._user_id)
+
+            # Apply status filter if provided
+            if status_filter:
+                query = query.filter(Agent.status == status_filter)
+
+            # Order by status (draft first) then by name
+            agents = query.order_by(Agent.status, Agent.name).all()
+
+            # Build agent info list
+            agent_infos = []
+            for agent in agents:
+                tool_name = gen_agent_tool_name(agent.name)
+                markdown_link = f"[{agent.name}](agent://{agent.id})"
+
+                agent_info = AgentInfo(
+                    agent_id=agent.id,
+                    name=agent.name,
+                    description=agent.description or "No description",
+                    status=agent.status.value,
+                    tool_name=tool_name,
+                    markdown_link=markdown_link,
+                    execution_mode=agent.execution_mode or "react",
+                    knowledge_bases=agent.knowledge_bases,
+                    tool_categories=agent.tool_categories,
+                    skills=agent.skills if agent.skills else None,
+                )
+                agent_infos.append(agent_info.model_dump())
+
+            total_count = len(agent_infos)
+            filter_msg = (
+                f" (filtered by status: {status_filter})" if status_filter else ""
+            )
+
+            logger.info(
+                f"Listed {total_count} agents for user {self._user_id}{filter_msg}"
+            )
+
+            return ListAgentsToolResult(
+                agents=agent_infos,
+                total_count=total_count,
+                status="success",
+                message=(
+                    f"✅ Found {total_count} agent(s){filter_msg}\n\n"
+                    f"*Only DRAFT agents can be updated using update_agent tool. "
+                    f"All agents can be called using their tool_name.*"
+                ),
+            ).model_dump()
+
+        except Exception as e:
+            error_msg = f"Error listing agents: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            return ListAgentsToolResult(
+                agents=[],
+                total_count=0,
                 status="error",
                 message=error_msg,
             ).model_dump()
@@ -726,4 +1391,54 @@ async def create_create_agent_tool(config: "WebToolConfig") -> list[AbstractBase
         return [tool]
     except Exception as e:
         logger.warning(f"Failed to create CreateAgentTool: {e}")
+        return []
+
+
+@register_tool
+async def create_update_agent_tool(config: "WebToolConfig") -> list[AbstractBaseTool]:
+    """Create the UpdateAgentTool for dynamically updating agents."""
+    if not config.get_enable_agent_tools():
+        return []
+
+    try:
+        db = config.get_db()
+        user_id = config.get_user_id()
+        if not user_id:
+            return []
+
+        tool = UpdateAgentTool(
+            db=db,
+            user_id=user_id,
+            task_id=config.get_task_id(),
+            workspace_base_dir=None,  # Will use get_uploads_dir() default
+        )
+        logger.debug(f"Created UpdateAgentTool for user {user_id}")
+        return [tool]
+    except Exception as e:
+        logger.warning(f"Failed to create UpdateAgentTool: {e}")
+        return []
+
+
+@register_tool
+async def create_list_agents_tool(config: "WebToolConfig") -> list[AbstractBaseTool]:
+    """Create the ListAgentsTool for listing user's agents."""
+    if not config.get_enable_agent_tools():
+        return []
+
+    try:
+        db = config.get_db()
+        user_id = config.get_user_id()
+        if not user_id:
+            return []
+
+        tool = ListAgentsTool(
+            db=db,
+            user_id=user_id,
+            task_id=config.get_task_id(),
+            workspace_base_dir=None,  # Will use get_uploads_dir() default
+        )
+        logger.debug(f"Created ListAgentsTool for user {user_id}")
+        return [tool]
+    except Exception as e:
+        logger.warning(f"Failed to create ListAgentsTool: {e}")
         return []

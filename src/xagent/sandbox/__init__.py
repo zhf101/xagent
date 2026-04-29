@@ -9,10 +9,18 @@ from .base import (
     Sandbox,
     SandboxConfig,
     SandboxInfo,
+    SandboxNotFoundError,
     SandboxService,
     SandboxSnapshot,
     SandboxTemplate,
     TemplateType,
+)
+from .docker_sandbox import (
+    DockerSandbox,
+    DockerSandboxService,
+    DockerStore,
+    MemDockerStore,
+    is_docker_available,
 )
 
 # Use the `latest` image as a fallback
@@ -26,10 +34,16 @@ __all__ = [
     "SandboxTemplate",
     "SandboxConfig",
     "SandboxInfo",
+    "SandboxNotFoundError",
     "SandboxSnapshot",
     "ExecResult",
     "Sandbox",
     "SandboxService",
+    "DockerSandbox",
+    "DockerStore",
+    "MemDockerStore",
+    "DockerSandboxService",
+    "is_docker_available",
 ]
 
 try:

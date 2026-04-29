@@ -1,41 +1,24 @@
-"""Web 应用主入口。
-
-这个文件的职责非常克制：它只负责把各业务模块接到 FastAPI 生命周期上，
-而不在这里承载具体领域逻辑。
-
-为什么要强调这一点？
-- 新同学第一次看项目时，最容易把 `app.py` 当成“随手堆逻辑”的总控文件
-- 一旦把业务判断、数据库编排、第三方初始化都塞进来，后续排查启动问题会非常痛苦
-
-因此这里主要做四件事：
-1. 创建 FastAPI app
-2. 注册异常处理、中间件、静态资源
-3. 挂载各业务 router
-4. 在 startup/shutdown 中编排系统级初始化与回收
-"""
-
 import asyncio
 import logging
 import os
 from contextlib import suppress
-from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from ..config import get_uploads_dir
-from ..core.model.chat.logging_callback import setup_llm_logging_from_env
+from .api.admin_mcp import admin_mcp_router
 from .api.admin_users import router as admin_users_router
 from .api.agents import router as agents_router
 from .api.auth import auth_router
 from .api.channel import router as channel_router
 from .api.chat import chat_router
+from .api.cloud_storage import cloud_router
+from .api.custom_api import custom_api_router
 from .api.files import file_router
-from ..gdp.hrun.api.http_assets import router as gdp_http_assets_router
 from .api.kb import kb_router
 from .api.mcp import mcp_router
 from .api.memory import MemoryManagementRouter
@@ -44,24 +27,17 @@ from .api.monitor import monitor_router
 from .api.progress_ws import progress_ws_router
 from .api.skills import router as skills_router
 from .api.system import system_router
-from .api.system_registry import router as system_registry_router
 from .api.templates import router as templates_router
-from ..gdp.vanna.api.text2sql import text2sql_router
+from .api.text2sql import text2sql_router
 from .api.tools import tools_router
-from ..gdp.vanna.api.vanna_assets import router as vanna_assets_router
-from ..gdp.vanna.api.vanna_sql import vanna_router
 from .api.websocket import ws_router
-from ..gdp.vanna.adapter.database.sql_logging import (
-    enable_sql_logging,
-    is_sql_logging_enabled,
-)
+from .api.widget import widget_router
 from .dynamic_memory_store import get_memory_store
 from .logging_config import setup_logging
-from .models.database import get_engine, init_db
+from .models.database import init_db
 
 # Configure logging when running under gunicorn/uwsgi (no __main__.py)
 setup_logging()  # Uses XAGENT_LOG_LEVEL env var or defaults to INFO
-setup_llm_logging_from_env()
 
 logger = logging.getLogger(__name__)
 
@@ -73,30 +49,10 @@ __all__ = ["app"]
 uploads_dir = get_uploads_dir()
 uploads_dir.mkdir(parents=True, exist_ok=True)
 
-# 离线接口文档静态资源目录。
-# 正常情况下建议放在仓库根目录 `static/docs`，但当前用户已经把资源下载到了
-# 一个带前导空格的目录 `./ static/docs`。这里同时兼容两种位置，优先使用规范路径，
-# 找不到时再回退到当前工作区里已经存在的目录，避免让用户重新搬文件。
-repo_root = Path(__file__).resolve().parents[3]
-_docs_asset_candidates = [
-    repo_root / "static" / "docs",
-    repo_root / " static" / "docs",
-]
-docs_assets_dir = next(
-    (candidate for candidate in _docs_asset_candidates if candidate.exists()),
-    _docs_asset_candidates[0],
-)
-
 
 # FastAPI app creation here
 app = FastAPI(
-    title="xagent",
-    description="The Agent Operating System",
-    redirect_slashes=False,
-    # 默认文档页会依赖外部 CDN，离线环境下常见现象是 `/docs` 能打开但页面空白。
-    # 这里关闭 FastAPI 自带文档入口，改由下面的本地静态资源版路由接管。
-    docs_url=None,
-    redoc_url=None,
+    title="xagent", description="The Agent Operating System", redirect_slashes=False
 )
 
 # Track background migration task for graceful shutdown cleanup.
@@ -105,11 +61,7 @@ _migration_task: asyncio.Task[None] | None = None
 
 @app.get("/health")
 async def health_check() -> dict[str, str]:
-    """容器探活接口。
-
-    这里只返回最小成功信号，不做数据库、模型、外部依赖的深探测，
-    避免健康检查本身反过来拖垮服务。
-    """
+    """Health check endpoint for container probes."""
     return {"status": "ok"}
 
 
@@ -118,12 +70,7 @@ async def health_check() -> dict[str, str]:
 async def validation_exception_handler(
     request: Request, exc: RequestValidationError
 ) -> JSONResponse:
-    """统一处理请求参数校验异常。
-
-    这里的核心目标不是“美化报错”，而是保证异常内容一定可 JSON 序列化。
-    某些上传/二进制场景下，FastAPI 原始错误对象里可能混入不可序列化值，
-    如果不先做清洗，异常处理器自己反而会再次抛错。
-    """
+    """Handle request validation errors, especially those containing binary data"""
     import traceback
 
     logger.error(f"Validation error in {request.url}: {str(exc)}")
@@ -167,12 +114,7 @@ async def validation_exception_handler(
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception) -> None:
-    """全局兜底异常处理器。
-
-    这里选择“记录后继续抛出”，而不是直接吞掉异常返回统一文案，
-    原因是上层仍然需要保留 FastAPI / Starlette 的默认错误传播行为，
-    否则很多调试信息会被吃掉。
-    """
+    """Global exception handler, ensuring all errors are recorded"""
     import traceback
 
     logger.error(f"Unhandled exception in {request.url}: {str(exc)}")
@@ -199,48 +141,13 @@ app.mount(
     name="uploads",
 )
 
-# 这里单独挂载文档静态资源，而不是复用 uploads 目录。
-# 原因是离线 Swagger/ReDoc 资源属于应用静态资产，不应该混进用户上传文件空间。
-app.mount(
-    "/docs-assets",
-    StaticFiles(directory=str(docs_assets_dir)),
-    name="docs-assets",
-)
-
-
-@app.get("/docs", include_in_schema=False)
-async def custom_swagger_docs():
-    """返回离线可用的 Swagger UI 文档页。"""
-
-    return get_swagger_ui_html(
-        openapi_url=app.openapi_url or "/openapi.json",
-        title=f"{app.title} - Docs",
-        swagger_js_url="/docs-assets/swagger-ui-bundle.js",
-        swagger_css_url="/docs-assets/swagger-ui.css",
-        swagger_favicon_url="/docs-assets/favicon.png",
-    )
-
-
-@app.get("/redoc", include_in_schema=False)
-async def custom_redoc_docs():
-    """返回离线可用的 ReDoc 文档页。"""
-
-    return get_redoc_html(
-        openapi_url=app.openapi_url or "/openapi.json",
-        title=f"{app.title} - ReDoc",
-        redoc_js_url="/docs-assets/redoc.standalone.js",
-        redoc_favicon_url="/docs-assets/favicon.png",
-        with_google_fonts=False,
-    )
-
-# memory 管理路由需要延迟绑定 memory store getter，
-# 这样启动后如果 embedding model 或 vector backend 发生切换，
-# 路由里拿到的仍然是当前有效的 store，而不是启动瞬间的旧实例。
+# memory management router with dynamic memory store
 memory_router = MemoryManagementRouter(get_memory_store).get_router()
 
 # API routers
 app.include_router(auth_router)
 app.include_router(chat_router)
+app.include_router(cloud_router)
 app.include_router(file_router)
 app.include_router(kb_router)
 app.include_router(model_router)
@@ -249,46 +156,26 @@ app.include_router(monitor_router)
 app.include_router(progress_ws_router)
 app.include_router(memory_router)
 app.include_router(mcp_router)
+app.include_router(custom_api_router)
 app.include_router(text2sql_router)
 app.include_router(tools_router)
 app.include_router(admin_users_router)
+app.include_router(admin_mcp_router)
 app.include_router(skills_router)
 app.include_router(system_router)
-app.include_router(system_registry_router)
 app.include_router(templates_router)
 app.include_router(agents_router)
-app.include_router(gdp_http_assets_router)
-app.include_router(vanna_assets_router)
-app.include_router(vanna_router)
 app.include_router(channel_router, prefix="/api/channels", tags=["Channels"])
+app.include_router(widget_router)
 
 
 # initial database and skill manager
 @app.on_event("startup")
 async def startup_event() -> None:
-    """应用启动编排。
-
-    这里做的都是“系统级一次性初始化”，例如：
-    - 数据库 schema 初始化
-    - skill/template manager 准备
-    - memory store 类型日志输出
-    - 向量库迁移任务、渠道初始化、sandbox 初始化
-
-    约束：
-    - 业务 CRUD 绝不能放进这里
-    - 任何可能失败的外围能力都应尽量降级，而不是直接阻塞整个 Web 服务启动
-    """
     global _migration_task
     logger.info("Initializing database...")
     init_db()
     logger.info("Database initialized successfully")
-    if is_sql_logging_enabled():
-        enable_sql_logging(
-            engine=get_engine(),
-            log_params=os.getenv("SQL_LOG_QUERY_PARAMS", "true").lower() == "true",
-            log_results=os.getenv("SQL_LOG_RESULTS", "false").lower() == "true",
-        )
-        logger.info("SQL logging enabled")
 
     # Initialize skill manager
     from ..skills.utils import create_skill_manager
@@ -310,20 +197,15 @@ async def startup_event() -> None:
         f"Template manager initialized with {len(await template_manager.list_templates())} templates"
     )
 
-    # memory store 会根据 embedding model 和 vector backend 动态切换。
-    # 启动时把当前实际落地的 store 类型打到日志里，方便排查“为什么这次没有向量检索”。
+    # Log memory store type (using dynamic manager)
     from .dynamic_memory_store import get_memory_store_manager
 
     manager = get_memory_store_manager()
     store_info = manager.get_store_info()
 
     if store_info["is_lancedb"]:
-        backend_name = store_info.get("vector_backend") or "lancedb"
-        logger.info(
-            "Using persistent vector memory store (backend=%s, vector_search=enabled)",
-            backend_name,
-        )
-        logger.info("Memory store embedding model ID: %s", store_info["embedding_model_id"])
+        logger.info("Using LanceDB memory store with vector search capabilities")
+        logger.info(f"Embedding model ID: {store_info['embedding_model_id']}")
     else:
         logger.info("Using in-memory store (no vector search capabilities)")
 
@@ -331,9 +213,9 @@ async def startup_event() -> None:
         f"Memory store similarity threshold: {store_info['similarity_threshold']}"
     )
 
-    # 向量库结构迁移是潜在耗时动作，因此默认关闭，只在显式环境变量开启时执行。
-    # 这里保留后台异步任务句柄，shutdown 时需要尝试优雅回收。
-    auto_migrate = os.getenv("LANCEDB_AUTO_MIGRATE", "false").lower() == "true"
+    # Auto-migrate LanceDB tables if needed (for multi-tenancy support)
+    # Controlled by LANCEDB_AUTO_MIGRATE environment variable (default: true)
+    auto_migrate = os.getenv("LANCEDB_AUTO_MIGRATE", "true").lower() == "true"
 
     try:
         from ..core.tools.core.RAG_tools.LanceDB.schema_manager import (
@@ -357,7 +239,7 @@ async def startup_event() -> None:
         for table_name in tables_to_check:
             if check_table_needs_migration(conn, table_name):
                 logger.warning(
-                    "Vector-store table '%s' needs compatibility migration (missing user_id field)",
+                    "Table '%s' needs migration (missing user_id field)",
                     table_name,
                 )
                 tables_need_migration_list.append(table_name)
@@ -373,7 +255,7 @@ async def startup_event() -> None:
                 for table_name in list_embeddings_table_names(conn):
                     if check_table_needs_migration(conn, table_name):
                         logger.warning(
-                            "Vector-store table '%s' needs compatibility migration (missing user_id field)",
+                            "Table '%s' needs migration (missing user_id field)",
                             table_name,
                         )
                         tables_need_migration_list.append(table_name)
@@ -384,17 +266,17 @@ async def startup_event() -> None:
         if needs_migration:
             if tables_need_migration_list:
                 logger.warning(
-                    "Vector-store tables requiring compatibility migration: %s",
+                    "Tables requiring migration: %s",
                     ", ".join(tables_need_migration_list),
                 )
 
             if auto_migrate:
                 # Run migration in background to avoid blocking startup
                 logger.info("=" * 60)
-                logger.info("STARTING BACKGROUND VECTOR-STORE USER_ID BACKFILL MIGRATION")
+                logger.info("STARTING BACKGROUND LANCEDB MIGRATION")
                 logger.info("=" * 60)
                 logger.info(
-                    "Vector-store tables requiring compatibility migration: %s",
+                    "Tables requiring migration: %s",
                     ", ".join(tables_need_migration_list),
                 )
 
@@ -404,7 +286,7 @@ async def startup_event() -> None:
                     try:
                         result = await asyncio.to_thread(backfill_all, dry_run=False)
                         logger.info("=" * 60)
-                        logger.info("BACKGROUND VECTOR-STORE USER_ID BACKFILL MIGRATION COMPLETED")
+                        logger.info("BACKGROUND LANCEDB MIGRATION COMPLETED")
                         logger.info("=" * 60)
                         logger.info(
                             "Migration results: chunks=%s backfilled, embeddings=%s backfilled",
@@ -425,7 +307,7 @@ async def startup_event() -> None:
                             )
                     except Exception as e:
                         logger.error("=" * 60)
-                        logger.error("BACKGROUND VECTOR-STORE USER_ID BACKFILL MIGRATION FAILED")
+                        logger.error("BACKGROUND LANCEDB MIGRATION FAILED")
                         logger.error("=" * 60)
                         logger.error("Error: %s", e, exc_info=True)
                         logger.warning(
@@ -439,20 +321,171 @@ async def startup_event() -> None:
             else:
                 logger.warning(
                     "LANCEDB_AUTO_MIGRATE is disabled. "
-                    "Vector-store compatibility migration will NOT run automatically. "
+                    "Migration will NOT run automatically. "
                     "To enable automatic migration, set LANCEDB_AUTO_MIGRATE=true. "
                     "To run migration manually: python -m xagent.migrations.lancedb.backfill_user_id"
                 )
         else:
-            logger.info(
-                "Vector-store compatibility tables are up to date; no user_id backfill migration needed"
-            )
+            logger.info("LanceDB tables are up to date, no migration needed")
     except Exception as e:
         logger.warning(
-            "Could not check vector-store compatibility migration status: %s. "
+            "Could not check LanceDB migration status: %s. "
             "Application will continue, but some features may not work correctly.",
             e,
         )
+
+    # Auto-fix file_id nullability and backfill documents table if needed
+    # Controlled by LANCEDB_AUTO_MIGRATE environment variable (default: false)
+    if auto_migrate:
+        try:
+            from ..providers.vector_store.lancedb import get_connection_from_env
+
+            conn = get_connection_from_env()
+
+            # Fix file_id nullability before any backfill (must run first since
+            # the backfill reads the table and will crash if file_id is
+            # non-nullable with null values)
+            try:
+                from ..migrations.lancedb.fix_file_id_nullable import (
+                    fix_file_id_nullable,
+                )
+
+                fix_result = fix_file_id_nullable(dry_run=False, conn=conn)
+                if fix_result.get("fixed"):
+                    logger.info(
+                        "Auto-fixed file_id column to nullable in documents table"
+                    )
+            except Exception as e:
+                logger.warning("Could not fix file_id nullability: %s", e)
+
+            # Check if documents table exists and needs backfill
+            documents_table = None
+            try:
+                from ..core.tools.core.RAG_tools.LanceDB.schema_manager import (
+                    _safe_close_table,
+                )
+                from ..core.tools.core.RAG_tools.utils.lancedb_query_utils import (
+                    query_to_list,
+                )
+
+                documents_table = conn.open_table("documents")
+
+                # Check for empty string file_id values
+                empty_file_id_count = len(
+                    query_to_list(
+                        documents_table.search().where("file_id = ''").limit(1)
+                    )
+                )
+
+                # Check for NULL user_id values
+                null_user_id_count = len(
+                    query_to_list(
+                        documents_table.search().where("user_id IS NULL").limit(1)
+                    )
+                )
+
+                if empty_file_id_count > 0 or null_user_id_count > 0:
+                    logger.info("=" * 60)
+                    logger.info("STARTING BACKGROUND DOCUMENTS TABLE BACKFILL")
+                    logger.info("=" * 60)
+                    if empty_file_id_count > 0:
+                        logger.info("Found empty string file_id values to backfill")
+                    if null_user_id_count > 0:
+                        logger.info("Found NULL user_id values to backfill")
+
+                    async def run_documents_backfill_background() -> None:
+                        from ..migrations.lancedb.backfill_documents_file_id import (
+                            backfill_all,
+                        )
+
+                        try:
+                            result = await asyncio.to_thread(
+                                backfill_all, dry_run=False, conn=conn
+                            )
+                            logger.info("=" * 60)
+                            logger.info("DOCUMENTS TABLE BACKFILL COMPLETED")
+                            logger.info("=" * 60)
+
+                            file_id_result = result.get("file_id", {})
+                            user_id_result = result.get("user_id", {})
+
+                            if file_id_result.get("updated", 0) > 0:
+                                logger.info(
+                                    "file_id backfill: %d rows updated",
+                                    file_id_result.get("updated", 0),
+                                )
+                            if user_id_result.get("updated", 0) > 0:
+                                logger.info(
+                                    "user_id backfill: %d rows updated",
+                                    user_id_result.get("updated", 0),
+                                )
+
+                            if file_id_result.get("error"):
+                                logger.warning(
+                                    "file_id backfill error: %s",
+                                    file_id_result.get("error"),
+                                )
+                            if user_id_result.get("error"):
+                                logger.warning(
+                                    "user_id backfill error: %s",
+                                    user_id_result.get("error"),
+                                )
+                        except Exception as e:
+                            logger.error("=" * 60)
+                            logger.error("DOCUMENTS TABLE BACKFILL FAILED")
+                            logger.error("=" * 60)
+                            logger.error("Error: %s", e, exc_info=True)
+                            logger.warning(
+                                "Some features may not work correctly. "
+                                "Please run backfill manually: python -m xagent.migrations.lancedb.backfill_documents_file_id"
+                            )
+
+                    # Start background task
+                    _migration_task = asyncio.create_task(
+                        run_documents_backfill_background()
+                    )
+                else:
+                    logger.info("Documents table backfill not needed")
+            except Exception as e:
+                # Documents table might not exist yet
+                logger.debug("Could not check documents table: %s", e)
+            finally:
+                _safe_close_table(documents_table)
+        except Exception as e:
+            logger.warning(
+                "Could not check documents table backfill status: %s. "
+                "Application will continue.",
+                e,
+            )
+
+    # Periodic collection metadata rebuild to keep cache in sync
+    async def run_metadata_rebuild_background() -> None:
+        import os
+
+        interval_hours = float(os.getenv("XAGENT_METADATA_REBUILD_INTERVAL_HOURS", "6"))
+        interval_seconds = interval_hours * 3600
+        while True:
+            try:
+                await asyncio.sleep(interval_seconds)
+                from xagent.core.tools.core.RAG_tools.management.collection_manager import (
+                    rebuild_collection_metadata,
+                )
+
+                await rebuild_collection_metadata()
+                logger.info("Periodic collection metadata rebuild completed")
+            except Exception as e:
+                logger.warning("Collection metadata rebuild failed: %s", e)
+
+    if not os.getenv("PYTEST_CURRENT_TEST"):
+        app.state.metadata_rebuild_task = asyncio.create_task(
+            run_metadata_rebuild_background()
+        )
+        logger.info(
+            "Started background collection metadata rebuild task (interval=%sh)",
+            os.getenv("XAGENT_METADATA_REBUILD_INTERVAL_HOURS", "6"),
+        )
+    else:
+        logger.info("Skipping background metadata rebuild (test environment)")
 
     # Warmup sandbox manager
     from .sandbox_manager import get_sandbox_manager
@@ -487,21 +520,22 @@ async def startup_event() -> None:
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
-    """应用关闭编排。
-
-    shutdown 的目标不是“把所有资源都强制关死”，而是尽量优雅回收：
-    - 停掉后台迁移任务
-    - 关闭外部 channel
-    - 释放 sandbox / manager 等长生命周期对象
-    """
     global _migration_task
 
     if _migration_task and not _migration_task.done():
-        logger.info("Cancelling background vector-store compatibility migration task...")
+        logger.info("Cancelling background LanceDB migration task...")
         _migration_task.cancel()
         with suppress(asyncio.CancelledError):
             await _migration_task
     _migration_task = None
+
+    # Cancel metadata rebuild background task
+    if hasattr(app.state, "metadata_rebuild_task"):
+        task = app.state.metadata_rebuild_task
+        if task and not task.done():
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
 
     # Shutdown Telegram channel if enabled
     try:
