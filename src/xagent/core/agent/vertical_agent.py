@@ -1,9 +1,8 @@
 """
-Base class for vertical specialized agents.
+垂直领域专用 agent 的基类。
 
-This module provides a foundation for creating domain-specific agents
-that inherit from the base Agent class while providing specialized
-functionality for specific vertical domains like text2sql, code review, etc.
+本模块为创建特定领域的 agent 提供基础，这些 agent 继承自基础 Agent 类，
+同时为 text2sql、code review 等特定垂直领域提供专门的功能。
 """
 
 from __future__ import annotations

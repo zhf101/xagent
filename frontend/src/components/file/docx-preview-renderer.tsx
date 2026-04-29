@@ -13,8 +13,14 @@ export function DocxPreviewRenderer({ base64Content }: DocxPreviewRendererProps)
   const { t } = useI18n()
 
   useEffect(() => {
+    let cancelled = false
+    const container = containerRef.current
+
     const render = async () => {
-      if (!containerRef.current || !base64Content) {
+      if (!container || !base64Content) {
+        if (!cancelled) {
+          setError(null)
+        }
         return
       }
 
@@ -25,20 +31,36 @@ export function DocxPreviewRenderer({ base64Content }: DocxPreviewRendererProps)
           bytes[i] = binary.charCodeAt(i)
         }
 
-        containerRef.current.innerHTML = ""
+        container.innerHTML = ""
         const docxPreview = await import("docx-preview")
-        await docxPreview.renderAsync(bytes.buffer, containerRef.current, undefined, {
+        if (cancelled) {
+          return
+        }
+
+        await docxPreview.renderAsync(bytes.buffer, container, undefined, {
           className: "docx-preview",
           inWrapper: true,
           useBase64URL: true,
         })
-        setError(null)
+
+        if (!cancelled) {
+          setError(null)
+        }
       } catch {
-        setError(t("files.previewDialog.errors.docxRenderFailed"))
+        if (!cancelled) {
+          setError(t("files.previewDialog.errors.docxRenderFailed"))
+        }
       }
     }
 
-    render()
+    void render()
+
+    return () => {
+      cancelled = true
+      // 这里主动清空预览容器，避免上一次文档的 DOM 片段在组件卸载后残留，
+      // 也避免异步渲染较慢时，旧内容在下一次挂载前短暂闪回。
+      container?.replaceChildren()
+    }
   }, [base64Content, t])
 
   if (error) {

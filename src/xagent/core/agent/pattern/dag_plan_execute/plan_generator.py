@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 
 class PlanGenerator:
-    """Handles plan generation and extension logic"""
+    """负责计划生成和扩展逻辑"""
 
     # Common planning strategy guidelines
     _PLANNING_GUIDELINES = (
@@ -401,22 +401,22 @@ class PlanGenerator:
                         retry_messages = clean_messages(prompt) + [
                             {
                                 "role": "user",
-                                "content": f"\n\nPREVIOUS ERROR INFORMATION:\n"
-                                f"Error Type: DAGPlanGenerationError\n"
-                                f"Error Message: {str(e)}\n"
-                                f"Missing Tools: {', '.join(missing_tools)}\n\n"
-                                f"Available Tools:\n"
+                                "content": f"\n\n上一次错误信息：\n"
+                                f"错误类型：DAGPlanGenerationError\n"
+                                f"错误消息：{str(e)}\n"
+                                f"缺失工具：{', '.join(missing_tools)}\n\n"
+                                f"可用工具：\n"
                                 f"{', '.join(available_tools_list)}\n\n"
-                                f"COMMON TOOL NAMING MISTAKES TO AVOID:\n"
-                                f"- Use 'write_file' NOT 'write__file' (single underscore, not double)\n"
-                                f"- Use 'read_file' NOT 'read__file'\n"
-                                f"- Do NOT add any prefixes or suffixes to tool names\n"
-                                f"- Do NOT invent tools that are not in the Available Tools list\n\n"
-                                f"Please correct your plan by:\n"
-                                f"1. Removing references to non-existent tools: {', '.join(missing_tools)}\n"
-                                f"2. Using only tools from the Available Tools list above\n"
-                                f"3. If you need functionality not covered by available tools, break the task into simpler steps that can use available tools\n\n"
-                                f"Retry your plan generation with correct tool names.",
+                                f"常见工具命名错误，必须避免：\n"
+                                f"- 使用 'write_file'，不要写成 'write__file'（单下划线，不是双下划线）\n"
+                                f"- 使用 'read_file'，不要写成 'read__file'\n"
+                                f"- 不要给工具名额外添加前缀或后缀\n"
+                                f"- 不要发明不在“可用工具”列表里的工具\n\n"
+                                f"请按以下要求修正计划：\n"
+                                f"1. 删除对不存在工具的引用：{', '.join(missing_tools)}\n"
+                                f"2. 只能使用上面“可用工具”列表中的工具\n"
+                                f"3. 如果可用工具暂时不能直接覆盖所需功能，请把任务拆成更简单、能由现有工具完成的步骤\n\n"
+                                f"现在请使用正确工具名重新生成计划。",
                             }
                         ]
 
@@ -719,15 +719,15 @@ class PlanGenerator:
         # 结果就是不同执行模式下，同一句用户话术会走不同工具。
         if "api_call" in tool_names:
             discovery_rules.append(
-                "- If the user already specifies a concrete URL, endpoint, curl snippet, OpenAPI path, or asks to call a designated HTTP API directly, prefer execution mode so `api_call` can be used directly."
+                "- 如果用户已经给出明确的 URL、endpoint、curl 片段、OpenAPI path，或者明确要求直连某个 HTTP API，应优先进入执行模式，直接使用 `api_call`。"
             )
         if "query_http_resource" in tool_names:
             discovery_rules.append(
-                "- Use execution mode to query HTTP assets only when the user needs an internal managed HTTP capability but has not specified a concrete endpoint yet."
+                "- 只有当用户需要的是内部托管 HTTP 能力、但尚未给出明确 endpoint 时，才通过执行模式查询 HTTP assets。"
             )
         if "execute_http_resource" in tool_names:
             discovery_rules.append(
-                "- Use execute_http_resource only after a managed HTTP asset is identified; it is not the default path for arbitrary direct API calls."
+                "- 只有在托管 HTTP asset 已被识别出来后，才能使用 `execute_http_resource`；它不是任意直连 API 调用的默认路径。"
             )
         if "query_vanna_sql_asset" in tool_names:
             discovery_rules.append(
@@ -736,6 +736,18 @@ class PlanGenerator:
         if "knowledge_search" in tool_names or "list_knowledge_bases" in tool_names:
             discovery_rules.append(
                 "- 回答内部业务问题前，先进入执行模式检查/搜索知识库，而不是直接依赖内置知识。"
+            )
+        if (
+            ("knowledge_search" in tool_names or "list_knowledge_bases" in tool_names)
+            and (
+                "query_http_resource" in tool_names
+                or "query_vanna_sql_asset" in tool_names
+                or "read_skill_doc" in tool_names
+                or has_mcp_tools
+            )
+        ):
+            discovery_rules.append(
+                "- 如果知识库未命中，但问题仍明显依赖内部业务/行业流程，不要回到 chat 模式用通用知识硬答；继续进入执行模式检查 HTTP asset、SQL asset、skill 文档或 MCP 工具。"
             )
         if "read_skill_doc" in tool_names or "list_skill_docs" in tool_names:
             discovery_rules.append(
@@ -755,6 +767,7 @@ class PlanGenerator:
             "- 如果请求可能依赖内部业务数据、开户流程、环境操作、HTTP/API 资源、SQL assets、知识库、skills 或 MCP 连接系统，你必须返回 `{\\\"type\\\": \\\"plan\\\"}`。\n"
             "- 不要仅仅因为参数不完整、暂时不确定该用哪个 asset，或者你以为自己无法访问内部系统，就返回 `type=\\\"chat\\\"`。\n"
             "- 执行阶段的存在，就是为了先检查资产，再在必要时追问精确缺失参数。\n"
+            "- 如果某一类检索工具（例如知识库）没有找到结果，但仍有其他内部工具链可尝试，也必须继续规划执行，不要因为单点未命中就降级成普通聊天。\n"
             "- 只有当请求是纯粹的普通对话，或者无需任何内部工具、资产、知识检索就能完整回答时，才使用 `type=\\\"chat\\\"`。\n"
             + "\n".join(discovery_rules)
             + "\n"
@@ -1159,7 +1172,7 @@ class PlanGenerator:
         if tools:
             tools_context = self._build_tools_context(tools)
         else:
-            tools_context = "\n\nNote: No tools are currently available. Please generate a conceptual execution plan that breaks down the task into logical steps. Use hypothetical tool names that would be appropriate for each step (e.g., 'data_analyzer', 'report_generator', etc.). Each step should be executable conceptually even without actual tools.\n"
+            tools_context = "\n\n注意：当前没有可用工具。请生成一个概念性的执行计划，把任务拆解成逻辑上可执行的多个步骤。你可以为每个步骤使用合适的“假想工具名”（例如 `data_analyzer`、`report_generator` 等）来表达步骤意图。即使没有真实工具，每个步骤在概念上也应是可执行的。\n"
 
         # Build system prompt with role or custom instruction
         if use_custom_role:
@@ -1612,11 +1625,11 @@ class PlanGenerator:
         # Build error context for retry
         error_message = ""
         if error_context:
-            error_message = "\n\nPREVIOUS ERROR INFORMATION:\n"
+            error_message = "\n\n上一次错误信息：\n"
             error_message += (
-                f"Error Type: {error_context.get('error_type', 'Unknown')}\n"
+                f"错误类型：{error_context.get('error_type', '未知错误')}\n"
             )
-            error_message += f"Error Message: {error_context.get('error_message', 'Unknown error')}\n"
+            error_message += f"错误消息：{error_context.get('error_message', '未知错误')}\n"
 
             # Add specific guidance based on error type
             if error_context.get("error_type") in [
@@ -1634,7 +1647,7 @@ class PlanGenerator:
             )
 
         content = (
-            f'Please ensure your response is a valid JSON object with the exact format:\n{{\n  "plan": {{\n    "steps": [...]\n  }}\n}}\n\nThe \'steps\' array should contain the execution steps. Do not include any other fields at the top level.{error_message}'
+            f'请确保你的响应是一个合法 JSON 对象，且必须严格使用以下格式：\n{{\n  "plan": {{\n    "steps": [...]\n  }}\n}}\n\n其中 `steps` 数组用于承载执行步骤，不要在最外层加入任何其他字段。{error_message}'
             f"{self._PLANNING_EXAMPLE}"
         )
 

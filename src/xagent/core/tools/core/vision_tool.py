@@ -270,9 +270,9 @@ class VisionCore:
             Dictionary with image descriptions and metadata
         """
         detail_prompts = {
-            "simple": "Please provide a brief description of what you see in these images.",
-            "normal": "Please describe what you see in these images, including main subjects, actions, and context.",
-            "detailed": "Please provide a detailed description of these images, including objects, people, actions, setting, colors, composition, and any notable details.",
+            "simple": "请简要描述这些图片中你看到了什么。",
+            "normal": "请描述这些图片中的主要对象、动作和场景上下文。",
+            "detailed": "请详细描述这些图片，包括物体、人物、动作、场景、颜色、构图以及任何值得注意的细节。",
         }
 
         question = detail_prompts.get(detail_level, detail_prompts["normal"])
@@ -366,20 +366,20 @@ class VisionCore:
 
             # Prepare the detection prompt
             prompt = f"""
-            Task: {task}
+            任务：{task}
 
-            Please analyze this image and detect objects according to the task above.
+            请根据上述任务分析这张图片，并完成目标检测。
 
-            For each detected object, provide:
-            1. Object class/name
-            2. Bounding box coordinates in normalized format [xmin, ymin, xmax, ymax] where:
-               - xmin, ymin: top-left corner (0.0 to 1.0)
-               - xmax, ymax: bottom-right corner (0.0 to 1.0)
-            3. Confidence score (0.0 to 1.0)
+            对每个检测到的目标，请提供：
+            1. 目标类别/名称
+            2. 归一化后的边界框坐标 [xmin, ymin, xmax, ymax]，其中：
+               - xmin, ymin：左上角坐标（0.0 到 1.0）
+               - xmax, ymax：右下角坐标（0.0 到 1.0）
+            3. 置信度分数（0.0 到 1.0）
 
-            Only include detections with confidence >= {confidence_threshold}.
+            仅保留置信度 >= {confidence_threshold} 的检测结果。
 
-            Format your response as a JSON object with this structure:
+            请按以下 JSON 结构返回：
             {{
                 "detections": [
                     {{

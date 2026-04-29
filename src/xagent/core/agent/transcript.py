@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 def build_assistant_transcript_content(
     content: str | None, interactions: Optional[List[Any]] = None
 ) -> str:
-    """Build assistant transcript text that preserves interactive prompts."""
+    """构建保留交互式提示的 assistant 转录内容。"""
     content_parts = [str(content)] if content is not None else []
 
     if interactions:
@@ -76,7 +76,7 @@ def build_assistant_transcript_content(
 def normalize_transcript_messages(
     messages: List[Dict[str, Any]],
 ) -> List[Dict[str, str]]:
-    """Normalize transcript messages for use by LLM-backed chat patterns."""
+    """将转录消息规范化为适合 LLM 聊天模式使用的格式。"""
     normalized: List[Dict[str, str]] = []
     for message in messages:
         role = str(message.get("role", "")).strip().lower()

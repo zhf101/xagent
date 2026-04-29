@@ -1,11 +1,11 @@
-"""LanceDB migration: Backfill user_id for chunks and embeddings tables.
+"""LanceDB 迁移：回填 chunks 和 embeddings 表中的 user_id 字段。
 
-This migration script backfills the user_id field in chunks and embeddings tables
-by joining with the documents table. This is necessary for multi-tenancy data isolation.
+此迁移脚本通过关联 documents 表，回填 chunks 和 embeddings 表中的 user_id 字段
+这是实现多租户数据隔离所必需的。
 
-Uses two-phase migration:
-- Phase 1: Normal backfill, mark orphaned records with reserved sentinel
-- Phase 2: Retry orphaned records in case their parent documents were created concurrently
+使用两阶段迁移：
+- 阶段 1：正常回填，用保留哨兵值标记孤立记录
+- 阶段 2：重试孤立记录，以防其父文档在迁期间并发创建
 """
 
 from __future__ import annotations
@@ -22,8 +22,8 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from lancedb.db import DBConnection
 
-# Add parent directories to path for imports
-# This must be done before importing project modules
+# 将父目录添加到路径以供导入
+# 这必须在导入项目模块之前完成
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(os.path.dirname(os.path.dirname(current_dir)))
 if project_root not in sys.path:
@@ -31,7 +31,7 @@ if project_root not in sys.path:
 
 from xagent.core.tools.core.RAG_tools.core.config import MIN_INT64
 
-# Import after path modification (required for standalone migration scripts)
+# 路径修改后导入（独立迁移脚本需要）
 # ruff: noqa: E402
 from xagent.core.tools.core.RAG_tools.utils.lancedb_query_utils import (
     list_embeddings_table_names,
@@ -46,12 +46,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Batch size for processing records to avoid memory issues
+# 记录处理的批次大小，避免内存问题
 BATCH_SIZE = 10000
 
-# Orphaned record markers
-# Use int64 lower-bound sentinels reserved for internal migration states.
-# This avoids collisions with user filtering semantics (e.g. unauthenticated access).
+# 孤立记录标记
+# 使用为内部迁移状态保留的 int64 下限哨兵值。
+# 这避免了与用户过滤语义（如未认证访问）的冲突。
 ORPHANED_TEMPORARY = (
     MIN_INT64  # Phase 1: Temporary orphan (may be due to concurrent document creation)
 )
@@ -59,20 +59,20 @@ ORPHANED_PERMANENT = (
     MIN_INT64 + 1
 )  # Phase 2: Permanent orphan (confirmed no matching document exists)
 
-# Global lock to prevent concurrent migrations
+# 全局锁，防止并发迁移
 _migration_lock = threading.Lock()
 
 
 def _ensure_table_exists(conn: DBConnection, table_name: str) -> None:
-    """Ensure a table exists, creating it with default schema if it doesn't.
+    """确保表存在，若不存在则使用默认 schema 创建。
 
-    Unlike ensure_*_table functions, this doesn't validate schema, allowing
-    migration code to work with old schema tables.
+    与 ensure_*_table 函数不同，此函数不验证 schema，允许
+    迁移代码与旧 schema 表一起工作。
     """
     try:
         conn.open_table(table_name)
     except Exception:
-        # Table doesn't exist, create it with default schema
+        # 表不存在，使用默认 schema 创建
         if table_name == "chunks":
             import pyarrow as pa  # type: ignore
 
@@ -117,7 +117,7 @@ def _ensure_table_exists(conn: DBConnection, table_name: str) -> None:
 
 
 def _get_migration_lock_file_path() -> str:
-    """Resolve file lock path for cross-process migration coordination."""
+    """为跨进程迁移协调解析文件锁路径。"""
     lock_file = os.environ.get("LANCEDB_MIGRATION_LOCK_FILE")
     if lock_file:
         return lock_file
@@ -133,7 +133,7 @@ def _get_migration_lock_file_path() -> str:
 
 
 def _acquire_file_lock() -> Any | None:
-    """Acquire non-blocking file lock shared by all local processes."""
+    """获取所有本地进程共享的非阻塞文件锁。"""
     lock_path = _get_migration_lock_file_path()
     os.makedirs(os.path.dirname(lock_path), exist_ok=True)
     lock_file = open(lock_path, "a+", encoding="utf-8")
@@ -153,7 +153,7 @@ def _acquire_file_lock() -> Any | None:
 
 
 def _release_file_lock(lock_file: Any) -> None:
-    """Release file lock and close file handle safely."""
+    """安全释放文件锁并关闭文件句柄。"""
     try:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
     finally:
@@ -161,12 +161,12 @@ def _release_file_lock(lock_file: Any) -> None:
 
 
 def _orphaned_temporary_filter() -> str:
-    """Build a LanceDB-safe filter for ORPHANED_TEMPORARY int64 sentinel."""
+    """为 ORPHANED_TEMPORARY int64 哨兵值构建 LanceDB 安全的过滤条件。"""
     return f"user_id = cast({ORPHANED_TEMPORARY} as bigint)"
 
 
 def _build_doc_id_in_filter(doc_ids: list[str]) -> str:
-    """Build a safe LanceDB IN filter for doc_id values."""
+    """为 doc_id 值构建安全的 LanceDB IN 过滤条件。"""
     escaped_ids = [f"'{escape_lancedb_string(doc_id)}'" for doc_id in doc_ids]
     return f"doc_id IN ({', '.join(escaped_ids)})"
 
@@ -174,7 +174,7 @@ def _build_doc_id_in_filter(doc_ids: list[str]) -> str:
 def _build_record_update_filter(
     record: dict[str, Any], filter_fields: list[str]
 ) -> str:
-    """Build a safe AND filter targeting a single record by key fields."""
+    """通过关键字段构建定位单条记录的安全 AND 过滤条件。"""
     filter_parts: list[str] = []
     for field_name in filter_fields:
         field_value = record.get(field_name)
@@ -182,7 +182,7 @@ def _build_record_update_filter(
             filter_parts.append(f"{field_name} IS NULL")
             continue
 
-        # Keep numeric comparisons unquoted; quote and escape all other scalar values.
+        # 数值比较不加引号；对其他标量值加引号并转义。
         if isinstance(field_value, (int, float)) and not isinstance(field_value, bool):
             filter_parts.append(f"{field_name} = {field_value}")
         else:
@@ -192,12 +192,12 @@ def _build_record_update_filter(
 
 
 def _remap_legacy_orphaned_user_ids(conn: DBConnection, dry_run: bool = False) -> dict:
-    """One-time compatibility remap for legacy orphan marker values.
+    """对旧版孤立标记值进行一次性兼容性重映射。
 
-    Historical migration runs used ``-1`` as temporary orphan marker, which now
-    conflicts with unauthenticated read filtering semantics. This helper remaps
-    legacy ``-1`` to the reserved int64 sentinel to keep Phase 2 retry behavior
-    consistent after upgrading.
+    历史迁移运行使用 ``-1`` 作为临时孤立标记，现在
+    与未认证用户的读取过滤语义冲突。此辅助函数将旧版
+    ``-1`` 重映射到保留的 int64 哨兵值，以保持升级后
+    阶段 2 重试行为的一致性。
     """
 
     remapped_counts: dict[str, int] = {}
@@ -249,19 +249,19 @@ def _backfill_table_core(
     dry_run: bool,
     log_prefix: str = "",
 ) -> dict:
-    """Core logic for backfilling a single table.
+    """回填单张表的核心逻辑。
 
-    Args:
-        table: LanceDB table to backfill
-        docs_table: Documents table for lookup
-        query_filter: Filter to find records needing backfill (e.g., "user_id IS NULL")
-        filter_fields: Fields used to identify a specific record for update
-        failure_user_id: user_id to set if document lookup fails (e.g., -1 or -2)
-        dry_run: If True, don't make actual changes
-        log_prefix: Prefix for log messages
+    参数：
+        table：要回填的 LanceDB 表
+        docs_table：用于查找的 Documents 表
+        query_filter：查找需要回填的记录的过滤条件（如 "user_id IS NULL"）
+        filter_fields：用于标识特定更新记录的字段
+        failure_user_id：文档查找失败时设置的 user_id（如 -1 或 -2）
+        dry_run：为 True 时不进行实际修改
+        log_prefix：日志消息的前缀
 
-    Returns:
-        Dictionary with statistics
+    返回：
+        包含统计信息的字典
     """
     total_backfilled = 0
     total_skipped = 0
@@ -269,7 +269,7 @@ def _backfill_table_core(
     batch_number = 0
 
     while True:
-        # Get a batch of records matching the filter
+        # 获取匹配过滤条件的一批记录
         batch = query_to_list(table.search().where(query_filter).limit(BATCH_SIZE))
 
         if not batch:
@@ -280,14 +280,14 @@ def _backfill_table_core(
             f"{log_prefix} Processing batch #{batch_number}: {len(batch)} records..."
         )
 
-        # Build doc_id -> user_id mapping from documents table
+        # 从 documents 表构建 doc_id -> user_id 映射
         doc_user_map = {}
         all_doc_ids = [
             doc_id for doc_id in set(r.get("doc_id") for r in batch) if doc_id
         ]
 
         if all_doc_ids:
-            # Bulk lookup for documents
+            # 批量查找文档
             docs = query_to_list(
                 docs_table.search()
                 .where(_build_doc_id_in_filter(all_doc_ids))
@@ -301,7 +301,7 @@ def _backfill_table_core(
             f"{log_prefix} Batch #{batch_number}: Found user_id for {len(doc_user_map)} / {len(all_doc_ids)} documents"
         )
 
-        # Update records
+        # 更新记录
         skipped = 0
         updated_in_batch = 0
         for record in batch:
@@ -318,7 +318,7 @@ def _backfill_table_core(
 
             if not dry_run:
                 try:
-                    # Build update filter
+                    # 构建更新过滤条件
                     update_filter = _build_record_update_filter(record, filter_fields)
                     table.update(update_filter, {"user_id": user_id})
                     updated_in_batch += 1
@@ -336,8 +336,8 @@ def _backfill_table_core(
             f"{log_prefix} Batch #{batch_number}: {len(batch) - skipped} processed, {skipped} marked as failure_id ({failure_user_id})"
         )
         if dry_run:
-            # Dry-run does not mutate records, so processing additional batches would
-            # read the same records repeatedly and never converge.
+            # 干运行不修改记录，因此处理额外的批次将
+            # 反复读取相同的记录且永远不会收敛。
             break
         if updated_in_batch == 0:
             logger.error(
@@ -358,12 +358,12 @@ def _backfill_table_core(
 def backfill_chunks_table(
     dry_run: bool = False, conn: DBConnection | None = None
 ) -> dict:
-    """Backfill user_id for chunks table (Phase 1)."""
+    """回填 chunks 表的 user_id（阶段 1）。"""
     if conn is None:
         conn = get_connection_from_env()
 
-    # For migration, we need to work with existing tables even if they have old schema
-    # Don't use ensure_chunks_table as it validates schema which fails for old tables
+    # 对于迁移，即使表有旧 schema 也需要使用它们
+    # 不要使用 ensure_chunks_table，因为它验证 schema 会在旧表上失败
     _ensure_table_exists(conn, "chunks")
     _ensure_table_exists(conn, "documents")
 
@@ -387,11 +387,11 @@ def backfill_chunks_table(
 def backfill_orphaned_chunks(
     dry_run: bool = False, conn: DBConnection | None = None
 ) -> dict:
-    """Retry backfill for orphaned chunks (Phase 2)."""
+    """重试孤立 chunks 的回填（阶段 2）。"""
     if conn is None:
         conn = get_connection_from_env()
 
-    # For migration, we need to work with existing tables even if they have old schema
+    # 对于迁移，即使表有旧 schema 也需要使用它们
     _ensure_table_exists(conn, "chunks")
     _ensure_table_exists(conn, "documents")
 
@@ -413,7 +413,7 @@ def backfill_orphaned_chunks(
 
 
 def _get_embeddings_tables(conn: DBConnection) -> list[str]:
-    """Helper to get all embeddings tables with API compatibility."""
+    """获取所有 embeddings 表（API 兼容）的辅助函数。"""
     try:
         return list_embeddings_table_names(conn)
     except Exception as e:
@@ -424,7 +424,7 @@ def _get_embeddings_tables(conn: DBConnection) -> list[str]:
 def backfill_embeddings_table(
     dry_run: bool = False, conn: DBConnection | None = None
 ) -> dict:
-    """Backfill user_id for embeddings tables (Phase 1)."""
+    """回填 embeddings 表的 user_id（阶段 1）。"""
     if conn is None:
         conn = get_connection_from_env()
 
@@ -471,7 +471,7 @@ def backfill_embeddings_table(
 def backfill_orphaned_embeddings(
     dry_run: bool = False, conn: DBConnection | None = None
 ) -> dict:
-    """Retry backfill for orphaned embeddings (Phase 2)."""
+    """重试孤立 embeddings 的回填（阶段 2）。"""
     if conn is None:
         conn = get_connection_from_env()
 
@@ -516,7 +516,7 @@ def backfill_orphaned_embeddings(
 
 
 def backfill_all(dry_run: bool = False, conn: DBConnection | None = None) -> dict:
-    """Run full two-phase backfill for all tables."""
+    """对所有表运行完整的双阶段回填。"""
     if conn is None:
         conn = get_connection_from_env()
 

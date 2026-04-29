@@ -1,7 +1,7 @@
 """
-Pdf parser providers module.
+PDF 解析器 provider 模块。
 
-This module provides various pdf parser backends
+本模块提供多种 PDF 解析器后端实现。
 """
 
 from typing import Type

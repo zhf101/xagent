@@ -169,7 +169,7 @@ class AgentRunner:
         }
 
     def _get_full_traceback(self, exception: Exception) -> str:
-        """Get full traceback for an exception, including chained exceptions."""
+        """获取异常的完整回溯信息，包括链接的异常。"""
         # Get the current exception info
         exc_type, exc_value, exc_traceback = (
             type(exception),

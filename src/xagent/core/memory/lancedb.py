@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 class LanceDBMemoryStore(MemoryStore):
-    """LanceDB-based memory store implementation with vector search capabilities."""
+    """基于 LanceDB 的记忆存储实现，支持向量检索。"""
 
     _embedding_model: Optional[BaseEmbedding]
 
@@ -33,25 +33,25 @@ class LanceDBMemoryStore(MemoryStore):
         **embedding_kwargs: Any,
     ):
         """
-        Initialize LanceDB memory store.
+        初始化 LanceDB 记忆存储。
 
-        Args:
-            db_dir: Database directory path
-            collection_name: Collection name for storing memories
-            embedding_model: Optional BaseEmbedding instance or EmbeddingModel config
-            similarity_threshold: Cosine distance threshold for vector search (lower = more strict)
-            **embedding_kwargs: Additional arguments for embedding model
+        参数:
+            db_dir: 数据库目录路径
+            collection_name: 用于存储记忆的集合名称
+            embedding_model: 可选的 BaseEmbedding 实例或 EmbeddingModel 配置
+            similarity_threshold: 向量搜索的余弦距离阈值（值越小越严格）
+            **embedding_kwargs: 传递给嵌入模型的额外参数
         """
         self._collection_name = collection_name
 
-        # Handle different types of embedding_model input
+        # 处理不同类型的 embedding_model 输入
         if embedding_model is None:
-            # Try to create a default embedding model only if embedding_kwargs are provided
+            # 只在提供了 embedding_kwargs 时才尝试创建默认嵌入模型
             if embedding_kwargs:
                 try:
                     self._embedding_model = OpenAIEmbedding(**embedding_kwargs)
                 except Exception:
-                    # If embedding model creation fails, set to None (will use fallback)
+                    # 嵌入模型创建失败时，置为 None（将使用回退方案）
                     self._embedding_model = None
                     logger.warning(
                         "Failed to create embedding model, will use fallback text search"
@@ -75,56 +75,56 @@ class LanceDBMemoryStore(MemoryStore):
         self._ensure_table_schema()
 
     def _ensure_table_schema(self) -> None:
-        """Ensure the table has the correct schema for memory storage."""
+        """确保表具有记忆存储所需的正确 schema。"""
         table = None
         try:
             conn = self._vector_store.get_raw_connection()
             table = conn.open_table(self._collection_name)
 
-            # Check if table exists and has basic structure
+            # 检查表是否存在以及是否具有基本结构
             df = table.search().limit(1).to_pandas()
 
-            # Table exists, check if it has required columns
+            # 表已存在，检查是否具有所需列
             if not all(col in df.columns for col in ["id", "text", "metadata"]):
-                # Schema is incompatible, drop and recreate
+                # schema 不兼容，删除后重建
                 logger.warning(
                     f"Table {self._collection_name} has incompatible schema, recreating"
                 )
                 inner_table = None
                 try:
-                    # Try to drop the table if the method exists
+                    # 尝试删除表（如果方法存在）
                     if hasattr(conn, "drop_table"):
                         conn.drop_table(self._collection_name)
                     else:
-                        # Alternative: try to use delete all records instead
+                        # 替代方案：尝试删除所有记录
                         inner_table = conn.open_table(self._collection_name)
                         inner_table.delete()
                 except Exception:
-                    # If drop fails, continue with recreation
+                    # 删除失败则继续重建流程
                     pass
                 finally:
                     _safe_close_table(inner_table)
                 self._create_empty_table()
 
         except Exception:
-            # Table doesn't exist, create it with basic schema
+            # 表不存在，使用基本 schema 创建
             logger.info(f"Creating table {self._collection_name} with basic schema")
             self._create_empty_table()
         finally:
             _safe_close_table(table)
 
     def _create_empty_table(self) -> None:
-        """Create an empty table with the correct schema."""
+        """使用正确的 schema 创建一张空表。"""
         conn = self._vector_store.get_raw_connection()
 
-        # Check if we have an embedding model
+        # 检查是否配置了嵌入模型
         if self._embedding_model:
-            # Create table with vector support
+            # 创建支持向量的表
             try:
-                # Generate a sample embedding to get dimension
+                # 生成一条示例嵌入以获取维度
                 sample_embedding = self._get_embedding("sample")
                 if sample_embedding:
-                    # Create sample data with vector
+                    # 创建包含向量的示例数据
                     sample_data = [
                         {
                             "id": "sample",
@@ -134,34 +134,34 @@ class LanceDBMemoryStore(MemoryStore):
                         }
                     ]
                 else:
-                    # Fallback to non-vector schema
+                    # 回退到无向量 schema
                     sample_data = [{"id": "sample", "text": "sample", "metadata": "{}"}]
             except Exception:
-                # If embedding fails, use non-vector schema
+                # 嵌入失败时使用无向量 schema
                 sample_data = [{"id": "sample", "text": "sample", "metadata": "{}"}]
         else:
-            # No embedding model, create without vector column
+            # 没有嵌入模型，创建时不包含向量列
             sample_data = [{"id": "sample", "text": "sample", "metadata": "{}"}]
 
-        # Create table with appropriate schema
+        # 使用合适的 schema 创建表
         table = conn.create_table(self._collection_name, data=sample_data)
-        # Remove sample data
+        # 删除示例数据
         table.delete("id = 'sample'")
 
     def _get_embedding(self, text: str) -> Optional[list[float]]:
-        """Get embedding for text using the configured embedding model."""
+        """使用配置的嵌入模型获取文本的嵌入向量。"""
         if not self._embedding_model or not text.strip():
             return None
 
         try:
             result = self._embedding_model.encode(text)
-            # encode should return list[float] for single text input
+            # encode 对单个文本输入应返回 list[float]
             if isinstance(result, list):
                 if len(result) > 0 and isinstance(result[0], list):
-                    # Got list[list[float]], return the first embedding
+                    # 得到 list[list[float]]，返回第一个嵌入
                     return result[0]
                 elif len(result) > 0 and isinstance(result[0], (int, float)):
-                    # Got list[float], return as is
+                    # 得到 list[float]，直接返回
                     return result  # type: ignore[return-value]
             logger.warning(f"Unexpected embedding result format: {type(result)}")
             return None
@@ -170,14 +170,14 @@ class LanceDBMemoryStore(MemoryStore):
             return None
 
     def _memory_note_to_dict(self, note: MemoryNote) -> dict[str, Any]:
-        """Convert MemoryNote to dictionary for storage."""
-        # Get embedding for the content
+        """将 MemoryNote 转换为用于存储的字典。"""
+        # 获取内容的嵌入向量
         content_text = (
             note.content.decode() if isinstance(note.content, bytes) else note.content
         )
         embedding = self._get_embedding(content_text)
 
-        # Prepare metadata
+        # 准备元数据
         metadata = {
             "content": note.content,
             "keywords": note.keywords,
@@ -196,7 +196,7 @@ class LanceDBMemoryStore(MemoryStore):
         }
 
     def _dict_to_memory_note(self, data: dict[str, Any]) -> MemoryNote:
-        """Convert dictionary from storage to MemoryNote."""
+        """将存储中的字典转换回 MemoryNote。"""
         try:
             metadata = json.loads(data.get("metadata", "{}"))
         except (json.JSONDecodeError, TypeError):
@@ -214,18 +214,18 @@ class LanceDBMemoryStore(MemoryStore):
         )
 
     def _apply_filters(self, note: MemoryNote, filters: dict[str, Any]) -> bool:
-        """Apply filters to a MemoryNote for vector search results."""
+        """对向量搜索结果中的 MemoryNote 应用过滤条件。"""
         for key, value in filters.items():
-            # Special handling for category - check note.category first
+            # 对 category 做特殊处理——先检查 note.category
             if key == "category":
                 if str(note.category) != str(value):
                     return False
             elif key == "metadata":
-                # Handle nested metadata filters
+                # 处理嵌套的元数据过滤
                 if not self._apply_metadata_filters(note.metadata, value):
                     return False
             else:
-                # For other fields, check metadata
+                # 对于其他字段，检查元数据
                 if str(note.metadata.get(key, "")) != str(value):
                     return False
         return True
@@ -233,14 +233,14 @@ class LanceDBMemoryStore(MemoryStore):
     def _apply_text_search_filters(
         self, metadata_dict: dict[str, Any], filters: dict[str, Any]
     ) -> bool:
-        """Apply filters to metadata dict for text search results."""
+        """对文本搜索结果的元数据字典应用过滤条件。"""
         for key, value in filters.items():
             if key == "metadata":
-                # Handle nested metadata filters
+                # 处理嵌套的元数据过滤
                 if not self._apply_metadata_filters(metadata_dict, value):
                     return False
             else:
-                # Direct field comparison
+                # 直接字段比较
                 if str(metadata_dict.get(key, "")) != str(value):
                     return False
         return True
@@ -248,59 +248,59 @@ class LanceDBMemoryStore(MemoryStore):
     def _apply_metadata_filters(
         self, metadata: dict[str, Any], metadata_filters: dict[str, Any]
     ) -> bool:
-        """Apply nested metadata filters."""
+        """应用嵌套的元数据过滤条件。"""
         for key, value in metadata_filters.items():
             if str(metadata.get(key, "")) != str(value):
                 return False
         return True
 
     def add(self, note: MemoryNote) -> MemoryResponse:
-        """Add a memory note to the store."""
+        """将一条记忆添加到存储中。"""
         try:
-            # Generate ID if not provided
+            # 如果没有提供 ID，则生成一个
             if not note.id:
                 note.id = str(uuid4())
 
-            # Convert to storage format
+            # 转换为存储格式
             data = self._memory_note_to_dict(note)
 
-            # Add to vector store - use a consistent approach
+            # 添加到向量存储——使用一致的方法
             conn = self._vector_store.get_raw_connection()
             table = None
             try:
                 table = conn.open_table(self._collection_name)
 
-                # Prepare record for insertion
+                # 准备要插入的记录
                 record = {
                     "id": data["id"],
                     "text": data["text"],
                     "metadata": data["metadata"],
                 }
 
-                # Add vector if available
+                # 如果有向量则添加
                 if data["vector"]:
                     record["vector"] = data["vector"]
 
-                # Try to add the record, recreate table if schema mismatch
+                # 尝试添加记录，如果 schema 不匹配则重建表
                 try:
                     table.add([record])
                 except Exception as add_error:
                     logger.warning(
                         f"Failed to add record due to schema mismatch: {add_error}"
                     )
-                    # Recreate table and try again
+                    # 重建表并再次尝试
                     logger.info("Recreating table with fresh schema")
                     inner_table = None
                     try:
-                        # Try to drop the table if the method exists
+                        # 尝试删除表（如果方法存在）
                         if hasattr(conn, "drop_table"):
                             conn.drop_table(self._collection_name)
                         else:
-                            # Alternative: try to use delete all records instead
+                            # 替代方案：尝试删除所有记录
                             inner_table = conn.open_table(self._collection_name)
                             inner_table.delete()
                     except Exception:
-                        # If drop fails, continue with recreation
+                        # 删除失败则继续重建流程
                         pass
                     finally:
                         _safe_close_table(inner_table)
@@ -308,11 +308,11 @@ class LanceDBMemoryStore(MemoryStore):
                     _safe_close_table(table)
                     table = conn.open_table(self._collection_name)
 
-                    # After recreating, check if we should include vector
-                    # Get current table schema
+                    # 重建后，检查是否应包含向量
+                    # 获取当前表 schema
                     df = table.search().limit(1).to_pandas()
                     if not df.empty and "vector" not in df.columns:
-                        # New table doesn't have vector column, remove vector from record
+                        # 新表没有向量列，从记录中移除向量
                         record_without_vector = {
                             k: v for k, v in record.items() if k != "vector"
                         }
@@ -333,14 +333,14 @@ class LanceDBMemoryStore(MemoryStore):
             )
 
     def get(self, note_id: str) -> MemoryResponse:
-        """Retrieve a memory note by its ID."""
+        """根据 ID 检索一条记忆。"""
         table = None
         try:
             table = self._vector_store.get_raw_connection().open_table(
                 self._collection_name
             )
 
-            # Search by ID
+            # 按 ID 搜索
             results = table.search().where(f"id = '{note_id}'").to_pandas()
 
             if len(results) == 0:
@@ -350,7 +350,7 @@ class LanceDBMemoryStore(MemoryStore):
                     memory_id=note_id,
                 )
 
-            # Convert to MemoryNote
+            # 转换为 MemoryNote
             data = results.iloc[0].to_dict()
             note = self._dict_to_memory_note(data)
 
@@ -371,9 +371,9 @@ class LanceDBMemoryStore(MemoryStore):
             _safe_close_table(table)
 
     def update(self, note: MemoryNote) -> MemoryResponse:
-        """Update an existing memory note."""
+        """更新一条已有的记忆记录。"""
         try:
-            # Check if memory exists
+            # 检查记忆是否存在
             get_response = self.get(note.id)
             if not get_response.success:
                 return MemoryResponse(
@@ -382,10 +382,10 @@ class LanceDBMemoryStore(MemoryStore):
                     memory_id=note.id,
                 )
 
-            # Delete old record
+            # 删除旧记录
             self.delete(note.id)
 
-            # Add updated record
+            # 添加更新后的记录
             return self.add(note)
 
         except Exception as e:
@@ -397,7 +397,7 @@ class LanceDBMemoryStore(MemoryStore):
             )
 
     def delete(self, note_id: str) -> MemoryResponse:
-        """Delete a memory note by its ID."""
+        """根据 ID 删除一条记忆。"""
         try:
             success = self._vector_store.delete_vectors([note_id])
 
@@ -425,7 +425,7 @@ class LanceDBMemoryStore(MemoryStore):
         filters: Optional[dict[str, Any]] = None,
         similarity_threshold: Optional[float] = None,
     ) -> list[MemoryNote]:
-        """Search memory notes by query text with optional filters."""
+        """按查询文本搜索记忆，支持可选过滤条件。"""
         table = None
         try:
             table = self._vector_store.get_raw_connection().open_table(
@@ -433,14 +433,14 @@ class LanceDBMemoryStore(MemoryStore):
             )
             results = []
 
-            # Try vector search first
+            # 优先尝试向量搜索
             try:
                 query_embedding = self._get_embedding(query)
                 if query_embedding:
-                    # Check if vector column exists and has the right dimension
+                    # 检查向量列是否存在且维度匹配
                     sample_df = table.search().limit(1).to_pandas()
                     if not sample_df.empty and "vector" in sample_df.columns:
-                        # Try vector search
+                        # 尝试向量搜索
                         try:
                             vector_df = (
                                 table.search(
@@ -451,7 +451,7 @@ class LanceDBMemoryStore(MemoryStore):
                             )
 
                             for _, row in vector_df.iterrows():
-                                # Check similarity threshold
+                                # 检查相似度阈值
                                 threshold = (
                                     similarity_threshold
                                     if similarity_threshold is not None
@@ -475,7 +475,7 @@ class LanceDBMemoryStore(MemoryStore):
                                 }
                                 note = self._dict_to_memory_note(note_data)
 
-                                # Apply metadata filters to vector search results too
+                                # 也对向量搜索结果应用元数据过滤
                                 if filters:
                                     filter_match = self._apply_filters(note, filters)
                                     if not filter_match:
@@ -491,12 +491,12 @@ class LanceDBMemoryStore(MemoryStore):
                     f"Embedding generation failed, using text search: {embedding_error}"
                 )
 
-            # Fallback to text search if no vector results or vector search failed
+            # 如果向量搜索无结果或失败，回退到文本搜索
             if not results:
-                # Text search
+                # 文本搜索
                 df = table.search().to_pandas()
 
-                # Filter by query text and apply filters
+                # 按查询文本过滤并应用过滤条件
                 for _, row in df.iterrows():
                     text = row.get("text", "")
                     metadata = row.get("metadata", "{}")
@@ -506,7 +506,7 @@ class LanceDBMemoryStore(MemoryStore):
                     except (json.JSONDecodeError, TypeError):
                         metadata_dict = {}
 
-                    # Apply metadata filters if specified
+                    # 应用元数据过滤（如果指定）
                     if filters:
                         filter_match = self._apply_text_search_filters(
                             metadata_dict, filters
@@ -514,7 +514,7 @@ class LanceDBMemoryStore(MemoryStore):
                         if not filter_match:
                             continue
 
-                    # Simple text matching
+                    # 简单文本匹配
                     if not query or query.lower() in text.lower():
                         note_data = {
                             "id": row.get("id", ""),
@@ -536,7 +536,7 @@ class LanceDBMemoryStore(MemoryStore):
             _safe_close_table(table)
 
     def clear(self) -> None:
-        """Clear all memory notes from the store."""
+        """清空存储中的所有记忆。"""
         try:
             self._vector_store.clear()
         except Exception as e:

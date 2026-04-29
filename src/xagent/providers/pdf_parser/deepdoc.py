@@ -30,17 +30,17 @@ logger = logging.getLogger(__name__)
 
 
 def _handle_image(image_obj: Any, doc_id: str) -> str:
-    """Handle image object - return path if already a file path, otherwise save and return path.
+    """处理图片对象 - 如果已是文件路径则直接返回，否则保存后返回路径。
 
-    Args:
-        image_obj: Either a file path (str) or PIL Image object
-        doc_id: Document ID for organizing saved images
+    参数:
+        image_obj: 文件路径（str）或 PIL Image 对象
+        doc_id: 用于组织保存图片的文档 ID
 
-    Returns:
-        Path to the image file
+    返回:
+        图片文件的路径
 
-    Raises:
-        ValueError: If path doesn't exist or unsupported image type
+    异常:
+        ValueError: 如果路径不存在或图片类型不支持
     """
     # If it's already a string path, validate and return
     if isinstance(image_obj, str):
@@ -59,7 +59,7 @@ def _handle_image(image_obj: Any, doc_id: str) -> str:
 
 
 def _save_image_to_disk(doc_id: str, image_obj: Any) -> str:
-    """Saves a PIL image object to disk and returns the path."""
+    """将 PIL 图片对象保存到磁盘并返回路径。"""
     # Convert PIL Image to bytes
     img_byte_arr = BytesIO()
     image_obj.save(img_byte_arr, format="PNG")
@@ -69,7 +69,7 @@ def _save_image_to_disk(doc_id: str, image_obj: Any) -> str:
 
 
 def _save_bytes_to_disk(doc_id: str, image_bytes: bytes, suffix: str = ".png") -> str:
-    """Saves raw image bytes to disk and returns the path."""
+    """将原始图片字节保存到磁盘并返回路径。"""
     safe_doc_id = sanitize_for_doc_id(doc_id, max_length=64)
     base_dir = ARTIFACTS_DIR / "providers" / "deepdoc"
     image_dir = base_dir / safe_doc_id / "images"
@@ -88,7 +88,7 @@ def _save_bytes_to_disk(doc_id: str, image_bytes: bytes, suffix: str = ".png") -
 def _build_element_metadata(
     bbox: Dict[str, Any], doc_id: str, **kwargs: Any
 ) -> Dict[str, Any]:
-    """Build metadata dict for an element."""
+    """为元素构建元数据字典。"""
     layout_type = bbox.get("layout_type", "text")
     metadata = {
         "layout_type": layout_type,
@@ -128,7 +128,7 @@ def _build_element_metadata(
 def _process_table_element(
     bbox: Dict[str, Any], base_metadata: Dict[str, Any], doc_id: str
 ) -> ParsedTable:
-    """Process a table element into ParsedTable."""
+    """将表格元素处理为 ParsedTable。"""
     # Handle table image
     image_path = None
     if "image" in bbox and bbox["image"]:
@@ -145,7 +145,7 @@ def _process_table_element(
 def _process_figure_element(
     bbox: Dict[str, Any], base_metadata: Dict[str, Any], doc_id: str
 ) -> ParsedFigures:
-    """Process a figure element into ParsedFigures."""
+    """将图片元素处理为 ParsedFigures。"""
     # Handle figure image
     image_path = None
     logger.debug(f"Processing figure bbox: {bbox.keys()}")
@@ -377,7 +377,7 @@ def _translate_excel_output(raw_output: Any, **kwargs: Any) -> ParseResult:
 
 
 def _translate_text_output(raw_output: Any, **kwargs: Any) -> ParseResult:
-    """Translates simple text parser output (list of lists) into a ParseResult."""
+    """将简单的文本解析器输出（列表的列表）转换为 ParseResult。"""
     text_segments = []
     if isinstance(raw_output, list) and all(
         isinstance(item, list) for item in raw_output
@@ -391,7 +391,7 @@ def _translate_text_output(raw_output: Any, **kwargs: Any) -> ParseResult:
 
 
 def _translate_markdown_output(raw_output: Any, **kwargs: Any) -> ParseResult:
-    """Translates markdown parser output (tuple of text and tables) into a ParseResult."""
+    """将 markdown 解析器输出（文本和表格的元组）转换为 ParseResult。"""
     text_segments = []
     if isinstance(raw_output, tuple) and len(raw_output) == 2:
         remainder_text, tables = raw_output

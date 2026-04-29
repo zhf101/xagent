@@ -9,7 +9,7 @@ from typing import Any, Callable, Dict, List, Optional, Set
 
 
 class StepStatus(Enum):
-    """Status of a plan step"""
+    """计划步骤的状态"""
 
     PENDING = "pending"
     RUNNING = "running"
@@ -19,7 +19,7 @@ class StepStatus(Enum):
 
 
 class ExecutionPhase(Enum):
-    """Current execution phase"""
+    """当前执行阶段"""
 
     PLANNING = "planning"
     EXECUTING = "executing"
@@ -324,7 +324,7 @@ def extract_branch_key_from_final_answer(
 
 
 class InteractionType(str, Enum):
-    """Types of user interactions in chat mode"""
+    """用于聊天模式的用户交互类型"""
 
     SELECT_ONE = "select_one"
     SELECT_MULTIPLE = "select_multiple"

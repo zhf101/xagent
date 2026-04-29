@@ -1389,11 +1389,14 @@ class DAGPlanExecutePattern(AgentPattern):
     ) -> str:
         """Generate a simple summary without LLM analysis."""
         if successful_steps and not failed_steps:
-            return f"Task completed successfully with {len(successful_steps)} steps"
+            return f"任务已成功完成，共完成 {len(successful_steps)} 个步骤"
         elif successful_steps and failed_steps:
-            return f"Partial success: {len(successful_steps)} steps completed, {len(failed_steps)} steps failed"
+            return (
+                f"任务部分成功：完成 {len(successful_steps)} 个步骤，"
+                f"失败 {len(failed_steps)} 个步骤"
+            )
         else:
-            return "Task failed with no successful steps"
+            return "任务失败：没有成功完成的步骤"
 
     def _extract_file_outputs(self) -> List[Dict[str, str]]:
         """Get file outputs in array format for frontend consumption."""

@@ -1,8 +1,8 @@
 """
-Vertical specialized agents package.
+垂直领域专用 agent 包。
 
-This package contains domain-specific agents that inherit from the base Agent class
-and provide specialized functionality for specific vertical domains.
+本包包含特定领域的 agent，它们继承自基础 Agent 类，
+为特定垂直领域提供专门的功能。
 """
 
 from ..vertical_agent import VerticalAgent

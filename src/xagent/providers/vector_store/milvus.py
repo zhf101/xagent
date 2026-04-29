@@ -39,7 +39,7 @@ def _import_milvus_client_class() -> Any:
 
 
 class MilvusConnectionManager:
-    """Milvus connection manager."""
+    """Milvus 连接管理器。"""
 
     def get_client(
         self,
@@ -75,7 +75,7 @@ class MilvusConnectionManager:
 
 
 class MilvusVectorStore(VectorStore):
-    """Milvus vector store implementation."""
+    """Milvus 向量存储实现。"""
 
     support_store_texts: ClassVar[bool] = True
 

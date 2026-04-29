@@ -6,16 +6,16 @@ from alembic import context
 from dotenv import load_dotenv
 from sqlalchemy import engine_from_config, pool
 
-# Load environment variables from .env file
+# 从 .env 文件加载环境变量
 load_dotenv()
 
-# Add the parent directory to the path so we can import our modules
+# 将父目录添加到路径以便导入模块
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from xagent.core.storage import get_default_db_url
 
-# Import all models to ensure they are registered with Base.metadata
-# Type checking is disabled for these imports as they are dynamically loaded by Alembic
+# 导入所有模型以确保它们注册到 Base.metadata
+# 这些导入禁用了类型检查，因为它们由 Alembic 动态加载
 # flake8: noqa: E402
 from xagent.web import models as web_models  # noqa: F401
 from xagent.web.models.database import Base
@@ -36,39 +36,39 @@ from xagent.gdp.vanna.model.vanna import (  # noqa: F401
 )
 from xagent.gdp.hrun.model.http_resource import GdpHttpResource  # noqa: F401
 
-# this is the Alembic Config object, which provides
-# access to the values within the .ini file in use.
+# Alembic Config 对象，提供对
+# 当前使用的 .ini 文件中值的访问。
 config = context.config
 
-# Interpret the config file for Python logging.
-# This line sets up loggers basically.
+# 解析配置文件用于 Python 日志记录。
+# 此行基本设置日志记录器。
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Use our models' MetaData for autogenerate support
+# 使用我们模型的 MetaData 支持自动生成
 target_metadata = Base.metadata
 
-# other values from the config, defined by the needs of env.py,
-# can be acquired:
+# 来自配置的其他值，根据 env.py 的需要定义，
+# 可以获取：
 # my_important_option = config.get_main_option("my_important_option")
 # ... etc.
 
 
 def run_migrations_offline() -> None:
-    """Run migrations in 'offline' mode.
+    """以离线模式运行迁移。
 
-    This configures the context with just a URL
-    and not an Engine, though an Engine is acceptable
-    here as well.  By skipping the Engine creation
-    we don't even need a DBAPI to be available.
+    仅使用 URL（而非 Engine）配置上下文
+    尽管 Engine 也是可接受的
+    通过跳过 Engine 创建，
+    我们甚至不需要 DBAPI 可用。
 
-    Calls to context.execute() here emit the given string to the
-    script output.
+    对 context.execute() 的调用在此处将给定字符串输出到
+    脚本输出。
 
     """
     url = config.get_main_option("sqlalchemy.url")
     if url is None:
-        # Respect DATABASE_URL environment variable
+        # 遵循 DATABASE_URL 环境变量
         url = os.getenv("DATABASE_URL")
         if url is None:
             url = get_default_db_url()
@@ -85,25 +85,25 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
-    """Run migrations in 'online' mode.
+    """以在线模式运行迁移。
 
-    In this scenario we need to create an Engine
-    and associate a connection with the context.
+    在这种场景下，我们需要创建一个 Engine
+    并将连接关联到上下文。
 
     """
-    # Check if connection is provided via config.attributes
+    # 检查是否通过 config.attributes 提供了连接
     connection = config.attributes.get("connection", None)
 
     if connection is not None:
-        # Use provided connection
+        # 使用提供的连接
         context.configure(connection=connection, target_metadata=target_metadata)
         with context.begin_transaction():
             context.run_migrations()
     else:
-        # Fallback: create new connection using URL from config
+        # 回退：使用配置中的 URL 创建新连接
         configuration = config.get_section(config.config_ini_section, {})
         if configuration.get("sqlalchemy.url") is None:
-            # Respect DATABASE_URL environment variable
+            # 遵循 DATABASE_URL 环境变量
             url = os.getenv("DATABASE_URL")
             if url is None:
                 url = get_default_db_url()

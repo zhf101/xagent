@@ -41,10 +41,10 @@ def format_generation_prompt(
         except (KeyError, ValueError) as e:
             logger.error(f"Failed to format prompt template: {e}")
             # Fallback to appending if formatting fails
-            full_prompt = f"{prompt_template}\n\nContext:\n{formatted_contexts}"
+            full_prompt = f"{prompt_template}\n\n上下文：\n{formatted_contexts}"
     else:
         # Default behavior: append context and answer marker
-        full_prompt = f"{prompt_template}\n\nContext:\n{formatted_contexts}\n\nAnswer:"
+        full_prompt = f"{prompt_template}\n\n上下文：\n{formatted_contexts}\n\n回答："
 
     logger.debug(f"Formatted prompt length: {len(full_prompt)} chars.")
     return full_prompt

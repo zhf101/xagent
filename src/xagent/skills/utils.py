@@ -1,5 +1,5 @@
 """
-Skill utilities - Utility functions for creating skill_manager
+技能工具函数 - 创建 skill_manager 的工具函数
 """
 
 import logging

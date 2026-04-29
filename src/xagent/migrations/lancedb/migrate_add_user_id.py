@@ -56,13 +56,13 @@ def migrate_table(
 ) -> bool:
     """Migrate a single table to add user_id field.
 
-    Args:
+    参数：
         conn: LanceDB connection
         table_name: Name of table to migrate
         backup_dir: Directory for backup files
         execute: If False, only simulate the migration
 
-    Returns:
+    返回：
         True if migration succeeded or was skipped
     """
     logger.info(f"\n{'=' * 60}")

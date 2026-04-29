@@ -1,10 +1,8 @@
-"""Single-Call Tool Pattern Implementation
+"""单次调用工具模式实现
 
-This module implements a simple pattern that executes a single tool call
-based on the task content and returns the result directly.
-
-This pattern is useful for simple, one-shot tool invocations without
-complex reasoning or multi-step execution.
+本模块实现了一种简单的模式：根据任务内容执行单次工具调用，
+并直接返回结果。适用于简单的、一次性的工具调用场景，
+不需要复杂的推理或多步骤执行。
 """
 
 __all__ = ["SingleCallPattern"]
@@ -250,7 +248,7 @@ class SingleCallPattern(AgentPattern):
         else:
             # Fallback system prompt if no execution context
             messages.append(
-                {"role": "system", "content": "You are a helpful assistant."}
+                {"role": "system", "content": "你是一个乐于助人的 AI 助手。"}
             )
 
         # Add conversation history if available
@@ -542,11 +540,11 @@ class SingleCallPattern(AgentPattern):
         messages: List[Dict[str, str]] = []
 
         # Add system prompt for final answer generation
-        system_prompt = """You are an AI assistant. Based on the tool execution result below, provide a helpful and accurate answer to the user's question.
+        system_prompt = """你是一个 AI 助手。请基于下面的工具执行结果，直接为用户生成准确、有帮助的回答。
 
-IMPORTANT:
-- Do NOT call any tools. Just provide a direct answer based on the tool result.
-- Use the information from the tool execution to answer the user's question.
+重要要求：
+- 不要再调用任何工具，只根据现有工具结果直接回答。
+- 优先使用工具执行结果中的信息回应用户问题。
 """
 
         messages.append({"role": "system", "content": system_prompt})
@@ -567,7 +565,7 @@ IMPORTANT:
         messages.append(
             {
                 "role": "assistant",
-                "content": f"Used tool: {tool_name}\nTool result: {tool_content}",
+                "content": f"已使用工具：{tool_name}\n工具结果：{tool_content}",
             }
         )
 

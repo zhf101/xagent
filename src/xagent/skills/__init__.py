@@ -1,8 +1,8 @@
 """
-xagent Skills Module
+xagent 技能模块
 
-This module provides a skill management system compatible with Claude Skills format.
-Skills are directory-based modules that provide knowledge and templates for task planning.
+本模块提供与 Claude Skills 格式兼容的技能管理系统。
+技能是基于目录的模块，为任务规划提供知识和模板。
 """
 
 from .manager import SkillManager

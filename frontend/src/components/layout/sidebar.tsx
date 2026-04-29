@@ -790,7 +790,10 @@ export function Sidebar({ className }: SidebarProps) {
               setIsExpanded(true)
               return
             }
-            setIsSidebarOpen(true)
+            // 非 agent 页面已经统一由 `isSidebarCollapsed` 管理展开/收起。
+            // 这里如果继续调用旧的 `setIsSidebarOpen`，不仅会丢失类型定义，
+            // 也会让折叠状态来源变得不一致。
+            setIsSidebarCollapsed(false)
           }}
           className="p-2 text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition-colors"
           aria-label="展开侧边栏"
@@ -820,7 +823,7 @@ export function Sidebar({ className }: SidebarProps) {
         </div>
         <div className="mt-auto w-full px-2">
           <button
-            onClick={() => isAgentPage ? setIsExpanded(true) : setIsSidebarOpen(true)}
+            onClick={() => isAgentPage ? setIsExpanded(true) : setIsSidebarCollapsed(false)}
             className="flex items-center justify-center w-full p-2 hover:bg-accent/50 rounded-lg transition-colors"
             title={user?.username || t('sidebar.user.defaultName')}
           >

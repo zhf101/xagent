@@ -120,6 +120,8 @@ function AgentContent() {
 
   // Load default configuration if not already set
   useEffect(() => {
+    let cancelled = false
+
     const loadDefaultConfigurationIfNeeded = async () => {
       // Only load if no model is configured
       if (!agentConfig.model) {
@@ -134,6 +136,9 @@ function AgentContent() {
           let defaultModels: Record<string, any> = {}
           if (defaultResponse.ok) {
             const defaults = await defaultResponse.json()
+            if (cancelled) {
+              return
+            }
             if (Array.isArray(defaults)) {
               defaults.forEach((defaultConfig: any) => {
                 if (defaultConfig && defaultConfig.config_type && defaultConfig.model) {
@@ -147,10 +152,15 @@ function AgentContent() {
           const modelsResponse = await apiRequest(`${apiUrl}/api/models/?category=llm`, {
             headers: {}
           })
-          if (!modelsResponse.ok) return
+          if (cancelled || !modelsResponse.ok) return
 
           const data = await modelsResponse.json()
+          if (cancelled) {
+            return
+          }
           if (data.length > 0) {
+            // 调试页初次挂载时会并发拉默认模型配置。
+            // 如果页面已经卸载，再回写状态既没有意义，也会触发 React 的卸载后更新告警。
             const defaultModel = defaultModels.general || data.find((m: any) => m.is_default) || data[0]
             setAgentConfig(prev => ({
               ...prev,
@@ -167,7 +177,11 @@ function AgentContent() {
       }
     }
 
-    loadDefaultConfigurationIfNeeded()
+    void loadDefaultConfigurationIfNeeded()
+
+    return () => {
+      cancelled = true
+    }
   }, []) // Only run once on mount
 
   // Check if we should show initial state (no messages, no task, and no taskId in URL)
@@ -197,13 +211,21 @@ function AgentContent() {
 
   // Load default config from backend on mount
   useEffect(() => {
+    let cancelled = false
+
     const loadDefaultConfig = async () => {
       try {
         const response = await apiRequest(`${getApiUrl()}/api/models/`, {
           headers: getAuthHeaders(token)
         })
+        if (cancelled) {
+          return
+        }
         if (response.ok) {
           const data = await response.json()
+          if (cancelled) {
+            return
+          }
           // Find default model (first one or marked as default)
           const defaultModel = data.models?.[0]?.id || ""
           setAgentConfig({
@@ -219,7 +241,11 @@ function AgentContent() {
       }
     }
 
-    loadDefaultConfig()
+    void loadDefaultConfig()
+
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   // Create dagre graph for dynamic layout

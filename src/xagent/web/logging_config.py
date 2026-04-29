@@ -46,25 +46,25 @@ def setup_logging(level: LogLevel | None = None, force: bool = False) -> None:
         return
     
     # 日志文件路径配置 - 支持跨平台自动创建目录
-    # 优先级: XAGENT_LOG_FILE环境变量 > 默认路径
+    # 优先级: XAGENT_LOG_FILE 环境变量 > 默认路径
     log_file = os.getenv("XAGENT_LOG_FILE", "/applog/xagent/app.log")
     
-    # 自动创建日志文件所在目录(如果不存在)
+    # 自动创建日志文件所在目录（如果不存在）
     log_dir = Path(log_file).parent
     try:
         log_dir.mkdir(parents=True, exist_ok=True)
     except OSError as e:
-        # 如果创建失败(如权限问题),降级为仅控制台日志
+        # 如果创建失败（如权限问题），降级为仅控制台日志
         print(f"Warning: Cannot create log directory '{log_dir}': {e}")
         print("Falling back to console-only logging")
         log_file = None
     
-    # Read log level from env var if not provided
+    # 如果未提供日志级别，从环境变量读取
     if level is None:
         level = cast(LogLevel, os.getenv("XAGENT_LOG_LEVEL", "INFO").upper())
     else:
         level = cast(LogLevel, level.upper())
-    # Validate and fallback to INFO if invalid
+    # 验证并回退到 INFO（如果无效）
     original_level = level
     if invalid_level := level not in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
         level = "INFO"
@@ -77,7 +77,7 @@ def setup_logging(level: LogLevel | None = None, force: bool = False) -> None:
         },
     }
     
-    # 只有在日志文件路径有效时才添加file handler
+    # 只有在日志文件路径有效时才添加文件 handler
     if log_file:
         handlers_config["file"] = {
             "class": "logging.FileHandler",
@@ -89,7 +89,7 @@ def setup_logging(level: LogLevel | None = None, force: bool = False) -> None:
     else:
         root_handlers = ["default"]
     
-    # apply logging config
+    # 应用日志配置
     dictConfig(
         {
             "version": 1,

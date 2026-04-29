@@ -99,16 +99,13 @@ logger = logging.getLogger(__name__)
 
 
 class SandboxManager:
-    """
-    Manages sandbox instances.
-    """
+    """管理沙箱实例"""
 
     def __init__(self, service: SandboxService):
-        """
-        Initialize sandbox manager.
+        """初始化沙箱管理器
 
         Args:
-            service: SandboxService instance for creating sandboxes
+            service: 用于创建沙箱的 SandboxService 实例
         """
         self._service: SandboxService = service
         self._cache: dict[str, Sandbox] = {}
@@ -117,15 +114,15 @@ class SandboxManager:
 
     @staticmethod
     def make_sandbox_name(lifecycle_type: str, lifecycle_id: str) -> str:
-        """Build a sandbox name from lifecycle type and id."""
+        """根据生命周期类型和 ID 构建沙箱名称"""
         return f"{lifecycle_type}::{lifecycle_id}"
 
     @staticmethod
     def parse_sandbox_name(name: str) -> tuple[str, str]:
-        """Parse a sandbox name into (lifecycle_type, lifecycle_id).
+        """解析沙箱名称为 (lifecycle_type, lifecycle_id)
 
         Raises:
-            ValueError: Invalid sandbox name format.
+            ValueError: 沙箱名称格式无效
         """
         parts = name.split("::", 1)
         if len(parts) != 2:
@@ -133,27 +130,26 @@ class SandboxManager:
         return parts[0], parts[1]
 
     def _get_sandbox_image_and_config(self) -> tuple[str, SandboxConfig]:
-        """Get sandbox image and configuration from centralized config module."""
+        """从集中配置模块获取沙箱镜像和配置"""
         image = get_sandbox_image()
         config = SandboxConfig()
 
-        # CPU
+        # CPU 核心数
         cpus = get_sandbox_cpus()
         if cpus is not None:
             config.cpus = cpus
 
-        # MEM
+        # 内存
         memory = get_sandbox_memory()
         if memory is not None:
             config.memory = memory
 
-        # ENV
+        # 环境变量
         env = get_sandbox_env()
         if env:
             config.env = env
 
-        # VOL
-        volumes = get_sandbox_volumes()
+        # 挂载卷
         if volumes:
             config.volumes = volumes
 
@@ -166,21 +162,20 @@ class SandboxManager:
         *,
         ensure_dir: bool,
     ) -> list[tuple[str, str, str]]:
-        """
-        Build default volume mounts.
+        """构建默认卷挂载配置
 
-        Code directories are always mounted read-only.
-        User workspace is additionally mounted read-write for user lifecycle type.
+        代码目录始终以只读方式挂载。
+        用户工作区额外以读写方式挂载（仅适用于 user 生命周期类型）。
 
         Args:
-            lifecycle_type: e.g. task|user
-            lifecycle_id: e.g. task_id|user_id
-            ensure_dir: When True, create the host directory
+            lifecycle_type: 例如 task|user
+            lifecycle_id: 例如 task_id|user_id
+            ensure_dir: True 时创建主机目录
         """
-        # Code mounts are always present (at least src/)
+        # 代码挂载始终存在（至少 src/）
         volumes: list[tuple[str, str, str]] = list(build_code_mount_volumes() or [])
 
-        # Mount user workspace as read-write
+        # 以读写方式挂载用户工作区
         if lifecycle_type == "user":
             user_workspace = str((get_uploads_dir() / f"user_{lifecycle_id}").resolve())
             if ensure_dir:
@@ -192,32 +187,31 @@ class SandboxManager:
     async def get_or_create_sandbox(
         self, lifecycle_type: str, lifecycle_id: str
     ) -> Sandbox:
-        """
-        Get or create a sandbox.
+        """获取或创建沙箱
 
         Args:
-            lifecycle_type: e.g. task|user
-            lifecycle_id: e.g. task_id|user_id
+            lifecycle_type: 例如 task|user
+            lifecycle_id: 例如 task_id|user_id
 
         Returns:
-            Sandbox instance
+            沙箱实例
         """
         sandbox_name = self.make_sandbox_name(lifecycle_type, lifecycle_id)
         if sandbox_name in self._cache:
             return self._cache[sandbox_name]
 
-        # Acquire per-name lock to prevent concurrent creation
+        # 获取每个名称的锁,防止并发创建
         async with self._locks_guard:
             if sandbox_name not in self._locks:
                 self._locks[sandbox_name] = asyncio.Lock()
             lock = self._locks[sandbox_name]
 
         async with lock:
-            # Double-check after acquiring lock
+            # 获取锁后再次检查
             if sandbox_name in self._cache:
                 return self._cache[sandbox_name]
 
-            # Get base image and config from environment variables
+            # 从环境变量获取基础镜像和配置
             image, config = self._get_sandbox_image_and_config()
             logger.info(
                 "Getting/creating sandbox: image=%r, cpus=%r, memory=%r, volumes=%r, env_count=%r",
@@ -248,12 +242,11 @@ class SandboxManager:
             return sandbox
 
     async def delete_sandbox(self, lifecycle_type: str, lifecycle_id: str) -> None:
-        """
-        Delete sandbox.
+        """删除沙箱
 
         Args:
-            lifecycle_type: e.g. task|user
-            lifecycle_id: e.g. task_id|user_id
+            lifecycle_type: 例如 task|user
+            lifecycle_id: 例如 task_id|user_id
         """
         sandbox_name = self.make_sandbox_name(lifecycle_type, lifecycle_id)
         try:
@@ -262,21 +255,19 @@ class SandboxManager:
         except Exception as e:
             logger.error(f"Failed to delete sandbox {sandbox_name}: {e}")
         finally:
-            # Always evict from cache — even on failure the instance
-            # may be in an unknown state and should be recreated.
+            # 始终从缓存中清除 -- 即使失败,实例也可能处于未知状态,应重新创建
             self._cache.pop(sandbox_name, None)
             self._locks.pop(sandbox_name, None)
 
     async def warmup(self) -> None:
-        """
-        Warmup default image.
-        Uses empty config for warmup to avoid unnecessary volume mounts.
+        """预热默认镜像
+        预热时使用空配置,避免不必要的卷挂载。
         """
         image = get_sandbox_image()
         warmup_name = "__warmup__"
         try:
             template = SandboxTemplate(type="image", image=image)
-            # Use empty config for warmup - no need for volumes/env
+            # 预热时使用空配置,不需要卷和环境变量
             warmup_config = SandboxConfig()
             async with await self._service.get_or_create(
                 warmup_name, template=template, config=warmup_config
@@ -288,16 +279,14 @@ class SandboxManager:
             logger.error(f"Failed to warmup sandbox image: {e}")
 
     async def cleanup(self) -> None:
-        """Stop all running sandboxes.
+        """停止所有运行中的沙箱
 
-        Delete sandboxes whose config (image, cpus, memory, volumes)
-        differs from the current environment so they get recreated
-        with the correct settings next time.
+        删除配置（镜像、CPU、内存、卷）与当前环境不同的沙箱,
+        以便下次使用时以正确的设置重新创建。
 
         Note:
-            If ``get_uploads_dir()`` (via ``XAGENT_UPLOADS_DIR`` env var) changes
-            between deployments, all user sandboxes will be detected as
-            having stale volume mounts and will be deleted for recreation.
+            如果 ``get_uploads_dir()``（通过 ``XAGENT_UPLOADS_DIR`` 环境变量）在两次部署之间发生变化,
+            所有用户沙箱将被检测为具有过时的卷挂载,将被删除以重新创建。
         """
         try:
             sandboxes = await self._service.list_sandboxes()
@@ -313,7 +302,7 @@ class SandboxManager:
                     try:
                         lifecycle_type, lifecycle_id = self.parse_sandbox_name(sb.name)
                     except ValueError:
-                        # Not a normal managed sandbox name, stop
+                        # 不是正常的托管沙箱名称,停止运行
                         if sb.state == "running":
                             box = await self._service.get_or_create(
                                 sb.name, template=sb.template, config=sb.config
@@ -322,12 +311,12 @@ class SandboxManager:
                             logger.debug(f"Stopped sandbox: {sb.name}")
                         continue
 
-                    # Delete sandbox if config changed (force recreate on next start)
+                    # 如果配置已更改则删除沙箱(下次启动时强制重建)
                     image_changed = sb.template.image != image
                     cpus_changed = sb.config.cpus != config.cpus
                     memory_changed = sb.config.memory != config.memory
 
-                    # volumes comparison: None and empty list are treated as equal, ignore order
+                    # 卷比较: None 和空列表视为相等,忽略顺序
                     old_volumes = sb.config.volumes or []
 
                     default_volumes = self._make_default_volumes(
@@ -339,7 +328,7 @@ class SandboxManager:
 
                     volumes_changed = set(old_volumes) != set(new_volumes)
 
-                    # env comparison: None and empty dict are treated as equal
+                    # 环境变量比较: None 和空字典视为相等
                     old_env = sb.config.env or {}
                     new_env = config.env or {}
                     env_changed = old_env != new_env
@@ -391,7 +380,7 @@ class SandboxManager:
                         await self._service.delete(sb.name)
                         continue
 
-                    # Stop running sandboxes with matching image
+                    # 停止镜像匹配的运行中沙箱
                     if sb.state == "running":
                         box = await self._service.get_or_create(
                             sb.name, template=sb.template, config=sb.config

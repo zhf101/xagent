@@ -22,20 +22,20 @@ logger = logging.getLogger(__name__)
 async def refresh_oauth_token_if_needed(
     db: Any, oauth_account: Any, provider_name: str
 ) -> bool:
-    """Check if token is expired (or close to expiring) and refresh if needed."""
+    """检查令牌是否已过期（或即将过期），如果需要则刷新"""
     if not oauth_account.expires_at:
-        return True  # Assume valid if no expiration is set
+        return True  # 如果没有设置过期时间则假设有效
 
-    # Check if expired (or expiring within 5 minutes)
+    # 检查是否已过期（或在 5 分钟内即将过期）
     now = datetime.now(timezone.utc)
 
-    # Handle timezone naive vs aware
+    # 处理时区（naive vs aware）
     expires_at = oauth_account.expires_at
     if expires_at.tzinfo is None:
         expires_at = expires_at.replace(tzinfo=timezone.utc)
 
     if expires_at > now + timedelta(minutes=5):
-        return True  # Token is still valid
+        return True  # 令牌仍然有效
 
     if not oauth_account.refresh_token:
         logger.warning(
@@ -109,7 +109,7 @@ async def refresh_oauth_token_if_needed(
 
 
 class WebToolConfig(BaseToolConfig):
-    """Web-specific tool configuration that loads from database."""
+    """从数据库加载的 Web 专用工具配置"""
 
     @staticmethod
     def _coerce_user_id(value: Any) -> Optional[int]:
@@ -143,10 +143,10 @@ class WebToolConfig(BaseToolConfig):
             workspace_config = {}
         if task_id:
             workspace_config["task_id"] = task_id
-        # Use uploads dir if workspace_base_dir not explicitly provided
+        # 如果未显式提供 workspace_base_dir 则使用 uploads 目录
         if workspace_base_dir is None:
             workspace_base_dir = str(get_uploads_dir())
-        # Ensure base_dir is in workspace_config (required by ToolFactory._create_workspace)
+        # 确保 base_dir 在 workspace_config 中（ToolFactory._create_workspace 需要）
         if "base_dir" not in workspace_config:
             workspace_config["base_dir"] = workspace_base_dir
         self._workspace_config = workspace_config
@@ -160,10 +160,10 @@ class WebToolConfig(BaseToolConfig):
         self._allowed_tools = allowed_tools
         self._excluded_agent_id: Optional[int] = None
 
-        # Sandbox instance - only store reference, lifecycle managed by upper layer
+        # 沙箱实例 - 仅存储引用，生命周期由上层管理
         self._sandbox: Optional[Any] = None
 
-        # Cache for loaded configurations
+        # 已加载配置的缓存
         self._cached_vision_config: Optional[Any] = None
         self._cached_image_configs: Optional[Dict[str, Any]] = None
         self._cached_image_generate_model: Optional[Any] = None
@@ -176,13 +176,13 @@ class WebToolConfig(BaseToolConfig):
         self._cached_embedding_model: Optional[str] = None
 
     def _get_user_id_from_request(self, request: Any) -> int:
-        """Extract user ID from request using JWT authentication."""
+        """使用 JWT 认证从请求中提取用户 ID"""
         try:
             from ..auth_dependencies import get_user_from_websocket_token
 
-            # Check if this is a FastAPI request with proper authentication
+        # 检查是否是带有正确认证的 FastAPI 请求
             if hasattr(request, "headers") and hasattr(request, "query_params"):
-                # Try to extract user from Authorization header
+                # 尝试从 Authorization 头提取用户
                 auth_header = request.headers.get("authorization")
                 if auth_header:
                     user = get_user_from_websocket_token(auth_header, self.db)
@@ -191,26 +191,26 @@ class WebToolConfig(BaseToolConfig):
                         if user_id is not None:
                             return user_id
 
-            # If request has a user attribute directly, use it
+            # 如果请求直接有 user 属性，直接使用
             if hasattr(request, "user") and request.user:
                 user_id = self._coerce_user_id(getattr(request.user, "id", None))
                 if user_id is not None:
                     return user_id
 
-            # If no authentication, this should raise an exception
+            # 没有认证信息，这应该抛出异常
             raise ValueError("Authentication required")
 
         except Exception as e:
             logger = logging.getLogger(__name__)
             logger.error(f"Failed to get user ID from request: {e}")
-            # Fallback to default user ID for backward compatibility
-            # In production, this should raise an exception instead
+            # 回退到默认用户 ID 以保持向后兼容
+            # 在生产环境中，此处应抛出异常
             return 1
 
     def _get_is_admin_from_request(self, request: Any) -> bool:
-        """Extract is_admin flag from request."""
+        """从请求中提取 is_admin 标志"""
         try:
-            # If request has a user attribute directly, check is_admin
+        # 如果请求直接有 user 属性，检查 is_admin
             if hasattr(request, "user") and request.user:
                 return bool(request.user.is_admin)
 
@@ -222,19 +222,19 @@ class WebToolConfig(BaseToolConfig):
             return False
 
     def get_workspace_config(self) -> Optional[Dict[str, Any]]:
-        """Get workspace configuration."""
+        """获取工作区配置"""
         return self._workspace_config
 
     def get_file_tools_enabled(self) -> bool:
-        """Whether to include file tools."""
+        """是否包含文件工具"""
         return True
 
     def get_basic_tools_enabled(self) -> bool:
-        """Whether to include basic tools."""
+        """是否包含基础工具"""
         return True
 
     def get_vision_model(self) -> Optional[Any]:
-        """Get vision model, prioritizing explicitly provided model over database."""
+        """获取视觉模型，优先使用显式提供的模型而非数据库中的"""
         if hasattr(self, "_explicit_vision_model") and self._explicit_vision_model:
             return self._explicit_vision_model
 
@@ -243,19 +243,19 @@ class WebToolConfig(BaseToolConfig):
         return self._cached_vision_config
 
     def get_image_models(self) -> Dict[str, Any]:
-        """Load image models from database."""
+        """从数据库加载图像模型"""
         if self._cached_image_configs is None:
             self._cached_image_configs = self._load_image_models()
         return self._cached_image_configs
 
     def get_image_generate_model(self) -> Optional[Any]:
-        """Get default image generation model from database."""
+        """从数据库获取默认图像生成模型"""
         if self._cached_image_generate_model is None:
             self._cached_image_generate_model = self._load_image_generate_model()
         return self._cached_image_generate_model
 
     def get_image_edit_model(self) -> Optional[Any]:
-        """Get default image editing model from database."""
+        """从数据库获取默认图像编辑模型"""
         if self._cached_image_edit_model is None:
             self._cached_image_edit_model = self._load_image_edit_model()
         return self._cached_image_edit_model
@@ -270,21 +270,21 @@ class WebToolConfig(BaseToolConfig):
         return self._cached_mcp_configs
 
     def get_embedding_model(self) -> Optional[str]:
-        """Load default embedding model ID from database."""
+        """从数据库加载默认嵌入模型 ID"""
         if self._cached_embedding_model is None:
             self._cached_embedding_model = self._load_embedding_model()
         return self._cached_embedding_model
 
     def get_browser_tools_enabled(self) -> bool:
-        """Whether to include browser automation tools."""
+        """是否包含浏览器自动化工具"""
         return self._browser_tools_enabled
 
     def get_task_id(self) -> Optional[str]:
-        """Get task ID for session tracking."""
+        """获取用于会话追踪的任务 ID"""
         return self._task_id
 
     def get_allowed_collections(self) -> Optional[List[str]]:
-        """Get allowed knowledge base collections. None means all collections are allowed."""
+        """获取允许的知识库集合。None 表示允许所有集合"""
         return self._allowed_collections
 
     def get_allowed_skills(self) -> Optional[List[str]]:
@@ -292,7 +292,7 @@ class WebToolConfig(BaseToolConfig):
         return self._allowed_skills
 
     def get_allowed_tools(self) -> Optional[List[str]]:
-        """Get allowed tool names. None means all tools are allowed."""
+        """获取允许的工具名称。None 表示允许所有工具"""
         return self._allowed_tools
 
     def get_excluded_agent_id(self) -> Optional[int]:
@@ -300,23 +300,23 @@ class WebToolConfig(BaseToolConfig):
         return getattr(self, "_excluded_agent_id", None)
 
     def get_user_id(self) -> Optional[int]:
-        """Get current user ID for multi-tenancy."""
+        """获取当前用户 ID（用于多租户）"""
         return self._user_id
 
     def get_db(self) -> Any:
-        """Get database session."""
+        """获取数据库会话"""
         return self.db
 
     def is_admin(self) -> bool:
-        """Whether current user is admin."""
+        """当前用户是否为管理员"""
         return self._is_admin_value
 
     def get_enable_agent_tools(self) -> bool:
-        """Whether to include published agents as tools."""
+        """是否将已发布的代理作为工具包含"""
         return True
 
     def get_sandbox(self) -> Optional[Any]:
-        """Get sandbox instance. Returns None if not available."""
+        """获取沙箱实例。如果不可用则返回 None"""
         return self._sandbox
 
     def get_tool_credential(self, tool_name: str, field_name: str) -> Optional[str]:
@@ -361,7 +361,7 @@ class WebToolConfig(BaseToolConfig):
             return {}
 
     def _load_image_generate_model(self) -> Optional[Any]:
-        """Load default image generation model from database via model service."""
+        """通过模型服务从数据库加载默认图像生成模型"""
         try:
             from ...web.services.model_service import get_default_image_generate_model
 
@@ -373,7 +373,7 @@ class WebToolConfig(BaseToolConfig):
             return None
 
     def _load_image_edit_model(self) -> Optional[Any]:
-        """Load default image editing model from database via model service."""
+        """通过模型服务从数据库加载默认图像编辑模型"""
         try:
             from ...web.services.model_service import get_default_image_edit_model
 
@@ -385,13 +385,13 @@ class WebToolConfig(BaseToolConfig):
             return None
 
     def get_asr_models(self) -> Dict[str, Any]:
-        """Load ASR models from database."""
+        """从数据库加载语音识别模型"""
         if self._cached_asr_models is None:
             self._cached_asr_models = self._load_asr_models()
         return self._cached_asr_models
 
     def _load_asr_models(self) -> Dict[str, Any]:
-        """Load ASR models from database via model service."""
+        """通过模型服务从数据库加载语音识别模型"""
         try:
             from ...web.services.model_service import get_asr_models
 
@@ -403,13 +403,13 @@ class WebToolConfig(BaseToolConfig):
             return {}
 
     def get_asr_model(self) -> Optional[Any]:
-        """Get default ASR model from database."""
+        """从数据库获取默认语音识别模型"""
         if self._cached_asr_model is None:
             self._cached_asr_model = self._load_asr_model()
         return self._cached_asr_model
 
     def _load_asr_model(self) -> Optional[Any]:
-        """Load default ASR model from database via model service."""
+        """通过模型服务从数据库加载默认语音识别模型"""
         try:
             from ...web.services.model_service import get_default_asr_model
 
@@ -421,13 +421,13 @@ class WebToolConfig(BaseToolConfig):
             return None
 
     def get_tts_models(self) -> Dict[str, Any]:
-        """Load TTS models from database."""
+        """从数据库加载文本转语音模型"""
         if self._cached_tts_models is None:
             self._cached_tts_models = self._load_tts_models()
         return self._cached_tts_models
 
     def _load_tts_models(self) -> Dict[str, Any]:
-        """Load TTS models from database via model service."""
+        """通过模型服务从数据库加载文本转语音模型"""
         try:
             from ...web.services.model_service import get_tts_models
 
@@ -439,17 +439,17 @@ class WebToolConfig(BaseToolConfig):
             return {}
 
     def get_tts_model(self) -> Optional[Any]:
-        """Get default TTS model from database."""
+        """从数据库获取默认文本转语音模型"""
         if self._cached_tts_model is None:
             self._cached_tts_model = self._load_tts_model()
         return self._cached_tts_model
 
     def get_llm(self) -> Optional[Any]:
-        """Get LLM from constructor parameter."""
+        """从构造函数参数获取大语言模型"""
         return self._explicit_llm
 
     def _load_tts_model(self) -> Optional[Any]:
-        """Load default TTS model from database via model service."""
+        """通过模型服务从数据库加载默认文本转语音模型"""
         try:
             from ...web.services.model_service import get_default_tts_model
 
@@ -461,7 +461,7 @@ class WebToolConfig(BaseToolConfig):
             return None
 
     async def _load_mcp_server_configs(self) -> List[Dict[str, Any]]:
-        """Load MCP server configurations from database with user context."""
+        """从数据库加载带用户上下文的 MCP 服务器配置"""
         logger = logging.getLogger(__name__)
         configs = []
 
@@ -481,20 +481,20 @@ class WebToolConfig(BaseToolConfig):
             )
 
             for server in servers:
-                # Build config dict from server model
+            # 构建服务器模型的配置字典
                 config = {
                     "name": server.name,
                     "transport": server.transport,
                     "description": server.description,
                 }
 
-                # Add transport-specific configuration
+                # 添加传输相关的配置
                 transport_config = {}
 
-                # Handle OAuth credentials
+                # 处理 OAuth 凭证
                 if server.transport == "oauth":
-                    # Find corresponding OAuth account
-                    # The provider might be linkedin, google, etc. based on the app config
+                    # 查找对应的 OAuth 账户
+                    # provider 可能是 linkedin、google 等，取决于应用配置
                     from ...web.mcp_apps import get_app_by_name
                     from ...web.models.user_oauth import UserOAuth
 
@@ -503,8 +503,8 @@ class WebToolConfig(BaseToolConfig):
                         app_info.get("provider") if app_info else server.name.lower()
                     )
 
-                    # Some oauth records might be saved with the app_id as provider instead of the general provider_name
-                    # For example, "google-drive" instead of "google"
+                    # 某些 oauth 记录可能将 app_id 作为 provider 存储，而不是通用的 provider_name
+                    # 例如，"google-drive" 而不是 "google"
                     app_id = app_info.get("id") if app_info else None
 
                     if app_id:
@@ -537,7 +537,7 @@ class WebToolConfig(BaseToolConfig):
                         logger.info(
                             f"OAUTH CONFIG: Token found for '{provider_name}'. Refresh token present: {oauth_account.refresh_token is not None}, Expires: {oauth_account.expires_at}"
                         )
-                        # Check and refresh token if needed before using it
+                        # 使用前检查并在需要时刷新令牌
                         is_valid = await refresh_oauth_token_if_needed(
                             self.db,
                             oauth_account,
@@ -549,7 +549,7 @@ class WebToolConfig(BaseToolConfig):
                                 f"OAUTH CONFIG: Token for '{provider_name}' is invalid and could not be refreshed. "
                                 "Deleting OAuth record to prompt user for reconnection."
                             )
-                            # Delete the invalid oauth record so UI shows it as disconnected
+                            # 删除无效的 oauth 记录，使 UI 显示为已断开
                             self.db.delete(oauth_account)
                             self.db.commit()
                             continue
@@ -626,7 +626,7 @@ class WebToolConfig(BaseToolConfig):
                     if server.headers:
                         transport_config["headers"] = server.headers
 
-                # Add Docker-specific config if managed internally
+                # 如果是内部管理则添加 Docker 相关配置
                 if server.managed == "internal":
                     if server.docker_url:
                         transport_config["docker_url"] = server.docker_url
@@ -651,7 +651,7 @@ class WebToolConfig(BaseToolConfig):
 
                 config["config"] = transport_config
 
-                # Add user context for MCP tool isolation
+                # 添加 MCP 工具隔离的用户上下文
                 config["user_id"] = str(self._user_id)
                 config["allow_users"] = [str(self._user_id)]  # Only allow current user
 
@@ -667,7 +667,7 @@ class WebToolConfig(BaseToolConfig):
         return configs
 
     def get_custom_api_configs(self) -> List[Dict[str, Any]]:
-        """Get custom API configurations."""
+        """获取自定义 API 配置"""
         if not self._user_id:
             return []
 

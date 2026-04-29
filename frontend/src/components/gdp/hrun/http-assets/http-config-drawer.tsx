@@ -1,6 +1,6 @@
 "use client"
 
-import React, { useEffect, useMemo, useState } from "react"
+import React, { useEffect, useMemo, useRef, useState } from "react"
 import {
   Sheet,
   SheetContent,
@@ -191,6 +191,9 @@ export function HttpConfigDrawer({ open, onOpenChange, onSaved, assetId }: HttpC
   const [successResponseTemplate, setSuccessResponseTemplate] = useState("")
   const [successResponsePrepend, setSuccessResponsePrepend] = useState("")
   const [successResponseAppend, setSuccessResponseAppend] = useState("")
+  const assetRequestIdRef = useRef(0)
+  const systemOptionsRequestIdRef = useRef(0)
+  const envOptionsRequestIdRef = useRef(0)
   const selectedSystemOption = useMemo(
     () => systemOptions.find(option => option.system_short === payload.resource.system_short),
     [systemOptions, payload.resource.system_short]
@@ -267,7 +270,17 @@ export function HttpConfigDrawer({ open, onOpenChange, onSaved, assetId }: HttpC
     ]
   )
 
+  const invalidateAsyncRequests = () => {
+    // 抽屉关闭、切换 assetId、或者 system/env 依赖变化时，
+    // 旧请求如果回来得更晚，会把新表单状态覆盖掉。
+    // 这里通过“请求代次”让过期响应自动失效，避免 UI 显示串档。
+    assetRequestIdRef.current += 1
+    systemOptionsRequestIdRef.current += 1
+    envOptionsRequestIdRef.current += 1
+  }
+
   const loadSystemOptions = async (includeSystemShort?: string) => {
+    const requestId = ++systemOptionsRequestIdRef.current
     setIsSystemOptionsLoading(true)
     try {
       const params = new URLSearchParams()
@@ -283,24 +296,35 @@ export function HttpConfigDrawer({ open, onOpenChange, onSaved, assetId }: HttpC
         throw new Error(getApiErrorMessage(payload, "加载系统选项失败"))
       }
       const data = await res.json()
+      if (requestId !== systemOptionsRequestIdRef.current) {
+        return
+      }
       setSystemOptions(Array.isArray(data?.data) ? data.data : [])
       setSystemOptionsError(null)
     } catch (error) {
+      if (requestId !== systemOptionsRequestIdRef.current) {
+        return
+      }
       setSystemOptions([])
       setSystemOptionsError(error instanceof Error ? error.message : "加载系统选项失败")
     } finally {
-      setIsSystemOptionsLoading(false)
+      if (requestId === systemOptionsRequestIdRef.current) {
+        setIsSystemOptionsLoading(false)
+      }
     }
   }
 
   const loadEnvOptions = async (systemShort?: string, includeEnvLabel?: string) => {
     const normalizedSystemShort = (systemShort || "").trim()
     if (!normalizedSystemShort) {
+      envOptionsRequestIdRef.current += 1
       setEnvOptions([])
       setEnvOptionsError(null)
+      setIsEnvOptionsLoading(false)
       return
     }
 
+    const requestId = ++envOptionsRequestIdRef.current
     setIsEnvOptionsLoading(true)
     try {
       const params = new URLSearchParams()
@@ -316,49 +340,75 @@ export function HttpConfigDrawer({ open, onOpenChange, onSaved, assetId }: HttpC
         throw new Error(getApiErrorMessage(error, "加载环境标签失败"))
       }
       const data = await response.json()
+      if (requestId !== envOptionsRequestIdRef.current) {
+        return
+      }
       setEnvOptions(Array.isArray(data?.data) ? data.data : [])
       setEnvOptionsError(null)
     } catch (error) {
+      if (requestId !== envOptionsRequestIdRef.current) {
+        return
+      }
       setEnvOptions([])
       setEnvOptionsError(error instanceof Error ? error.message : "加载环境标签失败")
     } finally {
-      setIsEnvOptionsLoading(false)
+      if (requestId === envOptionsRequestIdRef.current) {
+        setIsEnvOptionsLoading(false)
+      }
     }
   }
 
   useEffect(() => {
-    if (open) {
-      setSystemOptions([])
-      setSystemOptionsError(null)
-      setEnvOptions([])
-      setEnvOptionsError(null)
-      if (assetId) {
-        fetchAsset(assetId)
-      } else {
-        const nextPayload = createDefaultGdpHttpPayload()
-        setPayload(nextPayload)
-        syncTemplateStrategyState(nextPayload)
-        setInputTree([])
-        setOutputTree([])
-        setRawInputJson(JSON.stringify(nextPayload.tool_contract.input_schema_json, null, 2))
-        setRawOutputJson(JSON.stringify(nextPayload.tool_contract.output_schema_json, null, 2))
-        setActiveStep("basic")
-        void loadSystemOptions()
-      }
+    if (!open) {
+      invalidateAsyncRequests()
+      setIsLoading(false)
+      setIsSystemOptionsLoading(false)
+      setIsEnvOptionsLoading(false)
+      return
+    }
+
+    setSystemOptions([])
+    setSystemOptionsError(null)
+    setEnvOptions([])
+    setEnvOptionsError(null)
+    if (assetId) {
+      void fetchAsset(assetId)
+    } else {
+      const nextPayload = createDefaultGdpHttpPayload()
+      setPayload(nextPayload)
+      syncTemplateStrategyState(nextPayload)
+      setInputTree([])
+      setOutputTree([])
+      setRawInputJson(JSON.stringify(nextPayload.tool_contract.input_schema_json, null, 2))
+      setRawOutputJson(JSON.stringify(nextPayload.tool_contract.output_schema_json, null, 2))
+      setActiveStep("basic")
+      setIsLoading(false)
+      void loadSystemOptions()
+    }
+
+    return () => {
+      invalidateAsyncRequests()
     }
   }, [open, assetId])
 
   const fetchAsset = async (id: number) => {
+    const requestId = ++assetRequestIdRef.current
     setIsLoading(true)
     try {
       const res = await apiRequest(`${getApiUrl()}/api/v1/gdp/http-assets/${id}`)
       if (res.ok) {
         const data = await res.json()
         const asset = coerceHttpAssetPayloadFromApi(data.data)
+        if (requestId !== assetRequestIdRef.current) {
+          return
+        }
         setPayload(asset)
         syncTemplateStrategyState(asset)
         await loadSystemOptions(asset.resource.system_short)
         await loadEnvOptions(asset.resource.system_short, asset.execution_profile.sys_label)
+        if (requestId !== assetRequestIdRef.current) {
+          return
+        }
         
         if (asset.tool_contract.input_schema_json) {
           const tree = parseTreeFromSchemaAndRoutes(
@@ -375,10 +425,15 @@ export function HttpConfigDrawer({ open, onOpenChange, onSaved, assetId }: HttpC
         }
       }
     } catch (error) {
+      if (requestId !== assetRequestIdRef.current) {
+        return
+      }
       console.error(error)
       toast.error(error instanceof Error ? error.message : "加载资产详情失败")
     } finally {
-      setIsLoading(false)
+      if (requestId === assetRequestIdRef.current) {
+        setIsLoading(false)
+      }
     }
   }
 

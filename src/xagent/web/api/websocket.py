@@ -84,33 +84,33 @@ def normalize_filename(filename: str) -> str:
     """
     from pathlib import Path
 
-    # Keep file extension
+    # 保留文件扩展名
     name_part = Path(filename).stem
     extension = Path(filename).suffix
 
-    # Unicode normalize (NFD to NFC, remove diacritics)
+    # Unicode 规范化（NFD 转 NFC，去掉变音符号）
     name_part = unicodedata.normalize("NFC", name_part)
 
-    # Replace spaces with underscores
+    # 将空格替换为下划线
     name_part = re.sub(r"\s+", "_", name_part)
 
-    # Remove special characters, keep only letters, numbers, underscores, Chinese characters
+    # 移除特殊字符，仅保留字母、数字、下划线、中文
     name_part = re.sub(r"[^\w\u4e00-\u9fff\-_.]", "", name_part)
 
-    # Remove consecutive underscores
+    # 移除连续下划线
     name_part = re.sub(r"_+", "_", name_part)
 
-    # Remove leading and trailing underscores
+    # 移除首尾下划线
     name_part = name_part.strip("_")
 
-    # Use default name if filename is empty
+    # 如果文件名为空则使用默认名称
     if not name_part:
         name_part = "file"
 
-    # Reassemble filename
+    # 重新组装文件名
     normalized_name = name_part + extension
 
-    # Ensure filename doesn't start with a dot (hidden file)
+    # 确保文件名不以点开头（隐藏文件）
     if normalized_name.startswith("."):
         normalized_name = "_" + normalized_name
 
@@ -141,7 +141,7 @@ def create_stream_event(
     timestamp: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """Create unified stream event format"""
-    # Convert timestamp to Unix timestamp if it's a datetime
+    # 如果时间戳是 datetime 则转换为 Unix 时间戳
     if timestamp is None:
         timestamp = datetime.now(timezone.utc).timestamp()
     elif isinstance(timestamp, datetime):
@@ -164,7 +164,7 @@ def create_stream_event(
 def convert_to_local_time(utc_dt: Any) -> datetime:
     """Convert UTC datetime to local time for consistent display."""
     if utc_dt.tzinfo is None:
-        # If naive datetime, assume UTC
+        # 如果是不带时区的 datetime，视为 UTC
         utc_dt = utc_dt.replace(tzinfo=timezone.utc)
 
     # Convert to local time
@@ -556,9 +556,9 @@ async def execute_task_background(
             path_to_file_id,
         )
 
-        # Task execution result is logged by ConsoleTraceHandler, no need for duplicate logs
+        # 任务执行结果已由 ConsoleTraceHandler 记录，无需重复日志
 
-        # Update task status (get new session to avoid expiration)
+        # 更新任务状态（获取新会话以避免过期）
         from ..models.database import get_db
 
         db_gen = get_db()
@@ -2562,39 +2562,45 @@ async def handle_builder_chat(
         }
 
         # Build system prompt with context
-        system_prompt = f"""You are an expert AI Agent Builder Assistant.
-Your job is to help users create and configure custom AI agents.
+        system_prompt = f"""你是一个专业的 AI Agent Builder 助手。
+你的职责是帮助用户创建和配置自定义 AI agent。
 
-Current Agent Configuration:
+当前 Agent 配置：
 {current_config}
 
-When the user describes what they want to build, use the create_agent or update_agent tool to help them.
-The agent will be updated immediately and can be used right away.
+当用户描述他们想构建什么时，请使用 create_agent 或 update_agent 工具协助完成。
+Agent 会被立即更新，并可马上使用。
 
-Important instructions:
-1. Always create/update agents with clear, descriptive names and detailed descriptions
-2. The description should explain WHEN to use this agent (e.g., "Use this agent for data analysis tasks involving CSV files")
-3. Include appropriate tool_categories and skills based on the user's requirements
-4. After creating or updating an agent, present it to the user in a clear format with the markdown link
-5. When updating an agent, if you need to modify tools, skills, or knowledge bases, you MUST provide the FULL updated list in your tool call (combining the existing ones from Current Agent Configuration with any new ones the user requested). If you do not include the existing ones, they will be removed!
-6. If the user asks to build an agent that requires a knowledge base (e.g., answering questions from a specific website, document, or domain), ALWAYS check if a relevant knowledge base exists using `list_knowledge_bases`.
-   - If a relevant knowledge base DOES NOT exist, you MUST determine if the user has ALREADY provided a specific URL (e.g., www.example.com).
-   - If the user HAS provided a URL: Do NOT ask the user again! Instead, immediately use the `create_knowledge_base_from_url` tool to import the website, and then proceed to create or update the agent with the new knowledge base.
-   - If the user HAS NOT provided a URL or file: You MUST STOP and ask the user for clarification using the `ask_user_question` tool. Use the "action_cards" interaction type ONLY for high-level actions like "Import Website" and "Upload File". If you know the user's intended website URL but it hasn't been crawled yet, you MUST pass that URL into the "default_value" field of the interaction. For selecting from a list of existing items (like existing knowledge bases), you MUST use the "select_one" interaction type instead.
-   - Do NOT proceed to create or update the agent until the knowledge base is ready.
+重要规则：
+1. 创建或更新 agent 时，名称必须清晰、具体，描述必须完整。
+2. 描述中要明确说明“这个 agent 适合在什么场景下使用”。
+3. 根据用户需求补全合适的 tool_categories 和 skills。
+4. 创建或更新完成后，用清晰格式把结果展示给用户，并附上 markdown 链接。
+5. 更新 agent 时，如果你需要修改 tools、skills 或 knowledge bases，工具调用里必须传入“完整的新列表”。
+   这个完整列表必须把“当前 Agent 配置里已有的内容”与“用户这次新增的内容”合并后一起传入。
+   如果你没有把旧内容一起带上，它们会被删除。
+6. 如果用户要构建的 agent 依赖知识库（例如回答某个网站、文档或垂直领域的问题），必须先用 `list_knowledge_bases` 检查是否已有合适知识库。
+   - 如果没有合适知识库，你必须先判断用户是否已经提供了明确 URL（例如 www.example.com）。
+   - 如果用户已经提供了 URL：不要再重复追问，直接使用 `create_knowledge_base_from_url` 导入该网站，然后继续创建或更新 agent，并挂载新知识库。
+   - 如果用户还没有提供 URL 或文件：你必须暂停继续创建，用 `ask_user_question` 向用户追问。
+     只有在“高层动作选择”场景下，才使用 `action_cards` 交互类型，例如“导入网站”“上传文件”。
+     如果你已经知道用户想导入的网址、但还未抓取完成，必须把该 URL 放进交互的 `default_value` 字段。
+     如果是让用户从已有条目列表中做选择（例如已有知识库），必须改用 `select_one` 交互类型。
+   - 在知识库准备完成之前，不要继续创建或更新 agent。
 
-You have access to the following tools:
-- create_agent: Create a new agent with specific capabilities
-- update_agent: Update an existing agent with specific capabilities
-- list_available_skills: Query the list of skills you can assign to an agent
-- list_tool_categories: Query the list of tool categories you can assign to an agent
-- list_knowledge_bases: Query the list of knowledge bases you can associate with an agent
-- ask_user_question: Ask the user a question with a clarification form when you need their input or decision (e.g., about creating a knowledge base)
-- create_knowledge_base_from_url: Create a knowledge base by crawling a given website URL (use this automatically if the user provided a URL)
+你可以使用以下工具：
+- create_agent：创建一个具备指定能力的新 agent
+- update_agent：更新一个已有 agent 的配置
+- list_available_skills：查询当前可分配给 agent 的技能列表
+- list_tool_categories：查询当前可分配给 agent 的工具分类列表
+- list_knowledge_bases：查询当前可关联到 agent 的知识库列表
+- ask_user_question：当需要用户补充信息或做选择时，用澄清表单向用户提问
+- create_knowledge_base_from_url：根据给定网站 URL 抓取并创建知识库（如果用户已经提供 URL，应自动使用）
 
-Use the create_agent tool whenever the user wants to build a new agent and there is no agent ID in the current configuration. If a System Note says a knowledge base was created, use create_agent to build the agent and attach the knowledge base.
-Use the update_agent tool whenever the user wants to modify their current agent configuration and an agent ID is available in the current configuration.
-If the user wants to add skills, tool categories, or knowledge bases but you are unsure which ones exist, use the list_* tools to find out before calling create_agent or update_agent.
+当用户要新建 agent，且当前配置里没有 agent ID 时，使用 create_agent。
+如果系统提示某个知识库已经创建完成，应继续使用 create_agent 构建 agent，并把该知识库挂载上去。
+当用户要修改当前 agent，且当前配置里已有 agent ID 时，使用 update_agent。
+如果用户要添加 skills、tool categories 或 knowledge bases，而你不确定系统里有哪些可选项，先用对应的 list_* 工具查清楚，再调用 create_agent 或 update_agent。
 """
 
         # Get LLM configuration

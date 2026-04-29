@@ -8,10 +8,8 @@ from .base import BaseEmbedding
 
 
 class OpenAIEmbedding(BaseEmbedding):
-    """
-    OpenAI text embedding model client.
-    Supports text embedding using the OpenAI embeddings API.
-    """
+    """OpenAI 文本嵌入模型客户端。
+    使用 OpenAI 嵌入 API 进行文本向量化。"""
 
     def __init__(
         self,
@@ -24,29 +22,29 @@ class OpenAIEmbedding(BaseEmbedding):
         Initialize OpenAI embedding client.
 
         Args:
-            model: Model name (default: text-embedding-3-small)
-            api_key: OpenAI API key (or set OPENAI_API_KEY env var)
-            base_url: API base URL
-            dimension: Optional embedding dimension (for models that support it)
+            model: 模型名称（默认：text-embedding-3-small）
+            api_key: OpenAI API 密钥（或设置 OPENAI_API_KEY 环境变量）
+            base_url: API 基础地址
+            dimension: 可选的嵌入维度（用于支持此参数的模型）
         """
         self.model = model
         self.api_key = api_key
 
-        # Ensure base_url ends with /embeddings for OpenAI-compatible APIs
+        # 确保 base_url 以 /embeddings 结尾，以兼容 OpenAI 兼容 API
         if base_url:
-            # First, strip trailing slashes for consistent checking
+            # 先去掉尾部斜杠以进行一致检查
             clean_base_url = base_url.rstrip("/")
 
-            # If base_url doesn't end with /embeddings, append it
+            # 如果 base_url 不以 /embeddings 结尾，则追加
             if not clean_base_url.endswith("/embeddings"):
-                # Check if it ends with /v1 or similar
+                # 检查是否以 /v1 或类似路径结尾
                 if clean_base_url.endswith("/v1"):
                     self.base_url = clean_base_url + "/embeddings"
                 else:
-                    # For other cases, just use as-is (might be custom endpoint)
+                    # 其他情况保持原样（可能是自定义端点）
                     self.base_url = base_url
             else:
-                # Already has /embeddings, use the cleaned version
+                # 已包含 /embeddings，使用清理后的版本
                 self.base_url = clean_base_url
         else:
             self.base_url = "https://api.openai.com/v1/embeddings"
@@ -106,15 +104,15 @@ class OpenAIEmbedding(BaseEmbedding):
 
         Args:
             text: Single text string or list of text strings
-            dimension: Override default embedding dimension
-            instruct: Unused for OpenAI embeddings
+            dimension: 覆盖默认嵌入维度
+            instruct: 对 OpenAI 嵌入无用
 
         Returns:
-            Single embedding vector (list of floats) for single text,
-            or list of embedding vectors for list of texts
+            单个文本返回单个嵌入向量（浮点数列表），
+            文本列表返回嵌入向量列表
 
         Raises:
-            RuntimeError: If API call fails or returns invalid response
+            RuntimeError: 如果 API 调用失败或返回无效响应
         """
         if self._requires_api_key() and not self.api_key:
             raise RuntimeError("OPENAI_API_KEY is required")

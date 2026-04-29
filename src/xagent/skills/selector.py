@@ -1,5 +1,5 @@
 """
-Skill Selector - Use LLM to select the most appropriate skill
+技能选择器 - 使用 LLM 选择最合适的技能
 """
 
 import json
@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 
 class SkillSelector:
-    """Use LLM to select appropriate skill (JSON mode)"""
+    """使用 LLM 选择合适的技能（JSON 模式）"""
 
     SELECTOR_SYSTEM = """你是一个技能选择系统。在选择技能之前，分析用户的真实意图。
 
@@ -171,14 +171,14 @@ class SkillSelector:
         return selected_skill
 
     def _build_prompt(self, task: str, candidates: List[Dict]) -> str:
-        """Build selection prompt"""
+        """构建选择提示词"""
         skills_desc = []
 
         for i, skill in enumerate(candidates):
             desc = f"""{i + 1}. **{skill["name"]}**
-   Description: {skill.get("description", "N/A")}
-   When to use: {skill.get("when_to_use", "N/A")}
-   Tags: {", ".join(skill.get("tags", []))}"""
+   描述：{skill.get("description", "无")}
+   适用场景：{skill.get("when_to_use", "无")}
+   标签：{", ".join(skill.get("tags", []))}"""
             skills_desc.append(desc)
 
         # Extract key signal words from task

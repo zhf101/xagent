@@ -51,8 +51,8 @@ chat_router = APIRouter(prefix="/api/chat", tags=["chat"])
 def create_default_llm() -> Optional[BaseLLM]:
     """Create a default LLM instance based on environment configuration"""
     try:
-        # For OpenAI: allow empty string API key (use is not None check)
-        # For Zhipu: don't allow empty string API key (use truthy check)
+        # OpenAI：允许空字符串 API key（使用 is not None 检查）
+        # Zhipu：不允许空字符串 API key（使用真值检查）
         openai_api_key = os.getenv("OPENAI_API_KEY")
         zhipu_api_key = os.getenv("ZHIPU_API_KEY")
 

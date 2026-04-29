@@ -1196,7 +1196,7 @@ class ReActPattern(AgentPattern):
                     # 而是用 prompt_builder 统一生成分区文本，提示词更稳定。
                     memory_context_body = build_memory_prompt_sections(memory_bundle)
                     memory_context = (
-                        f"\n\nRelevant Memory Context:\n{memory_context_body}"
+                        f"\n\n相关记忆上下文：\n{memory_context_body}"
                         if memory_context_body
                         else ""
                     )
@@ -1379,77 +1379,77 @@ class ReActPattern(AgentPattern):
 {tools_section}
 {specialized_policy}
 
-DECISION:
-You must respond with a structured action in JSON format. Decide your next action:
+决策要求：
+你必须使用 JSON 格式返回结构化动作。请决定下一步：
 
-- If tools are available AND needed to accomplish the task: Use {{"type": "tool_call", "reasoning": "..."}}
-- If no tools available OR you have enough information to answer: Use {{"type": "final_answer", "reasoning": "...", "answer": "...", "success": true, "error": null}}
+- 如果有可用工具且完成任务需要工具：使用 {{"type": "tool_call", "reasoning": "..."}}
+- 如果没有可用工具，或者你已经有足够信息可以回答：使用 {{"type": "final_answer", "reasoning": "...", "answer": "...", "success": true, "error": null}}
 
-CRITICAL INSTRUCTIONS:
+关键指令：
 
-1. RESPONSE FORMAT (STRICT JSON SCHEMA):
-   Your response must be a valid JSON object matching this schema:
+1. 响应格式（严格 JSON Schema）：
+   你的响应必须是匹配下列结构的合法 JSON 对象：
    {{
        "type": "tool_call" | "final_answer",
-       "reasoning": "string (required)",
-       "answer": "string (for final_answer)",
-       "success": "boolean (for final_answer)",
-       "error": "string | null (for final_answer)"
+       "reasoning": "string（必填）",
+       "answer": "string（仅 final_answer）",
+       "success": "boolean（仅 final_answer）",
+       "error": "string | null（仅 final_answer）"
    }}
 
-   ⚠️ CRITICAL:
-   - Only include answer/success/error when type is "final_answer"
-   - Do NOT add any other fields beyond the schema
-   - Do NOT include tool names or arguments in JSON
-   - Return exactly ONE JSON object, nothing else
-   - No markdown, no backticks, no additional text
+   ⚠️ 关键要求：
+   - 只有当 type 为 "final_answer" 时才包含 answer/success/error
+   - 不要添加 schema 之外的其他字段
+   - 不要在 JSON 中包含工具名或工具参数
+   - 只能返回一个 JSON 对象，不能夹带其他内容
+   - 不要 markdown，不要反引号，不要额外解释
 
-2. WHEN TO USE TOOLS:
-   - Check if tools are available for this task
-   - Use tools when they help accomplish the task more effectively
-   - If no tools are available, provide a final answer directly
-   - Most tools are ATOMIC: one call completes the entire action
+2. 何时使用工具：
+   - 先检查这个任务是否存在可用工具
+   - 当工具能更有效完成任务时，就应使用工具
+   - 如果没有可用工具，直接给出最终答案
+   - 大多数工具都是原子操作，一次调用就能完成一个完整动作
 
-3. FOR TOOL CALLS:
-   - ONLY set the action type to "tool_call" and explain why
-   - Do NOT include tool names or arguments in the JSON
-   - The system will automatically invoke the appropriate tool through native function calling API
+3. tool_call 的要求：
+   - 只需要把动作类型设为 "tool_call"，并说明为什么需要调用工具
+   - 不要在 JSON 中写工具名或参数
+   - 系统会通过原生函数调用接口自动选择并执行合适工具
 
-4. FOR FINAL ANSWERS:
-   - Set "success" to true if the task was completed successfully, false if it failed
-   - If success is false, provide a detailed error message in the "error" field
-   - Provide a comprehensive summary of the results
+4. final_answer 的要求：
+   - 任务完成则将 "success" 设为 true，失败则设为 false
+   - 如果 success 为 false，必须在 "error" 中给出清晰错误说明
+   - 答案部分要总结完整结果
 
-5. LANGUAGE: Respond in the SAME LANGUAGE as the goal
+5. 语言要求：使用与用户目标相同的语言回复
 
-CORRECT RESPONSE FORMAT:
+正确示例：
 
-For tool calls:
+工具调用：
 {{
     "type": "tool_call",
-    "reasoning": "I need to use a tool because..."
+    "reasoning": "我需要调用工具来完成这个任务，因为……"
 }}
 
-For final answers (success):
+成功的最终答案：
 {{
     "type": "final_answer",
-    "reasoning": "Based on the provided context, I have successfully completed the task",
-    "answer": "The task has been completed successfully... [comprehensive summary]",
+    "reasoning": "根据当前上下文，我已经成功完成了任务",
+    "answer": "任务已完成……【完整总结】",
     "success": true,
     "error": null
 }}
 
-For final answers (failure):
+失败的最终答案：
 {{
     "type": "final_answer",
-    "reasoning": "The task could not be completed due to insufficient information",
-    "answer": "Unable to complete the task because the required information is not available",
+    "reasoning": "由于信息不足，当前任务无法完成",
+    "answer": "由于缺少必要信息，当前无法完成任务",
     "success": false,
-    "error": "Insufficient information to complete the task"
+    "error": "完成任务所需信息不足"
 }}
 
-Remember: Return ONLY ONE JSON object. No additional text, no multiple objects.
-=== END ACTION FORMAT REQUIREMENTS ==="""
+记住：只能返回一个 JSON 对象。不要额外文本，不要多个对象。
+=== 动作格式要求结束 ==="""
 
         return existing_prompt + action_requirements
 
@@ -1467,6 +1467,19 @@ Remember: Return ONLY ONE JSON object. No additional text, no multiple objects.
         """
         tool_name_set = set(tool_names)
         guidance_lines: List[str] = []
+        builtin_specialized_names = {
+            "api_call",
+            "query_http_resource",
+            "execute_http_resource",
+            "query_vanna_sql_asset",
+            "execute_vanna_sql_asset",
+            "knowledge_search",
+            "list_knowledge_bases",
+            "read_skill_doc",
+            "list_skill_docs",
+            "fetch_skill_file",
+        }
+        has_mcp_tools = any(name not in builtin_specialized_names for name in tool_name_set)
 
         # HTTP 路由是当前分支最容易被模型走错的一条线。
         #
@@ -1484,15 +1497,15 @@ Remember: Return ONLY ONE JSON object. No additional text, no multiple objects.
         # - 已确认资产执行：`execute_http_resource`
         if "api_call" in tool_name_set:
             guidance_lines.append(
-                "- If the user already provides a concrete URL, endpoint, curl snippet, OpenAPI path, or explicitly asks to call a designated HTTP API directly, use `api_call`."
+                "- 如果用户已经提供了明确的 URL、endpoint、curl 片段、OpenAPI path，或明确要求直连某个 HTTP API，请直接使用 `api_call`。"
             )
         if "query_http_resource" in tool_name_set:
             guidance_lines.append(
-                "- Use `query_http_resource` only when the user describes an HTTP capability but has not specified a concrete endpoint, and you need to discover a managed HTTP asset first."
+                "- 只有当用户描述的是某种内部 HTTP 能力、但还没有给出明确 endpoint，且你需要先发现托管的 HTTP asset 时，才使用 `query_http_resource`。"
             )
         if "execute_http_resource" in tool_name_set:
             guidance_lines.append(
-                "- Use `execute_http_resource` only after the target managed HTTP asset has been identified by `query_http_resource` or explicitly provided via resource_key/resource_id."
+                "- 只有在目标托管 HTTP asset 已经通过 `query_http_resource` 识别出来，或用户明确给出 resource_key/resource_id 之后，才能使用 `execute_http_resource`。"
             )
         if "api_call" in tool_name_set and "query_http_resource" in tool_name_set:
             guidance_lines.append(
@@ -1510,6 +1523,18 @@ Remember: Return ONLY ONE JSON object. No additional text, no multiple objects.
             guidance_lines.append(
                 "- 回答内部业务问题前，先使用知识工具，不要只依赖内置知识直接作答。"
             )
+        if (
+            ("knowledge_search" in tool_name_set or "list_knowledge_bases" in tool_name_set)
+            and (
+                "query_http_resource" in tool_name_set
+                or "query_vanna_sql_asset" in tool_name_set
+                or "read_skill_doc" in tool_name_set
+                or has_mcp_tools
+            )
+        ):
+            guidance_lines.append(
+                "- 如果 `knowledge_search` 没有命中可直接回答的信息，而问题仍明显属于内部业务/行业流程，不要立刻退回通用常识回答；继续检查 HTTP asset、SQL asset、skill 文档或 MCP 工具。"
+            )
         if "read_skill_doc" in tool_name_set or "list_skill_docs" in tool_name_set:
             guidance_lines.append(
                 "- 在声称流程或能力受限之前，先使用 skill 文档相关工具确认。"
@@ -1519,19 +1544,6 @@ Remember: Return ONLY ONE JSON object. No additional text, no multiple objects.
                 "- 如果继续执行需要 skill 文件，先通过 skill 工具链拉取，不要先声称任务无法继续。"
             )
 
-        builtin_specialized_names = {
-            "api_call",
-            "query_http_resource",
-            "execute_http_resource",
-            "query_vanna_sql_asset",
-            "execute_vanna_sql_asset",
-            "knowledge_search",
-            "list_knowledge_bases",
-            "read_skill_doc",
-            "list_skill_docs",
-            "fetch_skill_file",
-        }
-        has_mcp_tools = any(name not in builtin_specialized_names for name in tool_name_set)
         if has_mcp_tools:
             guidance_lines.append(
                 "- 如果已连接的 MCP 工具可能有帮助，优先使用 `tool_call`，不要过早拒绝，让运行时先检查并使用该系统能力。"
@@ -1545,6 +1557,7 @@ Remember: Return ONLY ONE JSON object. No additional text, no multiple objects.
             "- 你是专用的内部造数 agent，不是通用助手。\n"
             "- 当请求可能依赖内部业务数据、开户流程、环境操作、HTTP/API 资源、SQL asset、知识库、skills 或 MCP 连接系统时，优先使用 `tool_call`，而不是 `final_answer`。\n"
             "- 在首次尝试相关发现/检索工具之前，不要用 `final_answer` 直接拒绝、声称没有权限，或提出宽泛的缺失上下文问题。\n"
+            "- 如果某一类发现工具（例如 `knowledge_search`）没有找到结果，但同轮仍有其他内部工具链可用，不要因为单点未命中就结束；继续检查剩余的 HTTP/SQL/skill/MCP 路径。\n"
             "- 只有当请求明显只是普通对话，或者当需要先后调用多个http资产时，如果前面的http api执行返回确认失败（response.body.data中的status不等于1）时，`final_answer` 才是合适的。\n"
             + "\n".join(guidance_lines)
             + "\n"
@@ -2072,14 +2085,13 @@ Remember: Return ONLY ONE JSON object. No additional text, no multiple objects.
             {
                 "role": "user",
                 "content": (
-                    "IMPORTANT INSTRUCTION FOR THIS STEP:\n"
-                    "You indicated you want to call a tool. Now use the NATIVE FUNCTION CALLING interface "
-                    "to invoke the appropriate tool.\n\n"
-                    f"Your prior decision/reasoning for this tool call was:\n{decision_reasoning}\n\n"
-                    "Respond in the SAME LANGUAGE as the task.\n\n"
-                    "DO NOT respond with JSON format. DO NOT return a structured action JSON.\n"
-                    "Instead, use the native function calling API to directly invoke the tool.\n\n"
-                    "The system will handle the tool execution and return the result to you."
+                    "本步骤的重要指令：\n"
+                    "你刚才已经判断需要调用工具。现在请直接通过原生函数调用接口触发合适的工具。\n\n"
+                    f"你上一轮关于这次工具调用的判断/推理是：\n{decision_reasoning}\n\n"
+                    "请使用与任务相同的语言。\n\n"
+                    "不要再返回 JSON 格式，不要再返回结构化动作 JSON。\n"
+                    "你现在应该直接通过原生函数调用 API 触发工具。\n\n"
+                    "系统会负责执行工具，并把执行结果返回给你。"
                 ),
             }
         ]
@@ -2758,44 +2770,44 @@ Remember: Return ONLY ONE JSON object. No additional text, no multiple objects.
             tool_usage_count = len(tool_calls)
 
             # Build analysis summary for strict memory evaluation
-            analysis_summary = f"""MEMORY STORAGE EVALUATION:
+            analysis_summary = f"""记忆存储评估：
 
-TASK: {task}
-ITERATIONS: {iterations}
-TOOL CALLS: {tool_usage_count} (unique: {len(unique_tools)}): {", ".join(unique_tools) if unique_tools else "None"}
+任务：{task}
+迭代次数：{iterations}
+工具调用次数：{tool_usage_count}（去重后 {len(unique_tools)} 个）：{", ".join(unique_tools) if unique_tools else "无"}
 
-RESULT PREVIEW:
+结果预览：
 {result[:300]}{"..." if len(result) > 300 else ""}
 
-CRITICAL STORAGE DECISION:
-Evaluate if this execution contains UNIQUE, NON-OBVIOUS insights that would be valuable for FUTURE tasks.
+关键存储判断：
+请评估这次执行是否包含“独特、非显而易见、且对未来任务有价值”的洞察。
 
-STORAGE CRITERIA (ALL must be met):
-1. **NO ROUTINE EXECUTIONS** - Standard tool usage patterns should NOT be stored
-2. **UNIQUE FAILURES** - Non-obvious failures with important lessons learned
-3. **INNOVATIVE STRATEGIES** - Novel approaches not commonly known
-4. **DOMAIN EXPERTISE** - Specialized knowledge hard to obtain otherwise
-5. **USER PREFERENCES** - Clear user behavioral patterns or preferences
-6. **REUSABLE PATTERNS** - Abstract patterns applicable to many scenarios
+存储标准（必须全部满足）：
+1. **非日常执行** - 常规工具使用模式不应被存储
+2. **独特失败经验** - 非显而易见的失败，以及具有价值的经验教训
+3. **创新策略** - 不属于常见套路的新方法
+4. **领域专业性** - 不容易从其他渠道获得的专门知识
+5. **用户偏好** - 清晰可观察到的用户行为模式或偏好
+6. **可复用模式** - 可抽象复用到多类场景的模式
 
-REJECT STORAGE IF:
-- Routine task completion following standard patterns
-- Generic "effective tool usage" descriptions
-- Common problem-solving approaches
-- Obvious strategies that don't provide new insights
-- General information easily obtainable elsewhere
+以下情况应拒绝存储：
+- 遵循标准模式完成的常规任务
+- 泛泛而谈的“工具使用有效”描述
+- 常见的问题解决套路
+- 没有新信息的显而易见策略
+- 其他地方很容易获取的一般信息
 
-Provide JSON response:
+请按 JSON 返回：
 {{
     "should_store": true/false,
-    "reason": "Specific explanation of unique value or rejection reason",
-    "core_insight": "Single sentence capturing the essential learning if stored",
-    "user_preferences": "Observable user preferences (e.g., language preference, detail level, response format)",
-    "failure_patterns": "Non-obvious failure modes and solutions discovered",
-    "success_patterns": "Key strategies that led to success beyond standard approaches"
+    "reason": "说明独特价值，或说明为什么拒绝存储",
+    "core_insight": "如果值得存储，用一句话概括核心学习",
+    "user_preferences": "观察到的用户偏好（例如语言偏好、细节深度、回答格式）",
+    "failure_patterns": "发现的非显而易见失败模式及其解决方式",
+    "success_patterns": "超出标准套路、真正带来成功的关键策略"
 }}
 
-STORAGE THRESHOLD: Be extremely conservative. Only store truly exceptional insights. When in doubt, set should_store to false."""
+存储阈值：必须极其保守。只有真正 exceptional 的洞察才值得存储；拿不准时，一律设为 should_store = false。"""
 
             # Reuse existing messages context by appending the analysis request
             # This preserves the full conversation context and provides better continuity

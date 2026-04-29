@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 
 
 class AgentException(Exception):
-    """Base exception for all agent-related errors."""
+    """所有 agent 相关错误的基础异常类。"""
 
     def __init__(
         self,
@@ -22,7 +22,7 @@ class AgentException(Exception):
         self.cause = cause
 
     def to_dict(self) -> Dict[str, Any]:
-        """Convert exception to dictionary for serialization."""
+        """将异常转换为字典以便序列化。"""
         return {
             "type": self.__class__.__name__,
             "message": str(self),
@@ -32,25 +32,25 @@ class AgentException(Exception):
 
 
 class AgentConfigurationError(AgentException):
-    """Raised when agent is misconfigured."""
+    """当 agent 配置错误时抛出。"""
 
     pass
 
 
 class LLMError(AgentException):
-    """Base class for LLM-related errors."""
+    """LLM 相关错误的基础类。"""
 
     pass
 
 
 class LLMNotAvailableError(LLMError):
-    """Raised when LLM is required but not configured."""
+    """当需要 LLM 但未配置时抛出。"""
 
     pass
 
 
 class LLMResponseError(LLMError):
-    """Raised when LLM returns invalid or unparsable response."""
+    """当 LLM 返回无效或无法解析的响应时抛出。"""
 
     def __init__(
         self,
@@ -70,13 +70,13 @@ class LLMResponseError(LLMError):
 
 
 class ToolError(AgentException):
-    """Base class for tool execution errors."""
+    """工具执行错误的基础类。"""
 
     pass
 
 
 class ToolNotFoundError(ToolError):
-    """Raised when a required tool is not available."""
+    """当所需的工具不可用时抛出。"""
 
     def __init__(
         self, tool_name: str, available_tools: Optional[List[str]] = None, **kwargs: Any
@@ -93,7 +93,7 @@ class ToolNotFoundError(ToolError):
 
 
 class ToolExecutionError(ToolError):
-    """Raised when tool execution fails."""
+    """当工具执行失败时抛出。"""
 
     def __init__(
         self,
@@ -109,13 +109,13 @@ class ToolExecutionError(ToolError):
 
 
 class PatternError(AgentException):
-    """Base class for pattern execution errors."""
+    """模式执行错误的基础类。"""
 
     pass
 
 
 class PatternExecutionError(PatternError):
-    """Raised when a pattern fails to execute."""
+    """当模式执行失败时抛出。"""
 
     def __init__(
         self,
@@ -132,7 +132,7 @@ class PatternExecutionError(PatternError):
 
 
 class MaxIterationsError(PatternError):
-    """Raised when pattern reaches maximum iterations without completion."""
+    """当模式达到最大迭代次数仍未完成时抛出。"""
 
     def __init__(
         self,
@@ -171,13 +171,13 @@ class MaxIterationsError(PatternError):
 
 
 class DAGError(AgentException):
-    """Base class for DAG execution errors."""
+    """DAG 执行错误的基础类。"""
 
     pass
 
 
 class DAGPlanGenerationError(DAGError):
-    """Raised when DAG plan generation fails."""
+    """当 DAG 计划生成失败时抛出。"""
 
     def __init__(
         self,
@@ -207,7 +207,7 @@ class DAGPlanGenerationError(DAGError):
 
 
 class DAGStepError(DAGError):
-    """Raised when a DAG step fails."""
+    """当 DAG 步骤失败时抛出。"""
 
     def __init__(
         self,
@@ -251,7 +251,7 @@ class DAGStepError(DAGError):
 
 
 class DAGDependencyError(DAGError):
-    """Raised when DAG dependency validation fails."""
+    """当 DAG 依赖验证失败时抛出。"""
 
     def __init__(
         self, step_id: str, invalid_dependencies: List[str], **kwargs: Any
@@ -266,7 +266,7 @@ class DAGDependencyError(DAGError):
 
 
 class DAGDeadlockError(DAGError):
-    """Raised when DAG execution is stuck due to dependency deadlock."""
+    """当 DAG 执行因依赖死锁而卡住时抛出。"""
 
     def __init__(
         self,
@@ -294,7 +294,7 @@ class DAGDeadlockError(DAGError):
 
 
 class DAGExecutionError(DAGError):
-    """Raised when DAG execution fails due to step failures."""
+    """当 DAG 执行因步骤失败而失败时抛出。"""
 
     def __init__(
         self,
@@ -322,13 +322,13 @@ class DAGExecutionError(DAGError):
 
 
 class ReActError(PatternError):
-    """Base class for ReAct pattern errors."""
+    """ReAct 模式错误的基础类。"""
 
     pass
 
 
 class ReActParsingError(ReActError):
-    """Raised when ReAct cannot parse LLM response."""
+    """当 ReAct 无法解析 LLM 响应时抛出。"""
 
     def __init__(
         self,
@@ -354,13 +354,13 @@ class ReActParsingError(ReActError):
 
 
 class ContextError(AgentException):
-    """Base class for context management errors."""
+    """上下文管理错误的基础类。"""
 
     pass
 
 
 class ContextCompactionError(ContextError):
-    """Raised when context compaction fails."""
+    """当上下文压缩失败时抛出。"""
 
     def __init__(
         self,
@@ -378,7 +378,7 @@ class ContextCompactionError(ContextError):
 
 
 class AgentToolError(ToolError):
-    """Raised when AgentTool (nested agent) execution fails."""
+    """当 AgentTool（嵌套 agent）执行失败时抛出。"""
 
     def __init__(
         self,

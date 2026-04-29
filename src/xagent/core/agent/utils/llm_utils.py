@@ -1,4 +1,4 @@
-"""Utility functions for LLM calls."""
+"""LLM 调用的工具函数。"""
 
 import html
 import logging

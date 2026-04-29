@@ -1,4 +1,4 @@
-"""Generic tracing module for tracking events in the xagent system."""
+"""xagent 系统中用于跟踪事件的通用追踪模块。"""
 
 import logging
 from abc import ABC, abstractmethod
@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 
 class TraceScope(Enum):
-    """Defines the scope of trace events for clear task/step attribution."""
+    """定义跟踪事件的作用域，确保任务/步骤归属清晰。"""
 
     TASK = "task"  # Task-level events
     STEP = "step"  # Step-level events
@@ -20,7 +20,7 @@ class TraceScope(Enum):
 
 
 class TraceAction(Enum):
-    """Defines the action type of trace events."""
+    """定义跟踪事件的操作类型。"""
 
     START = "start"
     END = "end"
@@ -30,7 +30,7 @@ class TraceAction(Enum):
 
 
 class TraceCategory(Enum):
-    """Defines the category of trace events."""
+    """定义跟踪事件的类别。"""
 
     DAG = "dag"  # DAG execution events
     DAG_PLAN = "dag_plan"  # DAG planning events
@@ -48,7 +48,7 @@ class TraceCategory(Enum):
 
 
 class TraceEventType:
-    """Unified trace event type that combines scope, action, and category."""
+    """统一的跟踪事件类型，组合作用域、操作和类别。"""
 
     def __init__(self, scope: TraceScope, action: TraceAction, category: TraceCategory):
         self.scope = scope
@@ -147,7 +147,7 @@ SYSTEM_INFO = TraceEventType(TraceScope.SYSTEM, TraceAction.INFO, TraceCategory.
 
 
 class TraceEvent:
-    """Represents a single trace event with clear task/step attribution."""
+    """表示一个单一的跟踪事件，带有清晰的任务/步骤归属。"""
 
     def __init__(
         self,
@@ -201,7 +201,7 @@ class TraceEvent:
 
 
 class TraceHandler(ABC):
-    """Abstract base class for trace handlers."""
+    """跟踪处理器的抽象基类。"""
 
     @abstractmethod
     async def handle_event(self, event: TraceEvent) -> None:
@@ -210,7 +210,7 @@ class TraceHandler(ABC):
 
 
 class BaseTraceHandler(TraceHandler):
-    """Base trace handler with common functionality."""
+    """带有通用功能的基础跟踪处理器。"""
 
     def __init__(self) -> None:
         self.event_transformers = {
@@ -250,7 +250,7 @@ class BaseTraceHandler(TraceHandler):
 
 
 class ConsoleTraceHandler(BaseTraceHandler):
-    """Trace handler that logs events to console with clear scope information."""
+    """将事件记录到控制台并附带明确作用域信息的跟踪处理器。"""
 
     async def _handle_task_event(self, event: TraceEvent) -> None:
         """Handle task-level events."""
@@ -278,7 +278,7 @@ class ConsoleTraceHandler(BaseTraceHandler):
 
 
 class DatabaseTraceHandler(BaseTraceHandler):
-    """Trace handler that saves events to database."""
+    """将事件保存到数据库的跟踪处理器。"""
 
     def __init__(self, task_id: Optional[int] = None) -> None:
         super().__init__()
@@ -314,7 +314,7 @@ class DatabaseTraceHandler(BaseTraceHandler):
 
 
 class Tracer:
-    """Main tracing class that manages trace events and handlers."""
+    """管理跟踪事件和处理器的主跟踪类。"""
 
     def __init__(self) -> None:
         self.handlers: List[TraceHandler] = []
@@ -332,7 +332,7 @@ class Tracer:
         data: Optional[Dict[str, Any]] = None,
         parent_id: Optional[str] = None,
     ) -> str:
-        """Record a trace event and return its ID."""
+        """记录跟踪事件并返回事件 ID。"""
         logger.info(
             f"trace_event called: {event_type.value} for task {task_id}, step {step_id} with data keys: {list(data.keys()) if data else []}"
         )
@@ -370,7 +370,7 @@ async def trace_task_start(
     category: TraceCategory,
     data: Optional[Dict[str, Any]] = None,
 ) -> str:
-    """Trace task start event."""
+    """记录任务开始事件。"""
     event_type = TraceEventType(TraceScope.TASK, TraceAction.START, category)
     return await tracer.trace_event(event_type, task_id=task_id, data=data or {})
 
@@ -381,7 +381,7 @@ async def trace_task_end(
     category: TraceCategory,
     data: Optional[Dict[str, Any]] = None,
 ) -> str:
-    """Trace task end event."""
+    """记录任务结束事件。"""
     event_type = TraceEventType(TraceScope.TASK, TraceAction.END, category)
     return await tracer.trace_event(event_type, task_id=task_id, data=data or {})
 

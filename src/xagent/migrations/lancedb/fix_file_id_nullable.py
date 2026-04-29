@@ -41,12 +41,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Global lock to prevent concurrent migrations
+# 全局锁，防止并发迁移
 _migration_lock = threading.Lock()
 
 
 def _get_lock_file_path() -> str:
-    """Resolve file lock path for cross-process migration coordination."""
+    """为跨进程迁移协调解析文件锁路径。"""
     lock_file = os.environ.get("LANCEDB_MIGRATION_LOCK_FILE")
     if lock_file:
         return lock_file
@@ -62,7 +62,7 @@ def _get_lock_file_path() -> str:
 
 
 def _acquire_file_lock() -> Any | None:
-    """Acquire non-blocking file lock shared by all local processes."""
+    """获取所有本地进程共享的非阻塞文件锁。"""
     lock_path = _get_lock_file_path()
     os.makedirs(os.path.dirname(lock_path), exist_ok=True)
     lock_file = open(lock_path, "a+", encoding="utf-8")
@@ -82,7 +82,7 @@ def _acquire_file_lock() -> Any | None:
 
 
 def _release_file_lock(lock_file: Any) -> None:
-    """Release file lock and close file handle safely."""
+    """安全释放文件锁并关闭文件句柄。"""
     try:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
     finally:
@@ -104,11 +104,11 @@ def fix_file_id_nullable(
 ) -> dict[str, Any]:
     """Make the file_id column nullable in the documents table.
 
-    Args:
+    参数：
         dry_run: If True, only check and report without making changes.
         conn: LanceDB connection (uses default if None).
 
-    Returns:
+    返回：
         Dictionary with migration status and statistics.
     """
     if conn is None:

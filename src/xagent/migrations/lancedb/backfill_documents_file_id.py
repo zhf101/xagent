@@ -42,12 +42,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Global lock to prevent concurrent migrations
+# 全局锁，防止并发迁移
 _migration_lock = threading.Lock()
 
 
 def _get_migration_lock_file_path() -> str:
-    """Resolve file lock path for cross-process migration coordination."""
+    """为跨进程迁移协调解析文件锁路径。"""
     lock_file = os.environ.get("LANCEDB_MIGRATION_LOCK_FILE")
     if lock_file:
         return lock_file
@@ -63,7 +63,7 @@ def _get_migration_lock_file_path() -> str:
 
 
 def _acquire_file_lock() -> Any | None:
-    """Acquire non-blocking file lock shared by all local processes."""
+    """获取所有本地进程共享的非阻塞文件锁。"""
     lock_path = _get_migration_lock_file_path()
     os.makedirs(os.path.dirname(lock_path), exist_ok=True)
     lock_file = open(lock_path, "a+", encoding="utf-8")
@@ -83,7 +83,7 @@ def _acquire_file_lock() -> Any | None:
 
 
 def _release_file_lock(lock_file: Any) -> None:
-    """Release file lock and close file handle safely."""
+    """安全释放文件锁并关闭文件句柄。"""
     try:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
     finally:
@@ -106,11 +106,11 @@ def _extract_user_id_from_source_path(source_path: str) -> int | None:
 def _chunked(seq: list[str], chunk_size: int) -> list[list[str]]:
     """Split a list into fixed-size chunks.
 
-    Args:
+    参数：
         seq: Input list.
         chunk_size: Maximum chunk size (must be >= 1).
 
-    Returns:
+    返回：
         A list of chunks.
     """
     if chunk_size <= 0:
@@ -127,12 +127,12 @@ def backfill_file_id_to_none(
     reverses that to maintain consistency with main branch, where None is the
     standard representation for "no file_id".
 
-    Args:
-        dry_run: If True, don't make actual changes
+    参数：
+        dry_run：为 True 时不进行实际修改
         conn: LanceDB connection (uses default if None)
 
-    Returns:
-        Dictionary with statistics
+    返回：
+        包含统计信息的字典
     """
     if conn is None:
         conn = get_connection_from_env()
@@ -193,12 +193,12 @@ def backfill_user_id_from_source_path(
     multi-tenant filtering consistent and restores document visibility for the
     owning user without broadening access permissions.
 
-    Args:
-        dry_run: If True, don't make actual changes
+    参数：
+        dry_run：为 True 时不进行实际修改
         conn: LanceDB connection (uses default if None)
 
-    Returns:
-        Dictionary with statistics
+    返回：
+        包含统计信息的字典
     """
     if conn is None:
         conn = get_connection_from_env()
@@ -395,11 +395,11 @@ def backfill_user_id_from_source_path(
 def backfill_all(dry_run: bool = False, conn: DBConnection | None = None) -> dict:
     """Run full backfill for documents table.
 
-    Args:
-        dry_run: If True, don't make actual changes
+    参数：
+        dry_run：为 True 时不进行实际修改
         conn: LanceDB connection (uses default if None)
 
-    Returns:
+    返回：
         Dictionary with results from both backfill phases
     """
     if conn is None:

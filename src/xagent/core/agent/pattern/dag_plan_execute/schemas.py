@@ -1,4 +1,4 @@
-"""Pydantic schemas for DAG plan-execute pattern."""
+"""DAG 计划-执行模式的 Pydantic schema 定义。"""
 
 from typing import Any, List, Optional
 

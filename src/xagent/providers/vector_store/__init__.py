@@ -1,8 +1,7 @@
 """
-Vector store providers module.
+向量存储 provider 模块。
 
-This module provides various vector storage backends that implement
-the standard VectorStore interface.
+本模块提供多种向量存储后端实现，均实现标准的 VectorStore 接口。
 """
 
 import importlib.util

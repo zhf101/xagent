@@ -17,14 +17,14 @@ def is_database_empty(engine: Engine) -> bool:
 
 
 def get_alembic_revision(engine: Engine) -> str | None:
-    """Get the current Alembic revision from the database."""
+    """获取数据库对应的当前 Alembic 版本号。"""
     with engine.connect() as conn:
         context: Any = MigrationContext.configure(conn)
         return cast(str | None, context.get_current_revision())
 
 
 def try_upgrade_db(engine: Engine) -> None:
-    """Upgrade database to latest migration (or stamp head for brand-new databases)."""
+    """将数据库升级到最新版本（全新数据库则标记为最新版本）。"""
     try:
         logger.info("Starting database upgrade process")
         alembic_cfg = create_alembic_config(engine)

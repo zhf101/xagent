@@ -12,13 +12,13 @@ _SessionLocal: sessionmaker[Session] | None = None
 
 _engine: Engine | None = None
 
-# Create base model class
-# Mypy workaround: explicitly type Base as Any to avoid "variable not valid as type" error
+# 创建基础模型类
+# Mypy 变通方案: 将 Base 显式类型标注为 Any,避免 "variable not valid as type" 错误
 Base: Any = declarative_base()
 
 
 def get_db() -> Generator[Session, None, None]:
-    """Get database session"""
+    """获取数据库会话"""
     if _SessionLocal is None:
         raise RuntimeError("Session Local is not initialized. Call init_db() first.")
     db = _SessionLocal()
@@ -41,8 +41,8 @@ def get_engine() -> Engine:
 
 
 def init_db(db_url: str | None = None) -> None:
-    """Initialize database, create all tables and default users"""
-    # Import all models to ensure they are registered with Base.metadata
+    """初始化数据库,创建所有表并设置默认用户"""
+    # 导入所有模型,确保它们注册到 Base.metadata
     from . import (  # noqa: F401
         MCPServer,
         Model,
@@ -66,15 +66,15 @@ def init_db(db_url: str | None = None) -> None:
     global _SessionLocal
     global _engine
 
-    # Database configuration
+    # 数据库配置
     if db_url is not None:
         database_url = db_url
     else:
         database_url = get_database_url()
 
-    # Create database engine
-    # For SQLite, use NullPool to prevent connection pool issues
-    # For other databases, use QueuePool with timeout settings
+    # 创建数据库引擎
+    # SQLite 使用 NullPool 防止连接池问题
+    # 其它数据库使用 QueuePool 并设置超时参数
     if "sqlite" in database_url:
         _engine = create_engine(
             database_url,
@@ -87,20 +87,20 @@ def init_db(db_url: str | None = None) -> None:
             poolclass=QueuePool,
             pool_size=10,
             max_overflow=20,
-            pool_timeout=30,  # 30 seconds timeout for getting connection from pool
-            pool_recycle=3600,  # Recycle connections after 1 hour
-            pool_pre_ping=True,  # Verify connections before using
+            pool_timeout=30,  # 从连接池获取连接的超时时间 30 秒
+            pool_recycle=3600,  # 连接回收周期 1 小时
+            pool_pre_ping=True,  # 使用前验证连接
         )
 
-    # Create session factory
+    # 创建会话工厂
     _SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=_engine)
 
-    # Try upgrade db to head first
+    # 先尝试升级数据库到最新版本
     from ...db import try_upgrade_db
 
     try_upgrade_db(_engine)
 
-    # Create all tables
+    # 创建所有表
     Base.metadata.create_all(bind=_engine)
 
     logger = logging.getLogger(__name__)

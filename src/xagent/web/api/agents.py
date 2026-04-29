@@ -138,11 +138,13 @@ KB_PRIORITY_PROMPT = (
     "\n\n[知识库使用说明]\n"
     "你可以访问以下知识库。"
     "在回答用户问题时，你必须先使用可用的知识工具搜索知识库，"
-    "然后再依赖你自己的知识。"
+    "然后再决定是否需要继续检查其他内部工具。"
     "始终优先使用从知识库中检索的信息，而不是"
-    "你内置的知识。如果知识库不包含相关"
-    "信息，你可以使用自己的知识来回答，但要清楚地"
-    "表明该答案不是来自知识库。"
+    "你内置的知识。"
+    "如果知识库没有命中，而问题仍明显依赖内部业务流程、行业规则、开户流程、HTTP/API 资源、SQL asset、skills 或 MCP 系统，"
+    "你必须继续使用这些内部工具排查，不要直接退回通用常识回答。"
+    "只有当相关内部检索路径已经尝试过，并且确认不存在更多可用系统能力时，才可以使用自己的知识补充回答；"
+    "此时要清楚说明该部分不是来自知识库或内部系统。"
 )
 
 DATA_PRODUCTION_PRIORITY_PROMPT = (
@@ -165,10 +167,13 @@ def enhance_system_prompt_with_kb(
 
     kb_list = ", ".join(knowledge_bases)
     kb_prompt = (
-        f"\n\nAvailable knowledge bases: {kb_list}. "
-        "These knowledge bases are already selected. "
-        "Do not call list_knowledge_bases to discover them; "
-        "use knowledge_search directly for answers."
+        f"\n\n当前已选知识库：{kb_list}。"
+        "这些知识库已经由上游明确选中。"
+        "不要再调用 list_knowledge_bases 重新发现它们；"
+        "当需要先查知识时，直接使用 knowledge_search。"
+        "如果 knowledge_search 没有返回足够结果，而请求仍明显依赖内部业务流程、"
+        "托管 HTTP assets、SQL assets、skill 文档或 MCP 连接系统，"
+        "请继续检查这些内部工具路径，不要直接退回通用常识回答。"
     )
 
     if system_prompt:
@@ -202,7 +207,7 @@ def _validate_knowledge_base_tools(
     if knowledge_bases and KNOWLEDGE_TOOL_CATEGORY not in tool_categories:
         raise HTTPException(
             status_code=400,
-            detail="Knowledge bases are selected but the Knowledge tool category is not enabled. Please enable the Knowledge tools before saving.",
+            detail="已选择知识库，但当前未启用 Knowledge 工具分类。请先启用知识工具后再保存。",
         )
 
 

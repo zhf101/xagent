@@ -250,11 +250,11 @@ class ResultAnalyzer:
                     # Generate a simple fallback answer if missing
                     if result.get("achieved", False):
                         result["final_answer"] = (
-                            f"Task completed successfully. {result.get('reason', 'Goal achieved.')}"
+                            f"任务已成功完成。{result.get('reason', '目标已达成。')}"
                         )
                     else:
                         result["final_answer"] = (
-                            f"TASK FAILED: {result.get('reason', 'Goal not achieved.')}"
+                            f"任务失败：{result.get('reason', '目标未达成。')}"
                         )
 
                 logger.info(
@@ -343,21 +343,12 @@ class ResultAnalyzer:
         # Build file outputs section
         file_outputs_section = ""
         if file_outputs:
-            file_outputs_section = "\n\nOutput Files:\n"
+            file_outputs_section = "\n\n输出文件：\n"
             for i, file_info in enumerate(file_outputs, 1):
                 filename = file_info.get("filename", "")
                 file_id = file_info.get("file_id", "")
                 file_outputs_section += f"  {i}. {filename} (file_id: {file_id})\n"
             file_outputs_section += "\n"
-
-        # Detect goal language
-        goal_has_chinese = any("\u4e00" <= c <= "\u9fff" for c in goal)
-        goal_has_english = any(c.isascii() and c.isalpha() for c in goal)
-        detected_language = (
-            "Chinese"
-            if goal_has_chinese
-            else ("English" if goal_has_english else "the same")
-        )
 
         system_prompt = (
             "你是一个 AI 助手，负责评估任务执行情况并综合整理结果。\n"
@@ -379,7 +370,7 @@ class ResultAnalyzer:
 执行历史摘要：
 {execution_summary}
 {file_outputs_section}
-重要提示：你的最终答案必须仅使用 {detected_language}，与目标的语言保持一致。
+重要提示：你的最终答案必须仅使用简体中文，即使原始目标本身包含英文或其他语言片段，也不要切回其他语言。
 
 请全面分析此任务执行情况，返回 JSON 格式：
 
@@ -387,7 +378,7 @@ class ResultAnalyzer:
   "achieved": true/false,
   "reason": "清楚解释为什么目标达成/未达成",
   "confidence": 0.0-1.0,
-  "final_answer": "全面的最终答案，通过综合所有执行结果来回应原始目标。如果达成：提供完整、结构良好的回复，包含成功确认。如果未达成：解释已完成的内容和剩余的工作。必须使用与目标相同的语言。",
+  "final_answer": "全面的最终答案，通过综合所有执行结果来回应原始目标。如果达成：提供完整、结构良好的回复，包含成功确认。如果未达成：解释已完成的内容和剩余的工作。必须始终使用简体中文。",
   "memory_insights": {{
     "should_store": true/false,
     "reason": "简要解释为什么应该/不应该存储为记忆",
@@ -421,11 +412,11 @@ class ResultAnalyzer:
   - 对于其他文件：`[filename](file:file_id)`
   - 始终使用 `file:` 前缀后跟精确的 file_id
 - 将相关文件分组在清晰的标题下
-- 重要提示：如果你确定目标未达成，你必须以 'TASK FAILED: ' 开始你的最终答案，后跟清晰的解释（使用与目标相同的语言）
+- 重要提示：如果你确定目标未达成，你必须以“任务失败：”开头给出最终答案，后面紧跟清晰解释，并且始终使用简体中文
 
 严格的记忆存储标准：
 
-存储决策：仅当此执行包含具有明显未来价值的 exceptional、非显而易见的洞察时，才将 should_store 设置为 true。
+存储决策：仅当此执行包含具有明显未来价值的、非显而易见的高价值洞察时，才将 should_store 设置为 true。
 
 要求（必须全部满足）：
 1. **独特价值** - 洞察不易通过一般知识或简单推理获得
@@ -447,7 +438,7 @@ class ResultAnalyzer:
 - **创新**：展示比标准方法有显著改进的新方法
 - **效率**：大幅改善资源利用或时间复杂度的发现
 
-存储阈值：极其保守。除非有令人信服的证据表明有 exceptional 价值，否则默认 should_store = false。如有疑问，拒绝存储。"""
+存储阈值：极其保守。除非有令人信服的证据表明确实存在高价值洞察，否则默认 should_store = false。如有疑问，拒绝存储。"""
 
         # Try to extract and reuse existing messages context from history
         working_messages = [{"role": "system", "content": system_prompt}]
@@ -477,23 +468,23 @@ class ResultAnalyzer:
     def _summarize_execution_history(self, history: List[Dict[str, Any]]) -> str:
         """Create a summary of execution history for goal checking"""
         if not history:
-            return "No execution history"
+            return "无执行历史"
 
         summary_parts = []
 
         for i, iteration_data in enumerate(history, 1):
-            iteration_summary = f"Iteration {i}:"
+            iteration_summary = f"第 {i} 轮迭代："
 
             # Check if this iteration was triggered by continuation
             if iteration_data.get("continuation"):
                 continuation = iteration_data["continuation"]
                 user_input = continuation.get("user_input", "")
-                iteration_summary += f" [User Modification: '{user_input}']"
+                iteration_summary += f" [用户修改后的目标：'{user_input}']"
 
             if "plan" in iteration_data:
                 plan_data = iteration_data["plan"]
                 iteration_summary += (
-                    f" Plan with {len(plan_data.get('steps', []))} steps"
+                    f" 计划包含 {len(plan_data.get('steps', []))} 个步骤"
                 )
 
             if "results" in iteration_data:
@@ -501,15 +492,15 @@ class ResultAnalyzer:
                 completed = len([r for r in results if r.get("status") == "completed"])
                 failed = len([r for r in results if r.get("status") == "failed"])
                 iteration_summary += (
-                    f", Results: {completed} completed, {failed} failed"
+                    f"，结果：成功 {completed} 个，失败 {failed} 个"
                 )
 
                 # Add actual content from successful steps for goal checking
                 if completed > 0:
-                    iteration_summary += "\nSuccessful Step Results:\n"
+                    iteration_summary += "\n成功步骤结果：\n"
                     for result in results:
                         if result.get("status") == "completed":
-                            step_name = result.get("step_name", "Unknown")
+                            step_name = result.get("step_name", "未知步骤")
                             step_result = result.get("result", {})
                             content = self._extract_content_from_result(step_result)
                             # Include full content for goal checking
@@ -517,7 +508,7 @@ class ResultAnalyzer:
 
             summary_parts.append(iteration_summary)
 
-        return "\n".join(summary_parts) if summary_parts else "No execution history"
+        return "\n".join(summary_parts) if summary_parts else "无执行历史"
 
     async def generate_final_answer(
         self,
@@ -609,7 +600,7 @@ class ResultAnalyzer:
             "3. 为你提供成功/失败判定的清晰推理\n"
             "4. 如果失败，解释出了什么问题以及可以如何改进\n\n"
             "关键提示：如果你确定目标未达成，你必须以 "
-            "'TASK FAILED: ' 开始你的回复，后跟清晰的失败解释（使用与目标相同的语言）。\n\n"
+            "'任务失败：' 开始你的回复，后跟清晰的失败解释，并且始终使用简体中文。\n\n"
             "文件输出格式：\n"
             "当有输出文件时，你必须使用 Markdown 链接格式将它们包含在你的回复中：\n"
             "- 每个文件使用此精确格式：`[filename](file:file_id)`\n"
@@ -619,21 +610,14 @@ class ResultAnalyzer:
             "- 这允许用户点击文件链接在右侧面板中预览它们"
         )
 
-        # Detect goal language for explicit instruction
-        goal_has_chinese = any("\u4e00" <= c <= "\u9fff" for c in goal)
-        goal_has_english = any(c.isascii() and c.isalpha() for c in goal)
-        detected_language = (
-            "Chinese"
-            if goal_has_chinese
-            else ("English" if goal_has_english else "the same")
-        )
-
         user_prompt = (
             f"原始目标：{goal}\n\n"
             f"当前时间：{current_time}\n\n"
             f"执行结果：\n{execution_summary}\n"
             f"{file_outputs_section}"
-            f"重要提示：你的回复必须仅使用 {detected_language}，与目标的语言保持一致。\n\n"
+            # 这里明确覆写“跟随用户输入语言”的旧约束，避免上游目标里出现英文时，
+            # 模型在最终答案阶段又切回英文，导致产品口径和测试口径不一致。
+            f"重要提示：你的回复必须仅使用简体中文，即使原始目标包含英文内容，也不要切换语言。\n\n"
             f"请生成一个全面的最终答案，通过综合执行期间收集的所有信息来回应原始目标。"
         )
 
@@ -645,7 +629,7 @@ class ResultAnalyzer:
     def _summarize_execution_results(self, history: List[Dict[str, Any]]) -> str:
         """Create a detailed summary of execution results with actual content"""
         if not history:
-            return "No execution history available"
+            return "无可用执行历史"
 
         summary_parts = []
 
@@ -665,19 +649,19 @@ class ResultAnalyzer:
                 ]
 
                 if successful_results:
-                    iteration_summary += "Successful Steps:\n"
+                    iteration_summary += "成功步骤：\n"
                     for result in successful_results:
-                        step_name = result.get("step_name", "Unknown")
+                        step_name = result.get("step_name", "未知步骤")
                         step_result = result.get("result", {})
                         content = self._extract_content_from_result(step_result)
                         iteration_summary += f"- {step_name}: {content[:200]}{'...' if len(content) > 200 else ''}\n"
 
                 failed_results = [r for r in results if r.get("status") == "failed"]
                 if failed_results:
-                    iteration_summary += "Failed Steps:\n"
+                    iteration_summary += "失败步骤：\n"
                     for result in failed_results:
-                        step_name = result.get("step_name", "Unknown")
-                        error = result.get("error", "Unknown error")
+                        step_name = result.get("step_name", "未知步骤")
+                        error = result.get("error", "未知错误")
                         iteration_summary += f"- {step_name}: {error}\n"
 
             summary_parts.append(iteration_summary)
@@ -716,7 +700,7 @@ class ResultAnalyzer:
     def _generate_fallback_summary(self, history: List[Dict[str, Any]]) -> str:
         """Generate a simple fallback summary when LLM generation fails"""
         if not history:
-            return "No execution results available"
+            return "无可用执行结果"
 
         last_iteration = history[-1]
         results = last_iteration.get("results", [])
@@ -724,13 +708,11 @@ class ResultAnalyzer:
         failed = len([r for r in results if r.get("status") == "failed"])
 
         if failed == 0:
-            return f"Task completed successfully with {successful} steps"
+            return f"任务已成功完成，共完成 {successful} 个步骤"
         elif successful > 0:
-            return (
-                f"Partial success: {successful} steps completed, {failed} steps failed"
-            )
+            return f"任务部分成功：完成 {successful} 个步骤，失败 {failed} 个步骤"
         else:
-            return f"Task failed with {failed} failed steps"
+            return f"任务失败：共有 {failed} 个步骤执行失败"
 
     async def _call_llm_with_retry(
         self, messages: List[Dict[str, str]], **kwargs: Any

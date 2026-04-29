@@ -3,7 +3,7 @@ from typing import List, Optional, Union
 
 
 class BaseEmbedding(ABC):
-    """Abstract base class for embedding models."""
+    """嵌入模型的抽象基类。"""
 
     @abstractmethod
     def encode(
@@ -17,12 +17,12 @@ class BaseEmbedding(ABC):
 
         Args:
             text: Single text string or list of text strings
-            dimension: Override default embedding dimension
-            instruct: Override default instruction
+            dimension: 覆盖默认嵌入维度
+            instruct: 覆盖默认指令
 
         Returns:
-            Single embedding vector (list of floats) for single text,
-            or list of embedding vectors for list of texts
+            单个文本返回单个嵌入向量（浮点数列表），
+            文本列表返回嵌入向量列表
         """
         pass
 

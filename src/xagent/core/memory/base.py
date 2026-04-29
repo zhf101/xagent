@@ -8,61 +8,61 @@ from .core import MemoryNote, MemoryResponse
 
 class MemoryStore(ABC):
     """
-    Abstract base class defining the interface for a memory storage backend.
+    记忆存储后端的抽象基类，定义统一的存储接口。
 
-    Any concrete implementation (e.g., in-memory store, ChromaDB, Redis, etc.)
-    should implement all the following methods to manage MemoryNote objects.
+    任何具体实现（例如纯内存存储、LanceDB、Redis 等）
+    都需要实现以下所有方法，以管理 MemoryNote 对象。
     """
 
     @abstractmethod
     def add(self, note: "MemoryNote") -> "MemoryResponse":
         """
-        Add a memory note to the store.
+        将一条记忆添加到存储中。
 
-        Args:
-            note (MemoryNote): The memory note to be added.
+        参数:
+            note (MemoryNote): 待添加的记忆记录。
 
-        Returns:
-            MemoryResponse: Response indicating success and the note ID.
+        返回:
+            MemoryResponse: 包含操作是否成功及记忆 ID 的响应。
         """
         pass
 
     @abstractmethod
     def get(self, note_id: str) -> "MemoryResponse":
         """
-        Retrieve a memory note by its ID.
+        根据 ID 检索一条记忆。
 
-        Args:
-            note_id (str): The unique identifier of the memory note.
+        参数:
+            note_id (str): 记忆的唯一标识符。
 
-        Returns:
-            MemoryResponse: Response containing the memory note or an error.
+        返回:
+            MemoryResponse: 包含记忆内容或错误信息的响应。
         """
         pass
 
     @abstractmethod
     def update(self, note: "MemoryNote") -> "MemoryResponse":
         """
-        Update an existing memory note.
+        更新一条已有的记忆记录。
 
-        Args:
-            note (MemoryNote): The memory note with updated data.
+        参数:
+            note (MemoryNote): 包含更新后数据的记忆记录。
 
-        Returns:
-            MemoryResponse: Response indicating success or failure.
+        返回:
+            MemoryResponse: 表示操作成功或失败的响应。
         """
         pass
 
     @abstractmethod
     def delete(self, note_id: str) -> "MemoryResponse":
         """
-        Delete a memory note by its ID.
+        根据 ID 删除一条记忆。
 
-        Args:
-            note_id (str): The unique identifier of the memory note.
+        参数:
+            note_id (str): 记忆的唯一标识符。
 
-        Returns:
-            MemoryResponse: Response indicating success or failure.
+        返回:
+            MemoryResponse: 表示操作成功或失败的响应。
         """
         pass
 
@@ -75,22 +75,22 @@ class MemoryStore(ABC):
         similarity_threshold: Optional[float] = None,
     ) -> list["MemoryNote"]:
         """
-        Search memory notes by query text with optional filters.
+        按查询文本搜索记忆，支持可选过滤条件。
 
-        Args:
-            query (str): The query string to search for.
-            k (int, optional): Number of top results to return. Defaults to 5.
-            filters (Dict[str, Any], optional): Additional filter criteria. Defaults to None.
+        参数:
+            query (str): 用于搜索的查询字符串。
+            k (int, 可选): 返回的最大结果数，默认为 5。
+            filters (Dict[str, Any], 可选): 额外的过滤条件，默认为 None。
 
-        Returns:
-            List[MemoryNote]: List of matching memory notes.
+        返回:
+            List[MemoryNote]: 匹配的记忆列表。
         """
         pass
 
     @abstractmethod
     def clear(self) -> None:
         """
-        Clear all memory notes from the store.
+        清空存储中的所有记忆。
         """
         pass
 
@@ -103,37 +103,37 @@ class MemoryStore(ABC):
         offset: int = 0,
     ) -> List["MemoryNote"]:
         """
-        List memory notes with optional filtering and pagination.
+        列出所有记忆，支持可选过滤和分页。
 
-        Args:
-            filters (Dict[str, Any], optional): Filter criteria like category, date range, etc.
-            limit (int, optional): Maximum number of records to return. ``None`` means no limit.
-            offset (int, optional): Number of matching records to skip. Defaults to 0.
+        参数:
+            filters (Dict[str, Any], 可选): 过滤条件，如分类、日期范围等。
+            limit (int, 可选): 返回记录的最大数量。``None`` 表示不限制。
+            offset (int, 可选): 跳过的匹配记录数，默认为 0。
 
-        Returns:
-            List[MemoryNote]: List of memory notes matching the filters.
+        返回:
+            List[MemoryNote]: 匹配过滤条件的记忆列表。
         """
         pass
 
     @abstractmethod
     def count(self, filters: Optional[dict[str, Any]] = None) -> int:
         """
-        Count memory notes matching optional filters.
+        统计匹配可选过滤条件的记忆数量。
 
-        Args:
-            filters (Dict[str, Any], optional): Filter criteria like category, date range, etc.
+        参数:
+            filters (Dict[str, Any], 可选): 过滤条件，如分类、日期范围等。
 
-        Returns:
-            int: Number of memory notes matching the filters.
+        返回:
+            int: 匹配过滤条件的记忆数量。
         """
         pass
 
     @abstractmethod
     def get_stats(self) -> dict[str, Any]:
         """
-        Get statistics about the memory store.
+        获取记忆存储的统计信息。
 
-        Returns:
-            Dict[str, Any]: Statistics including total count, counts by category, etc.
+        返回:
+            Dict[str, Any]: 统计信息，包括总数、按分类计数等。
         """
         pass

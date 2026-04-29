@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class CompactConfig:
-    """Configuration for conversation compaction."""
+    """对话压缩的配置。"""
 
     enabled: bool = True
     threshold: int = 32000
@@ -20,7 +20,7 @@ class CompactConfig:
 
 @dataclass
 class CompactResult:
-    """Result of conversation compaction."""
+    """对话压缩的结果。"""
 
     success: bool
     messages: List[Dict[str, str]]
@@ -31,11 +31,11 @@ class CompactResult:
 
 
 class CompactUtils:
-    """Utility functions for conversation compaction."""
+    """对话压缩的工具函数。"""
 
     @staticmethod
     def estimate_tokens(messages: List[Dict[str, str]]) -> int:
-        """Rough estimation of token count for messages."""
+        """对消息的 token 数进行粗略估算。"""
         total_chars = sum(len(msg.get("content", "")) for msg in messages)
         return total_chars // 4  # Very rough approximation
 
@@ -43,7 +43,7 @@ class CompactUtils:
     def truncate_messages(
         messages: List[Dict[str, str]], max_messages: int
     ) -> List[Dict[str, str]]:
-        """Truncate messages to keep only the most recent ones."""
+        """截断消息，只保留最近的消息。"""
         if len(messages) <= max_messages:
             return messages
 
@@ -58,7 +58,7 @@ class CompactUtils:
 
     @staticmethod
     def format_messages_for_compact(messages: List[Dict[str, str]]) -> str:
-        """Format messages as text for compaction."""
+        """将消息格式化为用于压缩的文本。"""
         formatted_lines = []
         for msg in messages:
             role = msg.get("role", "unknown").upper()
@@ -68,7 +68,7 @@ class CompactUtils:
 
     @staticmethod
     def parse_compact_response(response: str) -> List[Dict[str, str]]:
-        """Parse compacted response back to messages format."""
+        """将压缩后的响应解析回消息格式。"""
         messages = []
         lines = response.strip().split("\n")
 

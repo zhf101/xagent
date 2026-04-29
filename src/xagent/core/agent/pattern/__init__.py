@@ -1,5 +1,5 @@
 """
-Agent Pattern system with ReAct, DAG Plan Execute, and Single Call patterns.
+Agent 模式系统，包含 ReAct、DAG 计划执行和单次调用模式。
 """
 
 from .base import Action, AgentPattern, ToolRegistry

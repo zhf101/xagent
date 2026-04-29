@@ -1,5 +1,5 @@
 """
-Skill Manager - Manage skill scanning and retrieval
+技能管理器 - 管理技能扫描与检索
 """
 
 import asyncio
@@ -14,14 +14,14 @@ logger = logging.getLogger(__name__)
 
 
 class SkillManager:
-    """Core manager for the skill system"""
+    """技能系统的核心管理器"""
 
     def __init__(self, skills_roots: List[Path]):
         """
-        Args:
-            skills_roots: List of skills directory paths (supports multiple directories)
-                - First is the built-in skills directory (read-only)
-                - Subsequent ones are user-defined skills directories (writable)
+        参数:
+            skills_roots: 技能目录路径列表（支持多个目录）
+                - 第一个是内置技能目录（只读）
+                - 后续是用户自定义技能目录（可写）
         """
         self.skills_roots = [Path(p) for p in skills_roots]
 
@@ -30,7 +30,7 @@ class SkillManager:
         self._init_task: Optional[Any] = None
 
     async def ensure_initialized(self) -> None:
-        """Ensure initialization is complete (lazy loading mode)"""
+        """确保初始化完成（惰性加载模式）"""
         if self._initialized:
             return
 
@@ -44,12 +44,12 @@ class SkillManager:
         await self._init_task
 
     async def _do_initialize(self) -> None:
-        """Actual initialization logic"""
+        """实际初始化逻辑"""
         await self.initialize()
         self._init_task = None
 
     async def initialize(self) -> None:
-        """Initialize: scan all skills"""
+        """初始化：扫描所有技能"""
         logger.info("📂 Scanning skills...")
         for root in self.skills_roots:
             logger.info(f"  from {root}...")
@@ -58,7 +58,7 @@ class SkillManager:
         logger.info(f"✓ Loaded {len(self._skills_cache)} skills")
 
     async def reload(self) -> None:
-        """Reload all skills"""
+        """重新加载所有技能"""
         self._skills_cache.clear()
 
         # Scan all directories in order (later ones override earlier ones)
@@ -107,17 +107,17 @@ class SkillManager:
         allowed_skills: Optional[List[str]] = None,
     ) -> Optional[Dict]:
         """
-        Select appropriate skill based on task
+        根据任务选择合适的技能
 
-        Args:
-            task: User task
-            llm: LLM instance for skill selection
-            tracer: Tracer instance for sending trace events (optional)
-            task_id: Task ID for trace events (optional)
-            allowed_skills: Optional list of allowed skills for filtering
+        参数:
+            task: 用户任务
+            llm: 用于技能选择的 LLM 实例
+            tracer: 用于发送追踪事件的追踪器实例（可选）
+            task_id: 追踪事件的任务 ID（可选）
+            allowed_skills: 可选的可选技能列表，用于过滤
 
-        Returns:
-            Selected skill, or None
+        返回:
+            选中的技能，或 None
         """
         await self.ensure_initialized()
 
@@ -194,7 +194,7 @@ class SkillManager:
             raise
 
     async def list_skills(self) -> List[Dict]:
-        """List all skills (brief information)"""
+        """列出所有技能（简要信息）"""
         await self.ensure_initialized()
         return [
             {
@@ -207,15 +207,15 @@ class SkillManager:
         ]
 
     async def get_skill(self, name: str) -> Optional[Dict]:
-        """Get single skill (full information including template)"""
+        """获取单个技能（包含模板的完整信息）"""
         await self.ensure_initialized()
         return self._skills_cache.get(name)
 
     def has_skills(self) -> bool:
-        """Check if there are available skills"""
+        """检查是否有可用技能"""
         return len(self._skills_cache) > 0
 
     @classmethod
     def get_builtin_root(cls) -> Path:
-        """Get built-in skills directory"""
+        """获取内置技能目录"""
         return Path(__file__).parent / "builtin"

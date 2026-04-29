@@ -30,13 +30,13 @@ def fix_table_type(
 ) -> bool:
     """Fix user_id field type for a table.
 
-    Args:
+    参数：
         conn: LanceDB connection
         table_name: Name of table to fix
         backup_dir: Directory for backup files
         execute: If False, only simulate
 
-    Returns:
+    返回：
         True if successful
     """
     logger.info(f"\n{'=' * 60}")

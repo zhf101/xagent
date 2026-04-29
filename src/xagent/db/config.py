@@ -6,7 +6,7 @@ from sqlalchemy import Engine
 
 
 def create_alembic_config(engine: Engine) -> Any:
-    """Create Alembic configuration programmatically."""
+    """以编程方式创建 Alembic 配置。"""
     cfg: Any = AlembicConfig()
 
     # Basic configuration

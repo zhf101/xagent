@@ -61,19 +61,19 @@ class Agent:
         return self._sub_agents.get(name)
 
     def has_execution_history(self) -> bool:
-        """Check if this agent has execution history."""
+        """检查该 agent 是否有执行历史。"""
         return self._execution_history is not None
 
     def get_execution_history(self) -> Optional[List[Dict[str, str]]]:
-        """Get the complete execution history (messages)."""
+        """获取完整的执行历史（消息列表）。"""
         return self._execution_history
 
     def set_execution_history(self, messages: List[Dict[str, str]]) -> None:
-        """Set the execution history."""
+        """设置执行历史。"""
         self._execution_history = messages
 
     def get_final_result(self) -> Optional[Dict[str, Any]]:
-        """Get the final execution result."""
+        """获取最终执行结果。"""
         return self._final_result
 
     def set_final_result(self, result: Dict[str, Any]) -> None:
@@ -123,7 +123,7 @@ class Agent:
         return "\n".join(formatted)
 
     def to_dict(self) -> Dict[str, Any]:
-        """Convert agent to dictionary representation."""
+        """将 agent 转换为字典表示。"""
         return {
             "name": self.name,
             "patterns": [pattern.__class__.__name__ for pattern in self.patterns],

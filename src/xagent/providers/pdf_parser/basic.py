@@ -11,7 +11,7 @@ from ..pdf_parser.base import (
 
 
 class PyPdfParser(DocumentParser, TextParsing, SegmentedTextResult, LocalParsing):
-    """Use PyPDFLoader to extract text from PDF (text only)."""
+    """使用 PyPDFLoader 从 PDF 中提取文本（仅文本）。"""
 
     # Basic PDF-only support
     supported_extensions = [".pdf"]
@@ -21,7 +21,7 @@ class PyPdfParser(DocumentParser, TextParsing, SegmentedTextResult, LocalParsing
 
 
 class PdfPlumberParser(DocumentParser, TextParsing, SegmentedTextResult, LocalParsing):
-    """Use pdfplumber to extract text from PDF (text only)."""
+    """使用 pdfplumber 从 PDF 中提取文本（仅文本）。"""
 
     # Basic PDF-only support
     supported_extensions = [".pdf"]
@@ -33,11 +33,11 @@ class PdfPlumberParser(DocumentParser, TextParsing, SegmentedTextResult, LocalPa
 class UnstructuredParser(
     DocumentParser, TextParsing, SegmentedTextResult, LocalParsing
 ):
-    """Use Unstructured to extract text from modern Office/text formats.
+    """使用 Unstructured 从现代 Office/文本格式中提取文本。
 
-    Note:
-        - Modern Open XML formats such as .docx, .pptx, .xlsx are supported directly.
-        - Legacy formats .doc and .ppt are only supported when LibreOffice is installed.
+    注意：
+        - 现代 Open XML 格式（如 .docx、.pptx、.xlsx）可直接支持。
+        - 旧格式 .doc 和 .ppt 仅当已安装 LibreOffice 时才支持。
     """
 
     # Unstructured supports multiple modern office/text formats; .doc/.ppt support is conditional on LibreOffice.
@@ -60,7 +60,7 @@ class UnstructuredParser(
 
 
 class PyMuPdfParser(DocumentParser, TextParsing, SegmentedTextResult, LocalParsing):
-    """Use PyMuPDF (fitz) to extract text from PDF (text only)."""
+    """使用 PyMuPDF (fitz) 从 PDF 中提取文本（仅文本）。"""
 
     # Basic PDF-only support
     supported_extensions = [".pdf"]
@@ -71,7 +71,7 @@ class PyMuPdfParser(DocumentParser, TextParsing, SegmentedTextResult, LocalParsi
 
 # Implementation functions
 async def extract_text_with_pypdf(file_path: str, **kwargs: Any) -> ParseResult:
-    """Extract text using PyPDFLoader."""
+    """使用 PyPDFLoader 提取文本。"""
     if not file_path.lower().endswith(".pdf"):
         raise ValueError("PyPdfParser only supports PDF files.")
     try:
@@ -88,7 +88,7 @@ async def extract_text_with_pypdf(file_path: str, **kwargs: Any) -> ParseResult:
 
 
 async def extract_text_with_pdfplumber(file_path: str, **kwargs: Any) -> ParseResult:
-    """Extract text using pdfplumber."""
+    """使用 pdfplumber 提取文本。"""
     if not file_path.lower().endswith(".pdf"):
         raise ValueError("PdfPlumberParser only supports PDF files.")
     try:
@@ -116,11 +116,11 @@ async def extract_text_with_pdfplumber(file_path: str, **kwargs: Any) -> ParseRe
 
 
 async def extract_text_with_unstructured(file_path: str, **kwargs: Any) -> ParseResult:
-    """Extract text using Unstructured (supports PDF, DOCX, PPTX, XLSX, etc.).
+    """使用 Unstructured 提取文本（支持 PDF、DOCX、PPTX、XLSX 等格式）。
 
-    Note:
-        - Legacy .doc and .ppt formats require LibreOffice to be installed.
-        - For best compatibility, prefer converting legacy Office files to Open XML (.docx/.pptx/.xlsx).
+    注意：
+        - 旧格式 .doc 和 .ppt 需要已安装 LibreOffice。
+        - 为获得最佳兼容性，建议将旧版 Office 文件转换为 Open XML 格式（.docx/.pptx/.xlsx）。
     """
 
     try:
@@ -224,7 +224,7 @@ async def extract_text_with_unstructured(file_path: str, **kwargs: Any) -> Parse
 
 
 async def extract_text_with_pymupdf(file_path: str, **kwargs: Any) -> ParseResult:
-    """Extract text using PyMuPDF (fitz)."""
+    """使用 PyMuPDF (fitz) 提取文本。"""
     if not file_path.lower().endswith(".pdf"):
         raise ValueError("PyMuPdfParser only supports PDF files.")
     try:
@@ -259,16 +259,16 @@ def create_metadata(
     source_path: str, file_type: str, parse_method: str, **extra: Any
 ) -> dict[str, Any]:
     """
-    Create standard metadata dictionary.
+    创建标准元数据字典。
 
-    Args:
-        source_path: Source file path
-        file_type: File type (e.g., 'pdf', 'docx')
-        parse_method: Parsing method used
-        **extra: Additional metadata fields
+    参数：
+        source_path: 源文件路径
+        file_type: 文件类型（例如 'pdf'、'docx'）
+        parse_method: 使用的解析方法
+        **extra: 额外的元数据字段
 
-    Returns:
-        Standard metadata dictionary
+    返回：
+        标准元数据字典
     """
     # Exclude progress_callback and other non-serializable objects from metadata
     filtered_extra = {
@@ -283,11 +283,11 @@ def create_metadata(
     return metadata
 
 
-# Helper function: Convert LangChain-style docs into ParsedContent list
+# 辅助函数：将 LangChain 风格的文档对象转换为 ParsedContent 列表
 def _to_parsed_content_list(
     docs: list[Any], source_path: str, parse_method: str, **kwargs: Any
 ) -> ParseResult:
-    """Convert a list of LangChain-style document objects into a list of ParsedContent."""
+    """将 LangChain 风格的文档对象列表转换为 ParsedContent 列表。"""
     from pathlib import Path
 
     # Detect file type from extension

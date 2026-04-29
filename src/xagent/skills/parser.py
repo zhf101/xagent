@@ -1,5 +1,5 @@
 """
-Skill Parser - Parse SKILL.md and related files
+技能解析器 - 解析 SKILL.md 及相关文件
 """
 
 import re
@@ -8,7 +8,7 @@ from typing import Dict, List
 
 
 class SkillParser:
-    """Parse SKILL.md files"""
+    """解析 SKILL.md 文件"""
 
     @staticmethod
     def parse(skill_dir: Path) -> Dict:
@@ -57,14 +57,14 @@ class SkillParser:
 
     @staticmethod
     def _extract_section(content: str, section_name: str) -> str:
-        """Extract section content"""
+        """提取指定章节内容"""
         pattern = rf"## {section_name}\s*\n(.*?)(?=\n##|\Z)"
         match = re.search(pattern, content, re.DOTALL)
         return match.group(1).strip() if match else ""
 
     @staticmethod
     def _list_files(skill_dir: Path) -> List[str]:
-        """List all files in skill directory"""
+        """列出技能目录中的所有文件"""
         files = []
         for file_path in skill_dir.rglob("*"):
             if file_path.is_file():
@@ -73,7 +73,7 @@ class SkillParser:
 
     @staticmethod
     def _extract_tags(content: str) -> List[str]:
-        """Extract tags from content"""
+        """从内容中提取标签"""
         tags = []
         content_lower = content.lower()
 

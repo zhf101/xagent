@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 def get_default_tool_configs() -> list[Dict[str, Any]]:
-    """Get default tool configurations."""
+    """获取默认工具配置"""
     return [
         {
             "tool_name": "python_executor",
@@ -159,13 +159,13 @@ def get_default_tool_configs() -> list[Dict[str, Any]]:
 
 
 def init_tool_configs(db: Session) -> None:
-    """Initialize tool configurations in database."""
+    """初始化数据库中的工具配置"""
     logger.info("Initializing tool configurations...")
 
     default_configs = get_default_tool_configs()
 
     for config_data in default_configs:
-        # Check if tool config already exists
+        # 检查工具配置是否已存在
         existing = (
             db.query(ToolConfig)
             .filter(ToolConfig.tool_name == config_data["tool_name"])
@@ -178,7 +178,7 @@ def init_tool_configs(db: Session) -> None:
             )
             continue
 
-        # Create new tool config
+        # 创建新工具配置
         tool_config = ToolConfig(**config_data)
         db.add(tool_config)
         logger.info(f"Added tool config: {config_data['tool_name']}")
@@ -188,7 +188,7 @@ def init_tool_configs(db: Session) -> None:
 
 
 def main() -> None:
-    """Main function to initialize tool configurations."""
+    """初始化工具配置的主函数"""
     logging.basicConfig(level=logging.INFO)
 
     db = next(get_db())

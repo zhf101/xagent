@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 
 class VerticalAgentFactory:
-    """Factory for creating vertical agents based on configuration."""
+    """垂直领域 Agent 工厂，用于创建领域特定 agent。"""
 
     _vertical_agents: Dict[str, Type[VerticalAgent]] = {}
     _initialized = False

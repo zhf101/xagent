@@ -1,5 +1,5 @@
 """
-Template Manager - Manages the scanning and retrieval of templates
+模板管理器 - 管理模板的扫描与检索
 """
 
 import asyncio
@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 class TemplateManager:
-    """Core manager for the Template system"""
+    """模板系统的核心管理器"""
 
     def __init__(self, templates_root: Path):
         """
@@ -30,7 +30,7 @@ class TemplateManager:
         self._init_task: Optional[Any] = None
 
     async def ensure_initialized(self) -> None:
-        """Ensure initialization is complete (lazy loading)"""
+        """确保初始化完成（惰性加载）"""
         if self._initialized:
             return
 
@@ -44,12 +44,12 @@ class TemplateManager:
         await self._init_task
 
     async def _do_initialize(self) -> None:
-        """Actual initialization logic"""
+        """实际初始化逻辑"""
         await self.initialize()
         self._init_task = None
 
     async def initialize(self) -> None:
-        """Initialization: scan all templates"""
+        """初始化：扫描所有模板"""
         logger.info("📂 Scanning templates...")
         logger.info(f"  from {self.templates_root}...")
         await self.reload()
@@ -57,7 +57,7 @@ class TemplateManager:
         logger.info(f"✓ Loaded {len(self._templates_cache)} templates")
 
     async def reload(self) -> None:
-        """Reload all templates"""
+        """重新加载所有模板"""
         self._templates_cache.clear()
 
         if not self.templates_root.exists():
@@ -84,7 +84,7 @@ class TemplateManager:
         logger.info(f"Total templates loaded: {len(self._templates_cache)}")
 
     def _parse_yaml_file(self, yaml_file: Path) -> Dict[str, Any]:
-        """Parse a single YAML file"""
+        """解析单个 YAML 文件"""
         with open(yaml_file, "r", encoding="utf-8") as f:
             data: Dict[str, Any] = yaml.safe_load(f) or {}
 
@@ -124,7 +124,7 @@ class TemplateManager:
         return data
 
     def _enrich_template(self, template: Dict[str, Any]) -> Dict[str, Any]:
-        """Merge connections into agent_config.tool_categories"""
+        """将连接信息合并到 agent_config.tool_categories 中"""
         connections = template.get("connections", [])
 
         # The agent_config could be an AgentConfig pydantic model or a dict
@@ -167,7 +167,7 @@ class TemplateManager:
         }
 
     async def list_templates(self) -> List[Dict]:
-        """List all templates (summary information)"""
+        """列出所有模板（摘要信息）"""
         await self.ensure_initialized()
 
         result = []
@@ -176,7 +176,7 @@ class TemplateManager:
         return result
 
     async def get_template(self, template_id: str) -> Optional[Dict[str, Any]]:
-        """Get a single template (full information)"""
+        """获取单个模板（完整信息）"""
         await self.ensure_initialized()
         template = self._templates_cache.get(template_id)
         if template:
@@ -184,5 +184,5 @@ class TemplateManager:
         return None
 
     def has_templates(self) -> bool:
-        """Check if any templates are available"""
+        """检查是否有可用模板"""
         return len(self._templates_cache) > 0

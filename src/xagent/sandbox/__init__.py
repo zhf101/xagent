@@ -1,5 +1,5 @@
 """
-Sandbox Support.
+沙箱支持模块。
 """
 
 from ..config import get_sandbox_image
@@ -23,8 +23,8 @@ from .docker_sandbox import (
     is_docker_available,
 )
 
-# Use the `latest` image as a fallback
-# We should pin the version at release by env "SANDBOX_IMAGE" (`latest` may lead to caching problems)
+# 使用 `latest` 镜像作为降级策略
+# 应通过环境变量 "SANDBOX_IMAGE" 在发布时固定版本（`latest` 可能导致缓存问题）
 DEFAULT_SANDBOX_IMAGE = get_sandbox_image()
 
 __all__ = [
