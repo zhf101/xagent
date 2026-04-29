@@ -366,20 +366,20 @@ class VisionCore:
 
             # Prepare the detection prompt
             prompt = f"""
-            任务：{task}
+            Task: {task}
 
-            请根据上面的任务要求分析这张图片，并执行目标检测。
+            Please analyze this image and detect objects according to the task above.
 
-            对每个检测到的对象，请提供：
-            1. 对象类别/名称
-            2. 归一化后的边界框坐标 [xmin, ymin, xmax, ymax]，其中：
-               - xmin, ymin：左上角坐标（0.0 到 1.0）
-               - xmax, ymax：右下角坐标（0.0 到 1.0）
-            3. 置信度分数（0.0 到 1.0）
+            For each detected object, provide:
+            1. Object class/name
+            2. Bounding box coordinates in normalized format [xmin, ymin, xmax, ymax] where:
+               - xmin, ymin: top-left corner (0.0 to 1.0)
+               - xmax, ymax: bottom-right corner (0.0 to 1.0)
+            3. Confidence score (0.0 to 1.0)
 
-            只保留 confidence >= {confidence_threshold} 的检测结果。
+            Only include detections with confidence >= {confidence_threshold}.
 
-            请按如下 JSON 结构返回：
+            Format your response as a JSON object with this structure:
             {{
                 "detections": [
                     {{

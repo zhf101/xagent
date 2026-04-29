@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 import re
 from typing import Any
@@ -60,6 +61,8 @@ _SECRET_HEADER_NAMES = {
     "cookie",
     "set-cookie",
 }
+
+logger = logging.getLogger(__name__)
 
 
 class _TemplateObject:
@@ -614,6 +617,47 @@ class HttpRequestAssembler:
     def __init__(self, base_url_resolver: HttpBaseUrlResolver | None = None) -> None:
         self.base_url_resolver = base_url_resolver or HttpBaseUrlResolver()
 
+    def _apply_schema_defaults(
+        self,
+        *,
+        input_schema: dict[str, Any],
+        arguments: dict[str, Any],
+    ) -> dict[str, Any]:
+        """从 input_schema 中提取 default 值并填充到 arguments。
+
+        遍历 input_schema 的 properties，如果 arguments 中缺少某个字段，
+        且该字段在 schema 中定义了 default，则使用 default 值。
+
+        Args:
+            input_schema: JSON Schema 定义
+            arguments: 调用方传入的参数
+
+        Returns:
+            填充了默认值后的 arguments 副本
+        """
+        # 创建 arguments 副本，避免修改原始数据
+        result = dict(arguments)
+
+        properties = input_schema.get("properties")
+        if not isinstance(properties, dict):
+            return result
+
+        for field_name, field_schema in properties.items():
+            # 如果 arguments 中已有该字段，跳过
+            if field_name in result:
+                continue
+            # 如果 field_schema 不是 dict，跳过
+            if not isinstance(field_schema, dict):
+                continue
+            # 如果 field_schema 中有 default，填充到 result
+            if "default" in field_schema:
+                result[field_name] = field_schema["default"]
+                logger.debug(
+                    f"应用 schema 默认值：{field_name} = {field_schema['default']}"
+                )
+
+        return result
+
     def build(
         self,
         *,
@@ -622,7 +666,7 @@ class HttpRequestAssembler:
     ) -> HttpRequestSnapshot:
         """组装最终请求快照。
 
-        这是 HTTP 资产 runtime 最关键的“纯计算阶段”：
+        这是 HTTP 资产 runtime 最关键的"纯计算阶段"：
         - 不访问数据库
         - 不发网络请求
         - 只把 definition + arguments 规整成稳定的请求快照
@@ -632,6 +676,13 @@ class HttpRequestAssembler:
         - dry-run 可以直接返回快照给模型看
         - 真正调用失败时，也能把调用前的完整请求结构保留下来做排查
         """
+
+        # 从 input_schema 中应用默认值到 arguments
+        input_schema = definition.tool_contract.input_schema_json or {}
+        arguments = self._apply_schema_defaults(
+            input_schema=input_schema,
+            arguments=dict(arguments or {}),
+        )
 
         url = self._build_base_url(definition)
         method = str(definition.method or "GET").upper()
@@ -930,9 +981,11 @@ class HttpRequestAssembler:
         return url + separator + urlencode(query_params, doseq=True)
 
     def _stringify_http_value(self, value: Any) -> str:
-        if isinstance(value, (dict, list)):
-            return json.dumps(value, ensure_ascii=False, default=str)
-        return str(value)
+        # 先处理 _TemplateObject 类型，转换为普通字典
+        unwrapped_value = _unwrap_template_value(value)
+        if isinstance(unwrapped_value, (dict, list)):
+            return json.dumps(unwrapped_value, ensure_ascii=False, default=str)
+        return str(unwrapped_value)
 
     def _build_template_context(
         self,
@@ -1514,21 +1567,22 @@ class HttpResourceQueryService:
         *,
         user_id: int,
         query: str,
-        system_short: str | None = None,
         top_k: int = 5,
     ) -> HttpResourceQueryResult:
         """检索当前用户可见的 HTTP 资产。
 
-        这里只返回“当前用户此刻真的可能用到的候选项”：
+        这里只返回"当前用户此刻真的可能用到的候选项"：
         - 已删除或停用资产不会参与
         - 不可见资产不会泄露给非创建人
         - 返回值里会附带参数提纲，方便模型先判断能否调用
         """
 
         normalized_query = (query or "").strip()
-        normalized_system_short = (system_short or "").strip() or None
         limit = max(1, min(int(top_k or 5), 20))
 
+        # 根据 user_id 查询关联系统，多个时用逗号分隔，没有时默认为'ATT_GDP'
+        normalized_system_short = self._get_user_system_shorts(user_id)
+        # 用户创建功能或标识为分享、全局的资源
         resources = (
             self.db.query(GdpHttpResource)
             .filter(GdpHttpResource.status == int(GdpHttpAssetStatus.ACTIVE))
@@ -1540,6 +1594,7 @@ class HttpResourceQueryService:
             )
             .all()
         )
+        # 向量检索，语义相似度搜索，返回资源 ID 和相似度分数的映射
         vector_rank_map: dict[int, float] = {}
         if normalized_query:
             try:
@@ -1548,7 +1603,7 @@ class HttpResourceQueryService:
                     for item in self.vector_repository.search_resources(
                         query=normalized_query,
                         top_k=max(limit * 6, limit),
-                        system_short=normalized_system_short,
+                        system_shorts=normalized_system_short,
                     )
                 }
             except Exception:
@@ -1560,7 +1615,7 @@ class HttpResourceQueryService:
             score, matched_fields, intent_hint = self._score_resource(
                 resource=resource,
                 query=normalized_query,
-                system_short=normalized_system_short,
+                user_system_shorts=normalized_system_short,
                 vector_rank_score=float(vector_rank_map.get(int(resource.id), 0.0)),
             )
             if normalized_query and score <= 0:
@@ -1601,12 +1656,26 @@ class HttpResourceQueryService:
         items = [item for _, item in scored_items[:limit]]
         return HttpResourceQueryResult(items=items, total=len(items))
 
+    def _get_user_system_shorts(self, user_id: int) -> str:
+        """根据 user_id 查询关联系统，多个时用逗号分隔，没有时默认为'ATT_GDP'。"""
+        from xagent.web.models.system_registry import UserSystemRole
+
+        user_systems = (
+            self.db.query(UserSystemRole.system_short)
+            .filter(UserSystemRole.user_id == int(user_id))
+            .all()
+        )
+        system_shorts = [row[0] for row in user_systems if row[0]]
+        if not system_shorts:
+            return "ATT_GDP"
+        return ",".join(system_shorts)
+
     def _score_resource(
         self,
         *,
         resource: GdpHttpResource,
         query: str,
-        system_short: str | None,
+        user_system_shorts: str,
         vector_rank_score: float = 0.0,
     ) -> tuple[float, list[str], str]:
         """基于规则做一个透明可调的轻量打分。"""
@@ -1616,9 +1685,12 @@ class HttpResourceQueryService:
         matched_fields: list[str] = []
         score = 0.0
 
-        if system_short and resource.system_short == system_short:
-            score += 5.0
-            matched_fields.append("system_short")
+        # 检查资源 system_short 是否在用户关联系统中
+        if user_system_shorts:
+            user_system_list = [s.strip() for s in user_system_shorts.split(",")]
+            if resource.system_short in user_system_list:
+                score += 5.0
+                matched_fields.append("system_short")
 
         if vector_rank_score > 0:
             # 这里同样不直接信任 provider 原始分值，只信任“召回顺序”。
@@ -2249,8 +2321,9 @@ class HttpResourceRuntimeService:
         - 模型在正式调用前先看一下请求结构
         - 排查参数路由是否正确
         """
-
+        logger.info("调用execute_resource")
         if not resource_key and resource_id is None:
+            logger.info("resource_key 与 resource_id 缺失")
             raise ValueError("resource_key 与 resource_id 至少提供一个")
 
         resource = self._load_accessible_resource(
@@ -2259,6 +2332,7 @@ class HttpResourceRuntimeService:
             resource_id=resource_id,
         )
         if resource is None:
+            logger.info("HTTP 资产不存在、不可见或未激活")
             return self._resource_error_result(
                 resource_key=resource_key,
                 resource_id=resource_id,
@@ -2272,6 +2346,7 @@ class HttpResourceRuntimeService:
             arguments=normalized_arguments,
         )
         if validation_errors:
+            logger.info("validation_errors")
             input_schema_json = definition.tool_contract.input_schema_json
             missing_required_paths = self._collect_missing_required_paths(
                 schema=input_schema_json,
@@ -2305,12 +2380,13 @@ class HttpResourceRuntimeService:
                 arguments=normalized_arguments,
             )
         except Exception as exc:
+            logger.info("request_assembler build error：%s",str(exc))
             return self._result_with_error(
                 definition=definition,
                 error_type="call_error",
                 message=str(exc),
             )
-
+        logger.info("dry_run：%s", dry_run)
         if dry_run:
             return HttpExecuteResult(
                 resource=self._build_resource_ref(definition),
@@ -2320,6 +2396,7 @@ class HttpResourceRuntimeService:
             )
 
         try:
+            logger.info("before http call")
             raw_result = await self.invoker.invoke(
                 definition=definition,
                 request=request_snapshot,
@@ -2329,6 +2406,11 @@ class HttpResourceRuntimeService:
                 raw_result=raw_result,
                 arguments=normalized_arguments,
             )
+            logger.info(
+                "response_payload: %s",
+                json.dumps(response_payload.model_dump(mode="json"), ensure_ascii=False, default=str),
+            )
+
             error_payload = None
             if not response_payload.ok:
                 error_type = (
@@ -2350,19 +2432,41 @@ class HttpResourceRuntimeService:
                         ),
                     },
                 )
-            return HttpExecuteResult(
+            result = HttpExecuteResult(
                 resource=self._build_resource_ref(definition),
                 request=self._redact_request_snapshot(request_snapshot),
                 response=response_payload,
                 error=error_payload,
             )
+            logger.info(
+                "HTTP 请求完成 - resource_key=%s, status_code=%s, ok=%s, error=%s",
+                definition.resource_key,
+                response_payload.status_code if response_payload else "N/A",
+                response_payload.ok if response_payload else "N/A",
+                error_payload.type if error_payload else "None",
+            )
+            logger.info(
+                "HttpExecuteResult: %s",
+                json.dumps(result.model_dump(mode="json"), ensure_ascii=False, default=str),
+            )
+            return result
         except Exception as exc:
-            return self._result_with_error(
+            result = self._result_with_error(
                 definition=definition,
                 request=request_snapshot,
                 error_type="call_error",
                 message=str(exc),
             )
+            logger.error(
+                "HTTP 请求异常 - resource_key=%s, error=%s",
+                definition.resource_key,
+                str(exc),
+            )
+            logger.info(
+                "HttpExecuteResult: %s",
+                json.dumps(result.model_dump(mode="json"), ensure_ascii=False, default=str),
+            )
+            return result
 
     def _load_accessible_resource(
         self,
@@ -2504,4 +2608,3 @@ class HttpResourceRuntimeService:
                 ),
             )
         return merged_details
-

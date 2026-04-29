@@ -55,7 +55,7 @@ dependencies = [
   "uvicorn >= 0.35.0",  # ASGI 服务器，用于运行 FastAPI
   "websockets >= 15.0.1",  # WebSocket 支持，用于实时通信
   "python-jose[cryptography] >= 3.3.0",  # JWT 令牌处理，用于身份验证
-
+  "ecdsa == 0.19.1",
   # ========================================
   # HTTP 客户端和异步支持
   # ========================================

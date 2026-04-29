@@ -1,15 +1,9 @@
-"""LanceDB provider 实现。
+"""
+LanceDB vector store implementation with integrated connection management.
 
-这个模块现在只负责纯 LanceDB 行为：
-- 管理 LanceDB 连接缓存
-- 对齐项目内部统一 `VectorStore` 抽象
-
-provider 的“选哪一种后端”决策已经统一收口到 `factory.py`，
-这里不再承担任何跨后端分流逻辑，避免出现：
-- factory 说自己是统一入口
-- 但某个 provider 内部又偷偷判断 backend
-
-这种边界混乱会让后续维护者很难判断“问题到底该改哪一层”。
+This module provides both connection management and vector store implementation
+for LanceDB, combining the functionality that was previously split across
+lancedb_client.py and a separate vector store implementation.
 """
 
 from __future__ import annotations
@@ -45,49 +39,27 @@ _cache_lock = RLock()
 CONNECTION_TTL = int(os.getenv("LANCEDB_CONNECTION_TTL", "300"))
 
 
-def _matches_metadata_filters(
-    metadata: Dict[str, Any],
-    filters: Optional[Dict[str, Any]],
-) -> bool:
-    """判断 metadata 是否满足过滤条件。
-
-    统一 provider 接口已经把过滤语义收口成 `dict[str, Any]`，
-    但不同后端对 metadata 过滤的原生支持能力并不完全一致。
-
-    因此这里显式提供一层最小公约数：
-    - 所有后端至少支持 metadata 的精确相等匹配
-    - 即使底层不能原生过滤，也保证业务层拿到一致结果
-    """
-    if not filters:
-        return True
-
-    for key, expected_value in filters.items():
-        if metadata.get(key) != expected_value:
-            return False
-    return True
-
-
 class LanceDBConnectionManager:
-    """向量存储连接管理器。
+    """
+    LanceDB connection manager with caching and automatic cleanup.
 
-    这里最重要的不是“如何连上 LanceDB”，而是：
-    - 避免同一个目录被反复创建连接
-    - 在连接长期不用后自动清理
+    This class handles connection lifecycle management, caching, and
+    automatic cleanup of expired connections.
     """
 
     @staticmethod
     def _normalize_dirpath(db_dir: str) -> str:
-        """把目录路径规范成绝对路径，避免缓存键因相对路径差异失效。"""
+        """Normalize database directory path."""
         return str(Path(db_dir).expanduser().resolve())
 
     @staticmethod
     def _ensure_dir(db_dir: str) -> None:
-        """确保目录存在。"""
+        """Ensure database directory exists."""
         Path(db_dir).mkdir(parents=True, exist_ok=True)
 
     @staticmethod
     def _is_connection_expired(last_accessed: float) -> bool:
-        """判断缓存连接是否超出 TTL。"""
+        """Check if a connection has expired based on TTL."""
         return time.time() - last_accessed > CONNECTION_TTL
 
     @staticmethod
@@ -124,12 +96,13 @@ class LanceDBConnectionManager:
             Path(__file__).parent.parent.parent.parent.parent / get_lancedb_path()
         )
         if legacy_dir.is_dir() and list(legacy_dir.iterdir()):
-            logger.info(
-                "Using legacy LanceDB directory for LanceDB backend: %s",
-                legacy_dir,
-            )
+            logger.info(f"Using legacy LanceDB location: {legacy_dir}")
             return str(legacy_dir)
 
+        # Use new default location from unified config module
+        # Note: get_lancedb_path() returns relative path, so we combine with
+        # get_storage_root() to get absolute path.
+        # The former is: new_dir = Path.home() / ".xagent" / "data" / "lancedb"
         new_dir = get_storage_root() / get_lancedb_path()
         new_dir.mkdir(parents=True, exist_ok=True)
         return str(new_dir)
@@ -147,13 +120,27 @@ class LanceDBConnectionManager:
         for key in expired_keys:
             conn, _ = _connection_cache.pop(key)
             try:
+                # Close connection if it has a close method
                 if hasattr(conn, "close"):
                     conn.close()
-            except Exception as exc:
-                logger.warning("Error closing expired connection for %s: %s", key, exc)
+            except Exception as e:
+                # Ignore errors during connection cleanup but log them
+                logger.warning("Error closing expired connection for %s: %s", key, e)
+                pass
 
     def get_connection(self, db_dir: str) -> DBConnection:
-        """按目录获取连接，并带缓存。"""
+        """
+        Get LanceDB connection with caching.
+
+        Args:
+            db_dir: Database directory path
+
+        Returns:
+            LanceDB connection
+
+        Raises:
+            ValueError: If db_dir is empty
+        """
         if not db_dir:
             raise ValueError("LanceDB directory path must be non-empty")
 
@@ -163,31 +150,52 @@ class LanceDBConnectionManager:
         current_time = time.time()
 
         with _cache_lock:
+            # Cleanup expired connections
             self._cleanup_expired_connections()
 
             if normalized in _connection_cache:
                 conn, last_accessed = _connection_cache[normalized]
+                # Check if connection is expired
                 if not self._is_connection_expired(last_accessed):
+                    # Update last access time
                     _connection_cache[normalized] = (conn, current_time)
                     return conn
-                _connection_cache.pop(normalized)
+                else:
+                    # Remove expired connection
+                    _connection_cache.pop(normalized)
 
+            # Create new connection
             conn = lancedb.connect(normalized)
             _connection_cache[normalized] = (conn, current_time)
             return conn
 
     def get_connection_from_env(self, env_var: str = "LANCEDB_DIR") -> DBConnection:
-        """从环境变量推导连接目录，并返回连接。"""
+        """
+        Get LanceDB connection from environment variable with fallback to default path.
+
+        If the environment variable is not set, uses get_default_lancedb_dir() which:
+        1. Checks legacy location (project root data/lancedb) if it contains data
+        2. Otherwise uses ~/.xagent/data/lancedb
+
+        Args:
+            env_var: Environment variable name containing database directory
+
+        Returns:
+            LanceDB connection
+
+        Raises:
+            ValueError: If environment variable is empty
+            KeyError: If environment variable (other than LANCEDB_DIR) is not set
+        """
         db_dir = os.getenv(env_var)
 
         if db_dir is None:
             if env_var == "LANCEDB_DIR":
+                # Use default path only for the standard LANCEDB_DIR environment variable
                 db_dir = self.get_default_lancedb_dir()
-                logger.info(
-                    "Using default LanceDB directory for LanceDB backend: %s",
-                    db_dir,
-                )
+                logger.info(f"Using default LanceDB directory: {db_dir}")
             else:
+                # For other environment variables, raise KeyError as before
                 raise KeyError(f"Environment variable {env_var} is not set")
         elif db_dir.strip() == "":
             raise ValueError(f"Environment variable {env_var} is empty")
@@ -196,10 +204,11 @@ class LanceDBConnectionManager:
 
 
 class LanceDBVectorStore(VectorStore):
-    """LanceDB 向量存储实现。
+    """
+    LanceDB vector store implementation.
 
-    这个类负责对齐项目内部统一的 `VectorStore` 接口，
-    让上层 RAG / memory 代码不需要直接依赖 LanceDB SDK。
+    This class implements the standard VectorStore interface using LanceDB
+    as the backend storage engine.
     """
 
     support_store_texts: ClassVar[bool] = True
@@ -210,7 +219,14 @@ class LanceDBVectorStore(VectorStore):
         collection_name: str = "vectors",
         connection_manager: Optional[LanceDBConnectionManager] = None,
     ):
-        """初始化统一向量存储实例。"""
+        """
+        Initialize LanceDB vector store.
+
+        Args:
+            db_dir: Database directory path
+            collection_name: Collection/table name for vectors
+            connection_manager: Optional connection manager instance
+        """
         self._db_dir = db_dir
         self._collection_name = collection_name
         self._conn_manager = connection_manager or LanceDBConnectionManager()
@@ -218,24 +234,27 @@ class LanceDBVectorStore(VectorStore):
         self._ensure_table()
 
     def _ensure_table(self) -> None:
-        """确保向量表存在。"""
+        """Ensure the vector table exists."""
         try:
             self._conn.open_table(self._collection_name)
-        except Exception as exc:
+        except Exception as e:
             logger.debug(
                 "Table %s does not exist or open failed (%s), creating new table.",
                 self._collection_name,
-                exc,
+                e,
             )
+            # Table doesn't exist, create it with sample data
+            # LanceDB needs actual data to properly infer vector column type
             sample_data = [
                 {
                     "id": "sample",
-                    "vector": [0.0, 0.0, 0.0],
+                    "vector": [0.0, 0.0, 0.0],  # Sample vector
                     "text": "sample",
                     "metadata": "{}",
                 }
             ]
             table = self._conn.create_table(self._collection_name, data=sample_data)
+            # Remove sample data
             table.delete("id = 'sample'")
 
     def add_vectors(
@@ -244,7 +263,17 @@ class LanceDBVectorStore(VectorStore):
         ids: Optional[List[str]] = None,
         metadatas: Optional[List[Dict[str, Any]]] = None,
     ) -> List[str]:
-        """批量写入向量。"""
+        """
+        Add vectors to the store.
+
+        Args:
+            vectors: List of vectors to add
+            ids: Optional list of IDs for each vector
+            metadatas: Optional list of metadata dicts
+
+        Returns:
+            List of vector IDs stored
+        """
         import json
         from uuid import uuid4
 
@@ -254,44 +283,43 @@ class LanceDBVectorStore(VectorStore):
         if metadatas is None:
             metadatas = [{} for _ in vectors]
 
+        # Prepare data for insertion
         data = []
-        for index, vector in enumerate(vectors):
-            data.append(
-                {
-                    "id": ids[index],
-                    "vector": vector,
-                    "text": metadatas[index].get("text", ""),
-                    "metadata": json.dumps(metadatas[index], ensure_ascii=False),
-                }
-            )
+        for i, vector in enumerate(vectors):
+            record = {
+                "id": ids[i],
+                "vector": vector,
+                "text": metadatas[i].get("text", ""),
+                "metadata": json.dumps(metadatas[i], ensure_ascii=False),
+            }
+            data.append(record)
 
-        try:
-            table = self._conn.open_table(self._collection_name)
-        except Exception:
-            # 对 LanceDB 来说，初始化阶段已经保证表存在。
-            # 这里如果再次失败，通常说明底层目录损坏或连接异常，不应该静默改语义。
-            self._ensure_table()
-            table = self._conn.open_table(self._collection_name)
+        # Insert data
+        table = self._conn.open_table(self._collection_name)
         table.add(data)
+
         return ids
 
     def delete_vectors(self, ids: List[str]) -> bool:
-        """按 id 批量删除向量。"""
-        if not ids:
-            return True
+        """
+        Delete vectors from the store by their IDs.
 
+        Args:
+            ids: List of vector IDs to delete
+
+        Returns:
+            True if deletion was successful
+        """
         try:
             table = self._conn.open_table(self._collection_name)
-        except Exception:
-            # 对删除语义来说，“collection 还不存在”应视为幂等成功。
-            return True
 
-        try:
+            # Build delete condition
             id_conditions = " OR ".join([f"id = '{id_}'" for id_ in ids])
             table.delete(id_conditions)
+
             return True
-        except Exception as exc:
-            logger.error("Failed to delete vectors: %s", exc)
+        except Exception as e:
+            logger.error("Failed to delete vectors: %s", e)
             return False
 
     def search_vectors(
@@ -300,24 +328,29 @@ class LanceDBVectorStore(VectorStore):
         top_k: int = 5,
         filters: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
-        """按查询向量检索相似记录。"""
+        """
+        Search for vectors similar to the query vector.
+
+        Args:
+            query_vector: Vector to search for
+            top_k: Number of top similar vectors to return
+            filters: Optional metadata filters
+
+        Returns:
+            List of search results with id, score, and metadata
+        """
         import json
 
-        if top_k <= 0 or not query_vector:
-            return []
+        table = self._conn.open_table(self._collection_name)
 
-        try:
-            table = self._conn.open_table(self._collection_name)
-        except Exception:
-            return []
-
-        search_limit = max(top_k, top_k * 5 if filters else top_k)
+        # Perform vector search, explicitly specify vector column
         results = (
             table.search(query_vector, vector_column_name="vector")
-            .limit(search_limit)
+            .limit(top_k)
             .to_pandas()
         )
 
+        # Format results
         formatted_results = []
         for _, row in results.iterrows():
             try:
@@ -325,42 +358,66 @@ class LanceDBVectorStore(VectorStore):
             except (json.JSONDecodeError, TypeError):
                 metadata = {}
 
-            if not _matches_metadata_filters(metadata, filters):
-                continue
-
-            formatted_results.append(
-                {
-                    "id": row["id"],
-                    "score": float(row["_distance"]) if "_distance" in row else 0.0,
-                    "metadata": metadata,
-                }
-            )
-            if len(formatted_results) >= top_k:
-                break
+            result = {
+                "id": row["id"],
+                "score": float(row["_distance"]) if "_distance" in row else 0.0,
+                "metadata": metadata,
+            }
+            formatted_results.append(result)
 
         return formatted_results
 
     def clear(self) -> None:
-        """清空当前 collection 中的全部向量与 metadata。"""
+        """Clear all vectors and metadata from the store."""
         try:
+            # Try to delete all records
             table = self._conn.open_table(self._collection_name)
-            table.delete("true")
-        except Exception as exc:
-            logger.error("Failed to clear vector store: %s", exc)
+            table.delete("true")  # Delete all records
+        except Exception as e:
+            logger.error("Failed to clear vector store: %s", e)
+            # Table doesn't exist, just ensure it's created
             self._ensure_table()
 
     def get_raw_connection(self) -> DBConnection:
-        """返回底层原始连接。"""
+        """
+        Get raw LanceDB connection for advanced operations.
+
+        This method provides access to the underlying LanceDB connection
+        for operations that go beyond the standard VectorStore interface.
+
+        Returns:
+            Raw LanceDB connection
+        """
         return self._conn
 
 
+# Convenience functions
 def get_connection(db_dir: str) -> DBConnection:
-    """获取带缓存的向量存储连接。"""
+    """
+    Get LanceDB connection with caching.
+
+    Args:
+        db_dir: Database directory path
+
+    Returns:
+        LanceDB connection
+    """
     manager = LanceDBConnectionManager()
     return manager.get_connection(db_dir)
 
 
 def get_connection_from_env(env_var: str = "LANCEDB_DIR") -> DBConnection:
-    """从环境变量获取向量存储连接。"""
+    """
+    Get LanceDB connection from environment variable with fallback to default path.
+
+    If LANCEDB_DIR is not set, uses get_default_lancedb_dir() which checks legacy
+    location first, then falls back to ~/.xagent/data/lancedb.
+
+    Args:
+        env_var: Environment variable name
+
+    Returns:
+        LanceDB connection
+    """
     manager = LanceDBConnectionManager()
     return manager.get_connection_from_env(env_var)

@@ -76,16 +76,25 @@ class HttpResourceVectorRepository:
         *,
         query: str,
         top_k: int,
-        system_short: str | None = None,
+        system_shorts: str | None = None,
     ) -> list[dict[str, Any]]:
-        """按查询文本召回候选资源。"""
+        """按查询文本召回候选资源。
+
+        `system_shorts` 支持逗号分隔的多个系统简称，用于匹配用户关联的多个系统。
+        """
         query_vector = self._encode_query(str(query or "").strip())
         if not query_vector:
             return []
 
         filters: dict[str, Any] = {"domain": "http_resource", "status": 1}
-        if system_short:
-            filters["system_short"] = str(system_short)
+        if system_shorts:
+            # 支持逗号分隔的多个系统简称
+            system_list = [s.strip() for s in system_shorts.split(",") if s.strip()]
+            if len(system_list) == 1:
+                filters["system_short"] = system_list[0]
+            elif len(system_list) > 1:
+                # 多个系统时使用 $in 过滤
+                filters["$and"] = [{"system_short": {"$in": system_list}}]
 
         hits = self.vector_store_factory(collection_name=self.COLLECTION_NAME).search_vectors(
             query_vector=query_vector,

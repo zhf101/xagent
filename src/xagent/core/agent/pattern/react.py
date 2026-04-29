@@ -938,6 +938,106 @@ class ReActPattern(AgentPattern):
                     },
                 )
 
+                # 检查execute_http_resource返回的HTTP API响应body中status是否不为1
+                if result["type"] == "observation" and result.get("tool_name") == "execute_http_resource":
+                    tool_result = result.get("result")
+                    if isinstance(tool_result, dict):
+                        response_info = tool_result.get("response")
+                        http_failed = False
+                        error_message = ""
+
+                        # 从 response.body 中解析 status 字段
+                        if response_info:
+                            body_raw = None
+                            if isinstance(response_info, dict):
+                                body_raw = response_info.get("body")
+                            elif hasattr(response_info, "body"):
+                                body_raw = response_info.body
+
+                            body_dict = None
+                            # body 可能是 JSON 字符串，需要解析
+                            if isinstance(body_raw, str) and body_raw.strip():
+                                try:
+                                    body_dict = json.loads(body_raw).get("data")
+                                except (json.JSONDecodeError, ValueError):
+                                    body_dict = None
+                            elif isinstance(body_raw, dict):
+                                body_dict = body_raw.get("data")
+
+                            # 解析 body 中的 status 字段
+                            if isinstance(body_dict, dict):
+                                status_value = body_dict.get("status")
+                                if status_value is not None and status_value != 1:
+                                    http_failed = True
+                                    error_message = f"HTTP API 返回 status={status_value}，期望 status=1"
+                                    # 尝试获取错误消息
+                                    msg_field = body_dict.get("message") or body_dict.get("msg") or body_dict.get("error") or body_dict.get("errorMsg")
+                                    if msg_field:
+                                        error_message += f"，错误信息：{msg_field}"
+
+                        if http_failed:
+                            logger.info(
+                                "execute_http_resource returned status != 1, terminating ReAct loop. Error: %s",
+                                error_message[:200] if error_message else "N/A",
+                            )
+
+                            # 生成 memories
+                            await self._generate_and_store_react_memories(
+                                f"{task_description} (iteration {iteration + 1})",
+                                error_message if error_message else "HTTP API status != 1",
+                                iteration + 1,
+                                messages,
+                            )
+
+                            # Trace task 完成，任务为失败
+                            if not self.is_sub_agent:
+                                await trace_ai_message(
+                                    self.tracer,
+                                    task_id,
+                                    message=f"HTTP API 执行失败，任务终止：{error_message}",
+                                    data={"content": f"HTTP API 执行失败，任务终止：{error_message}"},
+                                )
+                                await trace_task_completion(
+                                    self.tracer,
+                                    task_id,
+                                    result=f"HTTP API 执行失败，任务终止：{error_message}",
+                                    success=False,
+                                )
+                                await trace_task_end(
+                                    self.tracer,
+                                    task_id,
+                                    TraceCategory.REACT,
+                                    data={
+                                        "result": f"HTTP API 执行失败，任务终止：{error_message}",
+                                        "success": False,
+                                    },
+                                )
+
+                            final_result = {
+                                "success": False,
+                                "output": f"HTTP API 执行失败，任务终止：{error_message}",
+                                "iterations": iteration + 1,
+                                "execution_history": messages,
+                                "pattern": "react",
+                            }
+
+                            # Update session summary
+                            current_context = self._context
+                            if (
+                                self.memory_store
+                                and current_context is not None
+                                and current_context.session_id
+                            ):
+                                await asyncio.to_thread(
+                                    upsert_session_summary,
+                                    self.memory_store,
+                                    current_context.session_id,
+                                    task_description,
+                                    final_result,
+                                )
+
+                            return final_result
+
                 # Check if this is the final answer
                 if result["type"] == "final_answer":
                     logger.info(f"Action ReAct completed in {iteration + 1} iterations")
@@ -1567,7 +1667,7 @@ Remember: Return ONLY ONE JSON object. No additional text, no multiple objects.
             "- 你是专用的内部造数 agent，不是通用助手。\n"
             "- 当请求可能依赖内部业务数据、开户流程、环境操作、HTTP/API 资源、SQL asset、知识库、skills 或 MCP 连接系统时，优先使用 `tool_call`，而不是 `final_answer`。\n"
             "- 在首次尝试相关发现/检索工具之前，不要用 `final_answer` 直接拒绝、声称没有权限，或提出宽泛的缺失上下文问题。\n"
-            "- 只有当请求明显只是普通对话，或者相关发现路径已经尝试过、你现在可以总结结果或追问精确缺失参数时，`final_answer` 才是合适的。\n"
+            "- 只有当请求明显只是普通对话，或者当需要先后调用多个http资产时，如果前面的http api执行返回确认失败（response.body.data中的status不等于1）时，`final_answer` 才是合适的。\n"
             + "\n".join(guidance_lines)
             + "\n"
         )
@@ -1803,6 +1903,7 @@ Remember: Return ONLY ONE JSON object. No additional text, no multiple objects.
                                 if extracted_reasoning:
                                     break
                 except Exception:
+                    logger.error("parse reasoning_text error:%s",reasoning_text)
                     extracted_reasoning = None
 
                 if extracted_reasoning:
@@ -1894,10 +1995,13 @@ Remember: Return ONLY ONE JSON object. No additional text, no multiple objects.
                             f"First call: Parsed JSON but unknown type: {parsed.get('type')}"
                         )
             except json.JSONDecodeError:
+                logger.info("llm response list:%s",response)
                 # JSON parsing failed - might be multiple JSON objects
                 # Try to use json_repair to handle multiple JSON objects
                 try:
-                    repaired = repair_loads(response.strip(), logging=False)
+                    # 两个json时可能为</think>标签内的，使用标签外内容处理
+                    parts = response.split("</think>")
+                    repaired = repair_loads(parts[1].strip() if len(parts)>1 else parts[0].strip(), logging=False)
 
                     if isinstance(repaired, tuple):
                         action_data, repair_log = repaired
@@ -1919,12 +2023,22 @@ Remember: Return ONLY ONE JSON object. No additional text, no multiple objects.
                                     f"First call: JSON object {i}: {type(item).__name__}"
                                 )
 
-                        # Take the first JSON object
-                        if action_data and isinstance(action_data[0], dict):
-                            action_data = action_data[0]
-                            logger.info(
-                                f"First call: Selected first JSON object from multiple (type: {action_data.get('type', 'UNKNOWN')})"
-                            )
+                        # 根据已知情况处理
+                        if action_data :
+                            if isinstance(action_data[0], str) and str.__contains__(action_data[0],"Calling tool"):
+                                #[Calling tool: xxxx] 情况
+                                parsed_tool = repair_loads("{"+action_data[0]+"}", logging=False)
+                                parsed_tool["tool_name"] = parsed_tool["tool"]
+                                parsed_tool["type"] = "tool_call"
+                                action_data = parsed_tool
+                                logger.info(
+                                    f"First call: Selected first JSON object Calling tool from multiple (type: {action_data.get('type', 'UNKNOWN')})"
+                                )
+                            if isinstance(action_data[0], dict):
+                                action_data = action_data[0]
+                                logger.info(
+                                    f"First call: Selected first JSON object from multiple (type: {action_data.get('type', 'UNKNOWN')})"
+                                )
                         else:
                             # First item is not a dict, raise error
                             raise PatternExecutionError(
@@ -2279,12 +2393,11 @@ Remember: Return ONLY ONE JSON object. No additional text, no multiple objects.
             tool_name = tool_name[len("functions.") :]
 
         reasoning = response.get("reasoning") or response.get("content") or ""
-
         return Action(
             type="tool_call",
             reasoning=reasoning,
             tool_name=tool_name,
-            tool_args=json.loads(function_info.get("arguments", "{}")),
+            tool_args=repair_loads(function_info.get("arguments","{}")),
         )
 
     async def _execute_action(

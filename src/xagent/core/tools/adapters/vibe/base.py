@@ -41,7 +41,7 @@ class ToolMetadata(BaseModel):
     allow_users: Optional[list[str]] = None  # Explicitly allowed user IDs
     has_state: bool = False
     category: ToolCategory = ToolCategory.OTHER  # Default category
-
+    is_available: bool = True  # 新增：工具是否可用
 
 @runtime_checkable
 class Tool(Protocol):
@@ -64,6 +64,8 @@ class Tool(Protocol):
 
 
 class AbstractBaseTool(ABC, Tool):
+    def __init__(self):
+        self._is_available = True  # 默认可用
     @property
     @abstractmethod
     def name(self) -> str: ...
@@ -76,6 +78,18 @@ class AbstractBaseTool(ABC, Tool):
     def tags(self) -> list[str]:
         return []
 
+    def set_available(self, available: bool) -> None:
+        """设置工具是否可用。
+
+        Args:
+            available: True 表示可用，False 表示不可用
+        """
+        object.__setattr__(self, '_is_available', available)
+
+    def is_available(self) -> bool:
+        """检查工具是否可用。"""
+        return getattr(self, '_is_available', True)
+
     @property
     def metadata(self) -> ToolMetadata:
         return ToolMetadata(
@@ -86,6 +100,7 @@ class AbstractBaseTool(ABC, Tool):
             allow_users=getattr(self, "_allow_users", None),
             has_state=self.state_type() is not None,
             category=getattr(self, "category", ToolCategory.OTHER),
+            is_available=self.is_available(),
         )
 
     @abstractmethod

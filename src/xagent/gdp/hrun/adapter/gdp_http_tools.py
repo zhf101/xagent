@@ -55,15 +55,13 @@ async def create_gdp_http_runtime_tools(config: "WebToolConfig") -> list[Any]:
 
         def query_http_resource(
             user_query: str,
-            system_short: str | None = None,
             top_k: int = 5,
         ) -> HttpResourceQueryResult:
-            """给模型一个“先找候选 HTTP 资产”的入口。"""
+            """给模型一个"先找候选 HTTP 资产"的入口。"""
             service = HttpResourceQueryService(db)
             return service.query_resources(
                 user_id=int(user_id),
                 query=user_query,
-                system_short=system_short,
                 top_k=top_k,
             )
 
@@ -92,11 +90,7 @@ async def create_gdp_http_runtime_tools(config: "WebToolConfig") -> list[Any]:
                 query_http_resource,
                 name="query_http_resource",
                 description=(
-                    "Search managed GDP HTTP assets when the user describes a business "
-                    "capability but does not provide a specific endpoint. Return candidate "
-                    "assets with input/output schema, annotations, and argument outline. "
-                    "Do NOT use this tool for direct calls to an explicitly provided URL "
-                    "or endpoint; use api_call for that case."
+                    "存在存量造数场景 http api 接口调用，需要首先查询获取都有哪些 http 接口资源，获取接口详细信息 (input/output schema, annotations, and argument outline) 后根据接口信息来判断能否使用该 http 接口 api，可用时调用execute_http_resource工具执行该 api"
                 ),
                 tags=["http", "resource", "query", "gdp"],
             ),
@@ -104,11 +98,9 @@ async def create_gdp_http_runtime_tools(config: "WebToolConfig") -> list[Any]:
                 execute_http_resource,
                 name="execute_http_resource",
                 description=(
-                    "Execute a previously selected managed GDP HTTP asset by resource_key "
-                    "or resource_id with structured arguments, and return request/response "
-                    "snapshots plus normalized error semantics. Use this only after the "
-                    "target asset has been identified, not as a substitute for arbitrary "
-                    "direct HTTP calls."
+                    "存量造数http api接口需要使用该工具调用，resource_key 参数从 query_http_resource 返回的可用资源获取,arguments 参数从query_http_resource的query中提取。"
+                    "当需要先后调用多个http资产时，如果前面的http api执行返回确认失败（response.body.data中的status不等于1），"
+                    "应立即结束后续调用任务，总结返回response.body.data中的错误信息作为最终答案，不要继续执行后续的http资产调用。"
                 ),
                 tags=["http", "resource", "execute", "gdp"],
             ),

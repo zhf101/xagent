@@ -641,6 +641,8 @@ class PlanGenerator:
 
         for tool in tools:
             if tool.metadata:
+                if tool.metadata.is_available==False:
+                    continue
                 tool_name = tool.metadata.name
                 tool_description = tool.metadata.description or f"Execute {tool_name}"
             else:
@@ -1215,12 +1217,7 @@ class PlanGenerator:
             "难度评估：对于每个步骤，你必须评估其难度等级：\n"
             "- 'easy'：可以快速完成的简单任务（基本搜索、简单计算、直接分析）\n"
             "- 'hard'：需要深入思考、创造性问题解决或大量处理的复杂任务\n\n"
-            "语言要求：\n"
-            "- 你必须使用与用户目标相同的语言来编写：task_name、步骤名称和步骤描述\n"
-            "- 示例：\n"
-            "  * 中文目标 → 中文 task_name 和步骤\n"
-            "  * 英文目标 → 英文 task_name 和步骤\n"
-            "  * 日文目标 → 日文 task_name 和步骤\n\n"
+            "重要语言要求：简体中文沟通，交流对话过程中，所有思考、分析、解释、回答都必须使用简体中文。"
             "始终返回有效的 JSON 格式。"
         )
 
@@ -1300,15 +1297,7 @@ class PlanGenerator:
             f"  }}\n"
             f"}}\n\n"
             f"仅返回 JSON 对象，不要包含其他文本。\n"
-            f"**重要语言要求**：以下内容必须使用与目标相同的语言：\n"
-            f"- task_name（标题）\n"
-            f"- step names（步骤名称）\n"
-            f"- step descriptions（步骤描述）\n\n"
-            f"例如：\n"
-            f"- 如果目标是中文（中文），task_name 必须是中文\n"
-            f"- 如果目标是英文，task_name 必须是英文\n"
-            f"- 如果目标是日文（日本語），task_name 必须是日文\n"
-            f"- 以此类推\n"
+            f"**重要语言要求**：简体中文沟通，交流对话过程中，所有思考、分析、解释、回答都必须使用简体中文。"
         )
 
         return messages

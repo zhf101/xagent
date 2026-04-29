@@ -365,7 +365,7 @@ def _get_embeddings_tables(conn: DBConnection) -> list[str]:
     try:
         return list_embeddings_table_names(conn)
     except Exception as e:
-        logger.warning("Failed to list vector-store tables during migration: %s", e)
+        logger.warning(f"Failed to list LanceDB tables: {e}")
         return []
 
 
@@ -480,7 +480,7 @@ def backfill_all(dry_run: bool = False, conn: DBConnection | None = None) -> dic
             return {"error": "Migration file lock already held"}
 
         logger.info("=" * 60)
-        logger.info("Vector-store user_id backfill migration (two-phase)")
+        logger.info("LanceDB User ID Backfill Migration (Two-Phase)")
         logger.info("=" * 60)
 
         legacy_remap = _remap_legacy_orphaned_user_ids(conn=conn, dry_run=dry_run)

@@ -1,23 +1,6 @@
-"""补齐 dev0407 分支相对 main 分支新增的核心数据结构。
-
-Revision ID: 20260408_add_dev0407_new_tables
-Revises: 20260403_add_user_tool_configs
-Create Date: 2026-04-08
-
-设计说明：
-1. 当前分支用户已经把原来的 `20260408_add_memory_jobs_table` /
-   `20260410_add_database_name_to_sql_assets_and_datasources` 从工作区移除，
-   这里改成一份“单文件补齐”迁移，直接挂在 main 当前可见的最新业务迁移
-   `20260403_add_user_tool_configs` 后面。
-2. 这份迁移既要支持空库初始化，也要尽量兼容“库里已经存在部分表或字段”的情况，
+﻿"""
+迁移既要支持空库初始化，也要尽量兼容“库里已经存在部分表或字段”的情况，
    所以所有 DDL 都按幂等思路实现：先检查，再创建/补齐。
-3. 这里补的范围只覆盖当前分支真正新增或扩展的关系型结构：
-   - system registry 三张表
-   - GDP HTTP 资产表
-   - Text2SQL / Vanna 全套业务表
-   - memory_jobs 队列表
-4. pgvector 后端那组 `db/postgresql/init.sql` 管理的运行时向量表不在 Alembic 内，
-   因为当前代码已经明确要求它们走 SQL-first 初始化，不允许运行时代码偷偷 DDL。
 """
 
 from __future__ import annotations
@@ -201,43 +184,8 @@ def _ensure_postgresql_enum(enum_name: str, values: Iterable[str]) -> None:
 
 
 def _ensure_vector_extension() -> None:
-    """确保 PostgreSQL 已安装 vector 扩展。
-
-    优先尝试在 public schema 安装（与 docker 初始化脚本保持一致）。
-    如果扩展已安装在其他 schema，则跳过（CREATE EXTENSION IF NOT EXISTS 会处理）。
-    """
-    if not _is_postgresql():
-        return
-
-    bind = _bind()
-
-    # 先检查扩展是否已经存在（无论在哪个 schema）
-    exists = bind.execute(
-        sa.text(
-            """
-            SELECT 1 FROM pg_extension WHERE extname = 'vector'
-            """
-        )
-    ).scalar()
-
-    if exists:
-        # 扩展已存在，不需要再创建
-        return
-
-    # 尝试在 public schema 创建扩展
-    # 注意：如果 vector 扩展已经安装在其他 schema，这里会收到 "extension already exists" 警告
-    # 但因为用了 IF NOT EXISTS，所以不会报错
-    try:
-        op.execute("CREATE EXTENSION IF NOT EXISTS vector SCHEMA public")
-    except Exception as exc:
-        # 如果因为权限或其他原因创建失败，记录警告但继续执行
-        # 后续使用 vector 类型时如果仍然失败，会抛出更明确的错误
-        import logging
-
-        logging.getLogger(__name__).warning(
-            f"Failed to create vector extension: {exc}. "
-            "Continuing anyway - vector type may already be available."
-        )
+    if _is_postgresql():
+        op.execute("CREATE EXTENSION IF NOT EXISTS vector")
 
 
 def _normalize_text2sql_enum_data() -> None:

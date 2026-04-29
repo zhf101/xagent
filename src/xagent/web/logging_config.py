@@ -45,6 +45,11 @@ def setup_logging(level: LogLevel | None = None) -> None:
                 "default": {
                     "class": "logging.StreamHandler",
                     "formatter": "default",
+                },
+                "file": {
+                    "class": "logging.FileHandler",
+                    "formatter": "default",
+                    "filename": "/applog/xagent/app.log",
                 }
             },
             "loggers": {
@@ -58,7 +63,7 @@ def setup_logging(level: LogLevel | None = None) -> None:
             },
             "root": {
                 "level": level,
-                "handlers": ["default"],
+                "handlers": ["default","file"]
             },
         }
     )
